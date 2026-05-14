@@ -107,11 +107,11 @@ export default function GameWorld() {
     <div className="w-full h-full">
       <Canvas
         shadows
-        camera={{ position: [0, 11, 14], fov: 45, near: 0.1, far: 200 }}
+        camera={{ position: [0, 11, 14], fov: 45, near: 0.1, far: 250 }}
         gl={{ antialias: true }}
       >
         <color attach="background" args={["#1a1a2e"]} />
-        <fog attach="fog" args={["#3a4a6e", 30, 70]} />
+        <fog attach="fog" args={["#7fa8c8", 45, 95]} />
         <Scene refs={refs} router={router} isOnHome={isOnHome} pathname={pathname ?? "/"} />
       </Canvas>
     </div>
@@ -212,8 +212,10 @@ function Scene({
     <>
       <Lights />
       <Sky />
+      <Clouds />
       <Ground onClick={handleGroundClick} />
       <Plaza />
+      <Environment />
       {SECTIONS.map((s) => (
         <Building
           key={s.id}
@@ -256,10 +258,25 @@ function Lights() {
 }
 
 function Sky() {
+  // Vertex-colored gradient sphere: bright at the horizon, deeper sky-blue overhead
+  const geom = useMemo(() => {
+    const g = new THREE.SphereGeometry(110, 32, 20);
+    const colors: number[] = [];
+    const top = new THREE.Color("#4a82bd");
+    const horizon = new THREE.Color("#c8d8e8");
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i) / 110; // -1..1
+      const t = Math.max(0, y); // only above horizon
+      const c = horizon.clone().lerp(top, t);
+      colors.push(c.r, c.g, c.b);
+    }
+    g.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    return g;
+  }, []);
   return (
-    <mesh>
-      <sphereGeometry args={[80, 24, 16]} />
-      <meshBasicMaterial color="#6b9bd1" side={THREE.BackSide} />
+    <mesh geometry={geom}>
+      <meshBasicMaterial vertexColors side={THREE.BackSide} />
     </mesh>
   );
 }
@@ -272,9 +289,360 @@ function Ground({ onClick }: { onClick: (e: ThreeEvent<MouseEvent>) => void }) {
       receiveShadow
       onClick={onClick}
     >
-      <planeGeometry args={[60, 60]} />
+      <planeGeometry args={[90, 90]} />
       <meshStandardMaterial color="#5a8a3a" />
     </mesh>
+  );
+}
+
+// -------------------- environment decorations --------------------
+
+function Environment() {
+  return (
+    <>
+      {/* Lake to the northeast, with gator and surrounding palm trees */}
+      <Lake position={[11.5, 0, -8]} radius={2.8} />
+      <Alligator position={[11.5, 0.05, -8]} rotationY={0.6} />
+      <PalmTree position={[8.5, 0, -10.5]} />
+      <PalmTree position={[14, 0, -10]} scale={1.15} />
+      <PalmTree position={[9.5, 0, -5.2]} scale={0.9} />
+      <PalmTree position={[14.5, 0, -6.3]} />
+
+      {/* Golf course to the southwest */}
+      <GolfCourse position={[-11.5, 0, 9]} />
+
+      {/* Scattered regular trees around the world perimeter */}
+      <Tree position={[13, 0, 1]} scale={1.1} />
+      <Tree position={[-13, 0, -1]} />
+      <Tree position={[9, 0, 13]} scale={1.2} />
+      <Tree position={[-7, 0, 14]} />
+      <Tree position={[0, 0, -14]} scale={1.05} />
+      <Tree position={[18, 0, -2]} scale={0.95} />
+      <Tree position={[-17, 0, 4]} />
+      <Tree position={[-18, 0, -12]} scale={1.15} />
+    </>
+  );
+}
+
+function Clouds() {
+  return (
+    <>
+      <DriftingCloud initialX={-15} y={22} z={-30} speed={0.18} size={0.65} />
+      <DriftingCloud initialX={8} y={26} z={-34} speed={0.12} size={0.9} />
+      <DriftingCloud initialX={-4} y={23} z={28} speed={0.22} size={0.55} />
+      <DriftingCloud initialX={28} y={24} z={6} speed={0.15} size={0.75} />
+      <DriftingCloud initialX={-28} y={28} z={14} speed={0.1} size={0.7} />
+    </>
+  );
+}
+
+function DriftingCloud({
+  initialX,
+  y,
+  z,
+  speed,
+  size,
+}: {
+  initialX: number;
+  y: number;
+  z: number;
+  speed: number;
+  size: number;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  const startedRef = useRef(false);
+  useFrame((_, dt) => {
+    if (!ref.current) return;
+    if (!startedRef.current) {
+      ref.current.position.x = initialX;
+      startedRef.current = true;
+    }
+    ref.current.position.x += speed * dt;
+    if (ref.current.position.x > 35) ref.current.position.x = -35;
+  });
+  return (
+    <group ref={ref} position={[initialX, y, z]}>
+      <mesh>
+        <sphereGeometry args={[1.2 * size, 10, 8]} />
+        <meshStandardMaterial color="#ffffff" roughness={1} />
+      </mesh>
+      <mesh position={[1.1 * size, 0.05 * size, 0.1 * size]}>
+        <sphereGeometry args={[0.9 * size, 10, 8]} />
+        <meshStandardMaterial color="#ffffff" roughness={1} />
+      </mesh>
+      <mesh position={[-0.95 * size, -0.05 * size, 0.15 * size]}>
+        <sphereGeometry args={[0.75 * size, 10, 8]} />
+        <meshStandardMaterial color="#f4f6fa" roughness={1} />
+      </mesh>
+      <mesh position={[0.3 * size, 0.4 * size, -0.2 * size]}>
+        <sphereGeometry args={[0.7 * size, 10, 8]} />
+        <meshStandardMaterial color="#ffffff" roughness={1} />
+      </mesh>
+    </group>
+  );
+}
+
+function Lake({
+  position,
+  radius,
+}: {
+  position: [number, number, number];
+  radius: number;
+}) {
+  return (
+    <group position={position}>
+      {/* Sandy/muddy shore ring */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.012, 0]} receiveShadow>
+        <ringGeometry args={[radius, radius + 0.8, 36]} />
+        <meshStandardMaterial color="#c5a368" />
+      </mesh>
+      {/* Water disc */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]} receiveShadow>
+        <circleGeometry args={[radius, 36]} />
+        <meshStandardMaterial color="#3e7ba8" roughness={0.4} metalness={0.1} />
+      </mesh>
+      {/* Subtle ripple ring */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.025, 0]}>
+        <ringGeometry args={[radius * 0.55, radius * 0.6, 36]} />
+        <meshStandardMaterial
+          color="#a8c4d8"
+          transparent
+          opacity={0.45}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function Alligator({
+  position,
+  rotationY = 0,
+}: {
+  position: [number, number, number];
+  rotationY?: number;
+}) {
+  const GATOR = "#3a5a2c";
+  const GATOR_DARK = "#243d1a";
+  const TEETH = "#f0eadb";
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {/* Main body — long and low */}
+      <mesh position={[0, 0.08, 0]} castShadow>
+        <boxGeometry args={[2.0, 0.18, 0.55]} />
+        <meshStandardMaterial color={GATOR} />
+      </mesh>
+      {/* Back ridges (scutes) */}
+      {[-0.7, -0.35, 0, 0.35].map((x, i) => (
+        <mesh key={i} position={[x, 0.18, 0]} castShadow>
+          <boxGeometry args={[0.16, 0.06, 0.45]} />
+          <meshStandardMaterial color={GATOR_DARK} />
+        </mesh>
+      ))}
+      {/* Tail — tapering to a point */}
+      <mesh position={[1.25, 0.08, 0]} castShadow>
+        <boxGeometry args={[0.9, 0.14, 0.32]} />
+        <meshStandardMaterial color={GATOR} />
+      </mesh>
+      <mesh position={[1.85, 0.08, 0]} castShadow>
+        <boxGeometry args={[0.4, 0.1, 0.12]} />
+        <meshStandardMaterial color={GATOR} />
+      </mesh>
+      {/* Head — wide jaw */}
+      <mesh position={[-1.15, 0.1, 0]} castShadow>
+        <boxGeometry args={[0.7, 0.18, 0.5]} />
+        <meshStandardMaterial color={GATOR} />
+      </mesh>
+      {/* Snout */}
+      <mesh position={[-1.62, 0.09, 0]} castShadow>
+        <boxGeometry args={[0.35, 0.12, 0.38]} />
+        <meshStandardMaterial color={GATOR} />
+      </mesh>
+      {/* Eyes — two bumps on top of head */}
+      <mesh position={[-1.0, 0.22, 0.13]} castShadow>
+        <sphereGeometry args={[0.06, 8, 6]} />
+        <meshStandardMaterial color={GATOR_DARK} />
+      </mesh>
+      <mesh position={[-1.0, 0.22, -0.13]} castShadow>
+        <sphereGeometry args={[0.06, 8, 6]} />
+        <meshStandardMaterial color={GATOR_DARK} />
+      </mesh>
+      <mesh position={[-1.0, 0.25, 0.13]}>
+        <sphereGeometry args={[0.02, 6, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[-1.0, 0.25, -0.13]}>
+        <sphereGeometry args={[0.02, 6, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* A hint of teeth at the snout */}
+      <mesh position={[-1.78, 0.04, 0]}>
+        <boxGeometry args={[0.04, 0.04, 0.34]} />
+        <meshStandardMaterial color={TEETH} />
+      </mesh>
+      {/* Legs — four little stubs */}
+      {[
+        [-0.85, -0.32],
+        [-0.85, 0.32],
+        [0.45, -0.32],
+        [0.45, 0.32],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.0, z]} castShadow>
+          <boxGeometry args={[0.18, 0.1, 0.16]} />
+          <meshStandardMaterial color={GATOR_DARK} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function PalmTree({
+  position,
+  scale = 1,
+}: {
+  position: [number, number, number];
+  scale?: number;
+}) {
+  const trunkH = 3.8 * scale;
+  const trunkR = 0.16 * scale;
+  return (
+    <group position={position}>
+      {/* Trunk — slightly tapered */}
+      <mesh position={[0, trunkH / 2, 0]} castShadow>
+        <cylinderGeometry args={[trunkR * 0.7, trunkR, trunkH, 8]} />
+        <meshStandardMaterial color="#8b6a3f" roughness={1} />
+      </mesh>
+      {/* Trunk rings for that palm-bark texture */}
+      {[0.2, 0.4, 0.6, 0.8].map((t, i) => (
+        <mesh key={i} position={[0, trunkH * t, 0]}>
+          <torusGeometry args={[trunkR * 1.05, 0.02, 4, 12]} />
+          <meshStandardMaterial color="#6b4e2a" />
+        </mesh>
+      ))}
+      {/* Coconut cluster at top */}
+      <mesh position={[0, trunkH + 0.05, 0]} castShadow>
+        <sphereGeometry args={[0.22 * scale, 8, 6]} />
+        <meshStandardMaterial color="#4a3722" />
+      </mesh>
+      {/* Fronds — 7 elongated leaf shapes radiating around the top */}
+      {Array.from({ length: 7 }).map((_, i) => {
+        const angle = (i / 7) * Math.PI * 2;
+        const droop = -0.3 - (i % 2 ? 0.1 : 0);
+        return (
+          <group
+            key={i}
+            position={[0, trunkH + 0.15, 0]}
+            rotation={[0, angle, 0]}
+          >
+            <group rotation={[droop, 0, 0]}>
+              <mesh position={[0, 0.05, 0.9 * scale]} castShadow>
+                <boxGeometry args={[0.55 * scale, 0.04, 1.8 * scale]} />
+                <meshStandardMaterial color="#3d7a36" />
+              </mesh>
+              {/* spine of the frond */}
+              <mesh position={[0, 0.08, 0.9 * scale]}>
+                <boxGeometry args={[0.04, 0.04, 1.85 * scale]} />
+                <meshStandardMaterial color="#2a5a24" />
+              </mesh>
+            </group>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function Tree({
+  position,
+  scale = 1,
+}: {
+  position: [number, number, number];
+  scale?: number;
+}) {
+  const trunkH = 1.4 * scale;
+  const trunkR = 0.18 * scale;
+  const canopyR = 1.1 * scale;
+  return (
+    <group position={position}>
+      <mesh position={[0, trunkH / 2, 0]} castShadow>
+        <cylinderGeometry args={[trunkR * 0.85, trunkR, trunkH, 8]} />
+        <meshStandardMaterial color="#6b4a2a" />
+      </mesh>
+      {/* Two slightly offset canopy spheres for that fluffier-than-a-ball look */}
+      <mesh position={[0, trunkH + canopyR * 0.7, 0]} castShadow>
+        <sphereGeometry args={[canopyR, 10, 8]} />
+        <meshStandardMaterial color="#3d7a36" />
+      </mesh>
+      <mesh
+        position={[canopyR * 0.4, trunkH + canopyR * 1.0, -canopyR * 0.2]}
+        castShadow
+      >
+        <sphereGeometry args={[canopyR * 0.75, 10, 8]} />
+        <meshStandardMaterial color="#4a8a3a" />
+      </mesh>
+      <mesh
+        position={[-canopyR * 0.5, trunkH + canopyR * 0.85, canopyR * 0.3]}
+        castShadow
+      >
+        <sphereGeometry args={[canopyR * 0.65, 10, 8]} />
+        <meshStandardMaterial color="#356b30" />
+      </mesh>
+    </group>
+  );
+}
+
+function GolfCourse({
+  position,
+}: {
+  position: [number, number, number];
+}) {
+  return (
+    <group position={position}>
+      {/* Fairway — a wider rectangular patch of brighter grass */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.011, 0]} receiveShadow>
+        <planeGeometry args={[10, 6]} />
+        <meshStandardMaterial color="#7ab84a" />
+      </mesh>
+      {/* Putting green — slightly darker oval at one end */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-3.5, 0.013, 0]}
+        receiveShadow
+      >
+        <circleGeometry args={[1.6, 24]} />
+        <meshStandardMaterial color="#5fa838" />
+      </mesh>
+      {/* The cup */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-3.5, 0.015, -0.4]}>
+        <circleGeometry args={[0.12, 12]} />
+        <meshBasicMaterial color="#0a0a0a" />
+      </mesh>
+      {/* Flag pole */}
+      <mesh position={[-3.5, 0.85, -0.4]} castShadow>
+        <cylinderGeometry args={[0.025, 0.025, 1.7, 6]} />
+        <meshStandardMaterial color="#dcdce0" />
+      </mesh>
+      {/* Flag */}
+      <mesh position={[-3.0, 1.55, -0.4]} castShadow>
+        <planeGeometry args={[0.85, 0.45]} />
+        <meshStandardMaterial color="#c83232" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Flag pole tip */}
+      <mesh position={[-3.5, 1.72, -0.4]}>
+        <sphereGeometry args={[0.05, 8, 6]} />
+        <meshStandardMaterial color="#d4a04a" metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Sand bunker next to the green */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-1.8, 0.013, 1.5]}
+        scale={[1.6, 1, 1]}
+        receiveShadow
+      >
+        <circleGeometry args={[1.0, 20]} />
+        <meshStandardMaterial color="#e8d8a8" />
+      </mesh>
+    </group>
   );
 }
 
@@ -738,8 +1106,8 @@ function CameraRig({
       enableDamping
       dampingFactor={0.08}
       minDistance={4}
-      maxDistance={28}
-      minPolarAngle={Math.PI * 0.15}
+      maxDistance={45}
+      minPolarAngle={Math.PI * 0.12}
       maxPolarAngle={Math.PI * 0.48}
       target={[0, 1, 0]}
     />
