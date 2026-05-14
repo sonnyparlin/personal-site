@@ -19,15 +19,25 @@ import {
 
 // -------------------- shared state types --------------------
 
+type CharMode = "idle" | "flee";
+
 type CharState = {
   x: number;
   z: number;
   angle: number; // facing angle (Y rotation, radians)
   walking: boolean;
+  mode: CharMode;
   stepPhase: number; // 0..1
 };
 
 type DoorState = Record<SectionId, number>; // 0..1 (closed..open)
+
+type GatorState = {
+  x: number;
+  z: number;
+  angle: number;
+  chasing: boolean;
+};
 
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
@@ -38,12 +48,18 @@ type SharedRefs = {
   } | null>;
   pendingNav: React.MutableRefObject<SectionId | null>;
   doors: React.MutableRefObject<DoorState>;
+  gator: React.MutableRefObject<GatorState>;
+  approachingGator: React.MutableRefObject<boolean>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
+const FLEE_SPEED = 5.8; // sprint speed when fleeing the gator
+const GATOR_CHASE_SPEED = 2.2;
+const GATOR_RETURN_SPEED = 1.4;
 const ARRIVE_DIST = 0.18;
 const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
+const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
 
 // -------------------- entry point --------------------
 
@@ -53,6 +69,7 @@ export default function GameWorld() {
     z: 0,
     angle: 0,
     walking: false,
+    mode: "idle",
     stepPhase: 0,
   });
   const targetRef = useRef<{
@@ -64,6 +81,13 @@ export default function GameWorld() {
   const doorsRef = useRef<DoorState>(
     Object.fromEntries(SECTIONS.map((s) => [s.id, 0])) as DoorState
   );
+  const gatorRef = useRef<GatorState>({
+    x: GATOR_HOME.x,
+    z: GATOR_HOME.z,
+    angle: GATOR_HOME.angle,
+    chasing: false,
+  });
+  const approachingGatorRef = useRef(false);
 
   const pathname = usePathname();
   const router = useRouter();
@@ -83,8 +107,11 @@ export default function GameWorld() {
         section.z - t.z
       );
       charRef.current.walking = false;
+      charRef.current.mode = "idle";
       targetRef.current = null;
       pendingNavRef.current = null;
+      approachingGatorRef.current = false;
+      gatorRef.current.chasing = false;
     } else {
       targetRef.current = null;
       pendingNavRef.current = null;
@@ -97,6 +124,8 @@ export default function GameWorld() {
       target: targetRef,
       pendingNav: pendingNavRef,
       doors: doorsRef,
+      gator: gatorRef,
+      approachingGator: approachingGatorRef,
     }),
     []
   );
@@ -138,8 +167,30 @@ function Scene({
     const clampedDt = Math.min(0.1, dt);
     const char = refs.char.current;
     const target = refs.target.current;
+    const gator = refs.gator.current;
 
-    if (isOnHome && target && char.walking) {
+    // ── 1. Character movement ──
+    if (isOnHome && char.mode === "flee") {
+      // Sprint back to the plaza
+      const dx = 0 - char.x;
+      const dz = 0 - char.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.7) {
+        // Safe! Reset.
+        char.mode = "idle";
+        char.walking = false;
+        char.stepPhase = 0;
+        gator.chasing = false;
+      } else {
+        const step = FLEE_SPEED * clampedDt;
+        char.x += (dx / dist) * step;
+        char.z += (dz / dist) * step;
+        char.angle = Math.atan2(dx, dz);
+        char.walking = true;
+        // Fast, frantic step cycle
+        char.stepPhase = (char.stepPhase + clampedDt * 4.5) % 1;
+      }
+    } else if (isOnHome && target && char.walking) {
       const dx = target.x - char.x;
       const dz = target.z - char.z;
       const dist = Math.hypot(dx, dz);
@@ -151,10 +202,15 @@ function Scene({
         if (target.sectionId) {
           const sec = SECTIONS.find((s) => s.id === target.sectionId);
           if (sec) {
-            // Face the building (toward its center)
             char.angle = Math.atan2(sec.x - char.x, sec.z - char.z);
           }
           refs.pendingNav.current = target.sectionId;
+        } else if (refs.approachingGator.current) {
+          // GATOR ENCOUNTER! Flip to flee mode, gator gives chase.
+          refs.approachingGator.current = false;
+          char.mode = "flee";
+          char.walking = true;
+          gator.chasing = true;
         }
         refs.target.current = null;
       } else {
@@ -166,6 +222,36 @@ function Scene({
       }
     } else if (!char.walking) {
       char.stepPhase = 0;
+    }
+
+    // ── 2. Gator movement ──
+    if (gator.chasing) {
+      const dx = char.x - gator.x;
+      const dz = char.z - gator.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.3) {
+        const step = GATOR_CHASE_SPEED * clampedDt;
+        gator.x += (dx / dist) * step;
+        gator.z += (dz / dist) * step;
+        gator.angle = Math.atan2(dx, dz);
+      }
+    } else {
+      // Slither home
+      const dx = GATOR_HOME.x - gator.x;
+      const dz = GATOR_HOME.z - gator.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.05) {
+        const step = GATOR_RETURN_SPEED * clampedDt;
+        gator.x += (dx / dist) * Math.min(step, dist);
+        gator.z += (dz / dist) * Math.min(step, dist);
+        gator.angle = Math.atan2(dx, dz);
+      } else {
+        // Drift back to resting angle
+        let diff = GATOR_HOME.angle - gator.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        gator.angle += diff * Math.min(1, clampedDt * 3);
+      }
     }
 
     // Doors
@@ -193,19 +279,41 @@ function Scene({
     }
   });
 
+  function isBusy() {
+    return (
+      refs.char.current.mode === "flee" || refs.gator.current.chasing
+    );
+  }
+
   function handleBuildingClick(section: Section) {
-    if (!isOnHome) return;
+    if (!isOnHome || isBusy()) return;
     const t = doorTarget(section);
     refs.target.current = { x: t.x, z: t.z, sectionId: section.id };
     refs.char.current.walking = true;
   }
 
   function handleGroundClick(e: ThreeEvent<MouseEvent>) {
-    if (!isOnHome) return;
+    if (!isOnHome || isBusy()) return;
     const p = e.point;
     refs.target.current = { x: p.x, z: p.z, sectionId: null };
     refs.char.current.walking = true;
     e.stopPropagation();
+  }
+
+  function handleGatorClick() {
+    if (!isOnHome || isBusy()) return;
+    // Walk to a spot just in front of the gator (on the line back to plaza)
+    const g = refs.gator.current;
+    const r = Math.hypot(g.x, g.z);
+    const offset = 1.6; // stand this far from the gator before it pounces
+    const k = (r - offset) / r;
+    refs.target.current = {
+      x: g.x * k,
+      z: g.z * k,
+      sectionId: null,
+    };
+    refs.char.current.walking = true;
+    refs.approachingGator.current = true;
   }
 
   return (
@@ -215,7 +323,7 @@ function Scene({
       <Clouds />
       <Ground onClick={handleGroundClick} />
       <Plaza />
-      <Environment />
+      <Environment gatorRef={refs.gator} onGatorClick={handleGatorClick} />
       {SECTIONS.map((s) => (
         <Building
           key={s.id}
@@ -297,12 +405,18 @@ function Ground({ onClick }: { onClick: (e: ThreeEvent<MouseEvent>) => void }) {
 
 // -------------------- environment decorations --------------------
 
-function Environment() {
+function Environment({
+  gatorRef,
+  onGatorClick,
+}: {
+  gatorRef: React.MutableRefObject<GatorState>;
+  onGatorClick: () => void;
+}) {
   return (
     <>
       {/* Lake to the northeast, with gator and surrounding palm trees */}
       <Lake position={[11.5, 0, -8]} radius={2.8} />
-      <Alligator position={[11.5, 0.05, -8]} rotationY={0.6} />
+      <Alligator gatorRef={gatorRef} onSelect={onGatorClick} />
       <PalmTree position={[8.5, 0, -10.5]} />
       <PalmTree position={[14, 0, -10]} scale={1.15} />
       <PalmTree position={[9.5, 0, -5.2]} scale={0.9} />
@@ -416,19 +530,57 @@ function Lake({
 }
 
 function Alligator({
-  position,
-  rotationY = 0,
+  gatorRef,
+  onSelect,
 }: {
-  position: [number, number, number];
-  rotationY?: number;
+  gatorRef: React.MutableRefObject<GatorState>;
+  onSelect: () => void;
 }) {
   const GATOR = "#3a5a2c";
   const GATOR_DARK = "#243d1a";
   const TEETH = "#f0eadb";
+  const rootRef = useRef<THREE.Group>(null);
+  const tailRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    const g = gatorRef.current;
+    if (rootRef.current) {
+      rootRef.current.position.x = g.x;
+      rootRef.current.position.z = g.z;
+      rootRef.current.position.y = 0.05;
+      // Smoothly rotate to face current angle
+      const cur = rootRef.current.rotation.y;
+      let diff = g.angle - cur;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      rootRef.current.rotation.y = cur + diff * 0.18;
+    }
+    if (tailRef.current) {
+      // Tail swishes side-to-side, faster when chasing
+      const speed = g.chasing ? 6 : 1.8;
+      const amp = g.chasing ? 0.5 : 0.18;
+      tailRef.current.rotation.y = Math.sin(state.clock.elapsedTime * speed) * amp;
+    }
+  });
+
   return (
-    <group position={position} rotation={[0, rotationY, 0]}>
-      {/* Main body — long and low */}
-      <mesh position={[0, 0.08, 0]} castShadow>
+    <group ref={rootRef} position={[GATOR_HOME.x, 0.05, GATOR_HOME.z]} rotation={[0, GATOR_HOME.angle, 0]}>
+      {/* Main body — long and low (clickable hitbox) */}
+      <mesh
+        position={[0, 0.08, 0]}
+        castShadow
+        onClick={(e) => {
+          onSelect();
+          e.stopPropagation();
+        }}
+        onPointerOver={(e) => {
+          document.body.style.cursor = "pointer";
+          e.stopPropagation();
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = "auto";
+        }}
+      >
         <boxGeometry args={[2.0, 0.18, 0.55]} />
         <meshStandardMaterial color={GATOR} />
       </mesh>
@@ -439,15 +591,17 @@ function Alligator({
           <meshStandardMaterial color={GATOR_DARK} />
         </mesh>
       ))}
-      {/* Tail — tapering to a point */}
-      <mesh position={[1.25, 0.08, 0]} castShadow>
-        <boxGeometry args={[0.9, 0.14, 0.32]} />
-        <meshStandardMaterial color={GATOR} />
-      </mesh>
-      <mesh position={[1.85, 0.08, 0]} castShadow>
-        <boxGeometry args={[0.4, 0.1, 0.12]} />
-        <meshStandardMaterial color={GATOR} />
-      </mesh>
+      {/* Tail — tapering to a point. Pivots from the body so it can swish. */}
+      <group ref={tailRef} position={[0.8, 0.08, 0]}>
+        <mesh position={[0.45, 0, 0]} castShadow>
+          <boxGeometry args={[0.9, 0.14, 0.32]} />
+          <meshStandardMaterial color={GATOR} />
+        </mesh>
+        <mesh position={[1.05, 0, 0]} castShadow>
+          <boxGeometry args={[0.4, 0.1, 0.12]} />
+          <meshStandardMaterial color={GATOR} />
+        </mesh>
+      </group>
       {/* Head — wide jaw */}
       <mesh position={[-1.15, 0.1, 0]} castShadow>
         <boxGeometry args={[0.7, 0.18, 0.5]} />
