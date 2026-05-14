@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { forwardRef, useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
@@ -60,6 +60,43 @@ const ARRIVE_DIST = 0.18;
 const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
 const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
+const CHAR_RADIUS = 0.32; // for building collision
+
+// Resolve building collisions by pushing the character out of any
+// building footprint (rotated rectangle inflated by CHAR_RADIUS).
+function resolveCollisions(x: number, z: number): { x: number; z: number } {
+  let nx = x;
+  let nz = z;
+  for (const s of SECTIONS) {
+    const a = buildingAngle(s);
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    const dx = nx - s.x;
+    const dz = nz - s.z;
+    // World → building-local (rotation by -a)
+    const lx = cos * dx + sin * dz;
+    const lz = -sin * dx + cos * dz;
+    const halfW = BUILDING_W / 2 + CHAR_RADIUS;
+    const halfD = BUILDING_D / 2 + CHAR_RADIUS;
+    if (Math.abs(lx) < halfW && Math.abs(lz) < halfD) {
+      // Penetration into each axis; push out along whichever axis we're
+      // less embedded in (so we slide along the wall, not through it).
+      const overX = halfW - Math.abs(lx);
+      const overZ = halfD - Math.abs(lz);
+      let pushLX = 0;
+      let pushLZ = 0;
+      if (overX < overZ) {
+        pushLX = lx >= 0 ? overX : -overX;
+      } else {
+        pushLZ = lz >= 0 ? overZ : -overZ;
+      }
+      // Rotate the push back to world space
+      nx += cos * pushLX - sin * pushLZ;
+      nz += sin * pushLX + cos * pushLZ;
+    }
+  }
+  return { x: nx, z: nz };
+}
 
 // -------------------- entry point --------------------
 
@@ -176,18 +213,20 @@ function Scene({
       const dz = 0 - char.z;
       const dist = Math.hypot(dx, dz);
       if (dist < 0.7) {
-        // Safe! Reset.
         char.mode = "idle";
         char.walking = false;
         char.stepPhase = 0;
         gator.chasing = false;
       } else {
         const step = FLEE_SPEED * clampedDt;
-        char.x += (dx / dist) * step;
-        char.z += (dz / dist) * step;
+        const proposed = resolveCollisions(
+          char.x + (dx / dist) * step,
+          char.z + (dz / dist) * step
+        );
+        char.x = proposed.x;
+        char.z = proposed.z;
         char.angle = Math.atan2(dx, dz);
         char.walking = true;
-        // Fast, frantic step cycle
         char.stepPhase = (char.stepPhase + clampedDt * 4.5) % 1;
       }
     } else if (isOnHome && target && char.walking) {
@@ -206,7 +245,6 @@ function Scene({
           }
           refs.pendingNav.current = target.sectionId;
         } else if (refs.approachingGator.current) {
-          // GATOR ENCOUNTER! Flip to flee mode, gator gives chase.
           refs.approachingGator.current = false;
           char.mode = "flee";
           char.walking = true;
@@ -215,8 +253,12 @@ function Scene({
         refs.target.current = null;
       } else {
         const step = WALK_SPEED * clampedDt;
-        char.x += (dx / dist) * step;
-        char.z += (dz / dist) * step;
+        const proposed = resolveCollisions(
+          char.x + (dx / dist) * step,
+          char.z + (dz / dist) * step
+        );
+        char.x = proposed.x;
+        char.z = proposed.z;
         char.angle = Math.atan2(dx, dz);
         char.stepPhase = (char.stepPhase + clampedDt * 2.2) % 1;
       }
@@ -225,6 +267,8 @@ function Scene({
     }
 
     // ── 2. Gator movement ──
+    // Gator model's head is at local -X. To make the head face direction
+    // (dx, dz), we need atan2(dz, -dx).
     if (gator.chasing) {
       const dx = char.x - gator.x;
       const dz = char.z - gator.z;
@@ -233,10 +277,9 @@ function Scene({
         const step = GATOR_CHASE_SPEED * clampedDt;
         gator.x += (dx / dist) * step;
         gator.z += (dz / dist) * step;
-        gator.angle = Math.atan2(dx, dz);
+        gator.angle = Math.atan2(dz, -dx);
       }
     } else {
-      // Slither home
       const dx = GATOR_HOME.x - gator.x;
       const dz = GATOR_HOME.z - gator.z;
       const dist = Math.hypot(dx, dz);
@@ -244,7 +287,7 @@ function Scene({
         const step = GATOR_RETURN_SPEED * clampedDt;
         gator.x += (dx / dist) * Math.min(step, dist);
         gator.z += (dz / dist) * Math.min(step, dist);
-        gator.angle = Math.atan2(dx, dz);
+        gator.angle = Math.atan2(dz, -dx);
       } else {
         // Drift back to resting angle
         let diff = GATOR_HOME.angle - gator.angle;
@@ -538,17 +581,24 @@ function Alligator({
 }) {
   const GATOR = "#3a5a2c";
   const GATOR_DARK = "#243d1a";
+  const MOUTH_INSIDE = "#5a2020";
   const TEETH = "#f0eadb";
   const rootRef = useRef<THREE.Group>(null);
   const tailRef = useRef<THREE.Group>(null);
+  const jawRef = useRef<THREE.Group>(null);
+  // Leg pivot refs: front-left, front-right, back-left, back-right
+  const flRef = useRef<THREE.Group>(null);
+  const frRef = useRef<THREE.Group>(null);
+  const blRef = useRef<THREE.Group>(null);
+  const brRef = useRef<THREE.Group>(null);
 
   useFrame((state) => {
     const g = gatorRef.current;
+    const t = state.clock.elapsedTime;
     if (rootRef.current) {
       rootRef.current.position.x = g.x;
       rootRef.current.position.z = g.z;
       rootRef.current.position.y = 0.05;
-      // Smoothly rotate to face current angle
       const cur = rootRef.current.rotation.y;
       let diff = g.angle - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
@@ -556,15 +606,35 @@ function Alligator({
       rootRef.current.rotation.y = cur + diff * 0.18;
     }
     if (tailRef.current) {
-      // Tail swishes side-to-side, faster when chasing
-      const speed = g.chasing ? 6 : 1.8;
-      const amp = g.chasing ? 0.5 : 0.18;
-      tailRef.current.rotation.y = Math.sin(state.clock.elapsedTime * speed) * amp;
+      const speed = g.chasing ? 7 : 1.8;
+      const amp = g.chasing ? 0.55 : 0.18;
+      tailRef.current.rotation.y = Math.sin(t * speed) * amp;
     }
+    // Jaw — open and snap while chasing
+    if (jawRef.current) {
+      const target = g.chasing
+        ? 0.5 + Math.sin(t * 7) * 0.15
+        : 0;
+      // Negative Z rotation lifts the front of the snout (which points -X)
+      const cur = jawRef.current.rotation.z;
+      jawRef.current.rotation.z = cur + (-target - cur) * 0.25;
+    }
+    // Legs — running gait (FL+BR vs FR+BL alternating)
+    const runT = t * 9;
+    const runSwing = g.chasing ? Math.sin(runT) * 0.9 : 0;
+    const runSwingOpp = g.chasing ? Math.sin(runT + Math.PI) * 0.9 : 0;
+    if (flRef.current) flRef.current.rotation.z = runSwing;
+    if (brRef.current) brRef.current.rotation.z = runSwing;
+    if (frRef.current) frRef.current.rotation.z = runSwingOpp;
+    if (blRef.current) blRef.current.rotation.z = runSwingOpp;
   });
 
   return (
-    <group ref={rootRef} position={[GATOR_HOME.x, 0.05, GATOR_HOME.z]} rotation={[0, GATOR_HOME.angle, 0]}>
+    <group
+      ref={rootRef}
+      position={[GATOR_HOME.x, 0.05, GATOR_HOME.z]}
+      rotation={[0, GATOR_HOME.angle, 0]}
+    >
       {/* Main body — long and low (clickable hitbox) */}
       <mesh
         position={[0, 0.08, 0]}
@@ -591,7 +661,7 @@ function Alligator({
           <meshStandardMaterial color={GATOR_DARK} />
         </mesh>
       ))}
-      {/* Tail — tapering to a point. Pivots from the body so it can swish. */}
+      {/* Tail — pivots from the body so it can swish. */}
       <group ref={tailRef} position={[0.8, 0.08, 0]}>
         <mesh position={[0.45, 0, 0]} castShadow>
           <boxGeometry args={[0.9, 0.14, 0.32]} />
@@ -602,17 +672,12 @@ function Alligator({
           <meshStandardMaterial color={GATOR} />
         </mesh>
       </group>
-      {/* Head — wide jaw */}
+      {/* Head — wide skull (no snout, snout is split into separate jaw parts) */}
       <mesh position={[-1.15, 0.1, 0]} castShadow>
         <boxGeometry args={[0.7, 0.18, 0.5]} />
         <meshStandardMaterial color={GATOR} />
       </mesh>
-      {/* Snout */}
-      <mesh position={[-1.62, 0.09, 0]} castShadow>
-        <boxGeometry args={[0.35, 0.12, 0.38]} />
-        <meshStandardMaterial color={GATOR} />
-      </mesh>
-      {/* Eyes — two bumps on top of head */}
+      {/* Eyes — bumps on top of head */}
       <mesh position={[-1.0, 0.22, 0.13]} castShadow>
         <sphereGeometry args={[0.06, 8, 6]} />
         <meshStandardMaterial color={GATOR_DARK} />
@@ -629,26 +694,71 @@ function Alligator({
         <sphereGeometry args={[0.02, 6, 6]} />
         <meshBasicMaterial color="#1a1a1a" />
       </mesh>
-      {/* A hint of teeth at the snout */}
-      <mesh position={[-1.78, 0.04, 0]}>
-        <boxGeometry args={[0.04, 0.04, 0.34]} />
-        <meshStandardMaterial color={TEETH} />
-      </mesh>
-      {/* Legs — four little stubs */}
-      {[
-        [-0.85, -0.32],
-        [-0.85, 0.32],
-        [0.45, -0.32],
-        [0.45, 0.32],
-      ].map(([x, z], i) => (
-        <mesh key={i} position={[x, 0.0, z]} castShadow>
-          <boxGeometry args={[0.18, 0.1, 0.16]} />
-          <meshStandardMaterial color={GATOR_DARK} />
+
+      {/* Snout — split into upper (pivots) and lower (static).
+          Pivot point is at the back of the snout where it meets the head. */}
+      <group position={[-1.45, 0.1, 0]}>
+        {/* Mouth interior — dark patch visible when jaw opens */}
+        <mesh position={[-0.17, 0, 0]}>
+          <boxGeometry args={[0.34, 0.05, 0.36]} />
+          <meshStandardMaterial color={MOUTH_INSIDE} />
         </mesh>
-      ))}
+        {/* Lower jaw — static, sits on the bottom */}
+        <mesh position={[-0.17, -0.035, 0]} castShadow>
+          <boxGeometry args={[0.35, 0.05, 0.38]} />
+          <meshStandardMaterial color={GATOR} />
+        </mesh>
+        {/* Lower teeth */}
+        <mesh position={[-0.33, -0.01, 0]}>
+          <boxGeometry args={[0.04, 0.04, 0.32]} />
+          <meshStandardMaterial color={TEETH} />
+        </mesh>
+        {/* Upper jaw — pivots around Z (back of snout) to open */}
+        <group ref={jawRef}>
+          <mesh position={[-0.17, 0.035, 0]} castShadow>
+            <boxGeometry args={[0.35, 0.05, 0.38]} />
+            <meshStandardMaterial color={GATOR} />
+          </mesh>
+          {/* Upper teeth — point downward, visible when mouth opens */}
+          <mesh position={[-0.33, 0.01, 0]}>
+            <boxGeometry args={[0.04, 0.04, 0.32]} />
+            <meshStandardMaterial color={TEETH} />
+          </mesh>
+          {/* Nostrils on top of upper jaw */}
+          <mesh position={[-0.3, 0.06, 0.05]}>
+            <sphereGeometry args={[0.018, 6, 5]} />
+            <meshBasicMaterial color="#1a1a1a" />
+          </mesh>
+          <mesh position={[-0.3, 0.06, -0.05]}>
+            <sphereGeometry args={[0.018, 6, 5]} />
+            <meshBasicMaterial color="#1a1a1a" />
+          </mesh>
+        </group>
+      </group>
+
+      {/* Legs — each in a pivot group at the top, so rotation around Z
+          swings the leg forward/back. */}
+      <Leg ref={flRef} x={-0.85} z={-0.32} color={GATOR_DARK} />
+      <Leg ref={frRef} x={-0.85} z={0.32} color={GATOR_DARK} />
+      <Leg ref={blRef} x={0.45} z={-0.32} color={GATOR_DARK} />
+      <Leg ref={brRef} x={0.45} z={0.32} color={GATOR_DARK} />
     </group>
   );
 }
+
+const Leg = forwardRef<
+  THREE.Group,
+  { x: number; z: number; color: string }
+>(function Leg({ x, z, color }, ref) {
+  return (
+    <group ref={ref} position={[x, 0.04, z]}>
+      <mesh position={[0, -0.07, 0]} castShadow>
+        <boxGeometry args={[0.18, 0.16, 0.16]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+    </group>
+  );
+});
 
 function PalmTree({
   position,
