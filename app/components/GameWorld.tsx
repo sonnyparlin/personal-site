@@ -24,6 +24,7 @@ type CharMode = "idle" | "flee" | "riding";
 type CharState = {
   x: number;
   z: number;
+  y: number; // off-ground height (only non-zero during the coaster ride)
   angle: number; // facing angle (Y rotation, radians)
   walking: boolean;
   mode: CharMode;
@@ -72,11 +73,56 @@ const CHAR_RADIUS = 0.32; // for building collision
 
 // Amusement park
 const PARK = { x: -13, z: -9 };
-const COASTER_R = 2.4; // track radius
-const COASTER_Y = 1.5; // track height (and where the cart + rider sit)
+const COASTER_RX = 3.6;
+const COASTER_RZ = 2.7;
+const COASTER_Y_BASE = 0.9;
+const COASTER_AMP = 1.1;
+const COASTER_HILLS = 2;
 const RIDE_LAPS = 2;
-const RIDE_LAP_SECONDS = 3.5; // per lap
-const PARK_ENTRY_OFFSET = 3.1; // how far south of park center to stand and board
+const RIDE_LAP_SECONDS = 4.0; // per lap
+const PARK_ENTRY_OFFSET = COASTER_RZ + 0.9; // walk to here to board
+// Park ground patch dimensions (covers all rides)
+const PARK_GROUND_W = 10;
+const PARK_GROUND_D = 10;
+
+// Closed roller-coaster curve, defined in park-local XYZ. Starts at the south
+// (low) point so boarding lines up with the ticket-booth entrance. Two hills
+// per lap with valleys between.
+const COASTER_CURVE = (() => {
+  const N = 32;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    const angle = Math.PI / 2 + t * 2 * Math.PI;
+    const heightFactor = (1 - Math.cos(t * 2 * Math.PI * COASTER_HILLS)) / 2;
+    pts.push(
+      new THREE.Vector3(
+        Math.cos(angle) * COASTER_RX,
+        COASTER_Y_BASE + COASTER_AMP * heightFactor,
+        Math.sin(angle) * COASTER_RZ
+      )
+    );
+  }
+  return new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
+})();
+
+function coasterWorldAt(t: number): {
+  x: number;
+  y: number;
+  z: number;
+  angle: number;
+} {
+  const p = COASTER_CURVE.getPointAt(t);
+  const tan = COASTER_CURVE.getTangentAt(t);
+  return {
+    x: PARK.x + p.x,
+    y: p.y,
+    z: PARK.z + p.z,
+    // Direction of motion projected on the ground plane. The cart's "front"
+    // is along +Z in local; we want that to face the tangent's XZ direction.
+    angle: Math.atan2(tan.x, tan.z),
+  };
+}
 
 // Resolve building collisions by pushing the character out of any
 // building footprint (rotated rectangle inflated by CHAR_RADIUS).
@@ -120,6 +166,7 @@ export default function GameWorld() {
   const charRef = useRef<CharState>({
     x: 0,
     z: 0,
+    y: 0,
     angle: 0,
     walking: false,
     mode: "idle",
@@ -246,6 +293,7 @@ function Scene({
           coaster.laps = 0;
           coaster.riding = false;
           char.mode = "idle";
+          char.y = 0;
           char.x = PARK.x;
           char.z = PARK.z + PARK_ENTRY_OFFSET;
           char.angle = Math.atan2(-char.x, -char.z); // face plaza
@@ -254,11 +302,11 @@ function Scene({
         }
       }
       if (coaster.riding) {
-        const a = coaster.t * Math.PI * 2;
-        char.x = PARK.x + Math.cos(a) * COASTER_R;
-        char.z = PARK.z + Math.sin(a) * COASTER_R;
-        // Face tangent direction of motion along the circle
-        char.angle = Math.atan2(-Math.sin(a), Math.cos(a)) + Math.PI / 2;
+        const pos = coasterWorldAt(coaster.t);
+        char.x = pos.x;
+        char.z = pos.z;
+        char.y = pos.y;
+        char.angle = pos.angle;
       }
     }
 
@@ -1003,23 +1051,42 @@ function GolfCourse({
 }
 
 function AmusementPark({ onSelect }: { onSelect: () => void }) {
-  // The park sits at PARK.x, PARK.z. The coaster track is a horizontal ring
-  // raised on supports. A red ticket booth on the south face is the click
-  // target (the obvious "entrance").
+  // Support pillars under the coaster track, spaced every Nth control point.
   const supports = useMemo(() => {
-    return Array.from({ length: 8 }).map((_, i) => {
-      const a = (i / 8) * Math.PI * 2;
-      return {
-        x: Math.cos(a) * COASTER_R,
-        z: Math.sin(a) * COASTER_R,
-        key: i,
-      };
-    });
+    const out: { x: number; y: number; z: number; key: number }[] = [];
+    const N = 14;
+    for (let i = 0; i < N; i++) {
+      const t = i / N;
+      const p = COASTER_CURVE.getPointAt(t);
+      out.push({ x: p.x, y: p.y, z: p.z, key: i });
+    }
+    return out;
   }, []);
+
+  // Pre-built bunting positions (multicolored triangle flags around the ring)
+  const bunting = useMemo(() => {
+    const colors = ["#d83a3a", "#3a4f8b", "#ffd83a", "#3a8a4f", "#a83a8a"];
+    return Array.from({ length: 20 }).map((_, i) => ({
+      t: i / 20,
+      color: colors[i % colors.length],
+      key: i,
+    }));
+  }, []);
+
   return (
     <group position={[PARK.x, 0, PARK.z]}>
-      {/* Ticket booth — clickable entrance facing south (+Z, toward plaza) */}
-      <group position={[0, 0, PARK_ENTRY_OFFSET - 0.2]}>
+      {/* Park ground patch — sandy/dirt, makes the area read as a fairground */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.015, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[PARK_GROUND_W, PARK_GROUND_D]} />
+        <meshStandardMaterial color="#c8a878" />
+      </mesh>
+
+      {/* Ticket booth — clickable entrance, south of park */}
+      <group position={[0, 0, PARK_ENTRY_OFFSET + 0.7]}>
         <mesh
           position={[0, 0.7, 0]}
           castShadow
@@ -1038,21 +1105,21 @@ function AmusementPark({ onSelect }: { onSelect: () => void }) {
           <boxGeometry args={[1.6, 1.4, 0.9]} />
           <meshStandardMaterial color="#d83a3a" />
         </mesh>
-        {/* Striped roof — alternating red and white pyramid */}
-        <mesh position={[0, 1.55, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-          <coneGeometry args={[1.25, 0.55, 4]} />
-          <meshStandardMaterial color="#f4f1de" flatShading />
-        </mesh>
-        <mesh position={[0, 1.55, 0]} rotation={[0, Math.PI / 4, 0]}>
-          <coneGeometry args={[1.27, 0.55, 4, 1, true]} />
-          <meshStandardMaterial
-            color="#d83a3a"
-            side={THREE.DoubleSide}
-            transparent
-            opacity={0.5}
-          />
-        </mesh>
-        {/* Flag on top */}
+        {/* Striped roof — alternating red and white wedges */}
+        {Array.from({ length: 8 }).map((_, i) => (
+          <mesh
+            key={i}
+            position={[0, 1.55, 0]}
+            rotation={[0, (i / 8) * Math.PI * 2, 0]}
+            castShadow
+          >
+            <coneGeometry
+              args={[1.25, 0.55, 8, 1, false, 0, Math.PI / 4]}
+            />
+            <meshStandardMaterial color={i % 2 === 0 ? "#d83a3a" : "#f4f1de"} />
+          </mesh>
+        ))}
+        {/* Flag pole + flag on top */}
         <mesh position={[0, 2.0, 0]} castShadow>
           <cylinderGeometry args={[0.02, 0.02, 0.6, 6]} />
           <meshStandardMaterial color="#a0a0a0" />
@@ -1066,7 +1133,6 @@ function AmusementPark({ onSelect }: { onSelect: () => void }) {
           <planeGeometry args={[0.8, 0.45]} />
           <meshStandardMaterial color="#1a1a1a" />
         </mesh>
-        {/* Sign label */}
         <Text
           position={[0, 1.25, 0.46]}
           fontSize={0.16}
@@ -1079,60 +1145,65 @@ function AmusementPark({ onSelect }: { onSelect: () => void }) {
         </Text>
       </group>
 
-      {/* Coaster track supports — vertical posts under the ring */}
+      {/* Coaster track — TubeGeometry along the curve */}
+      <mesh castShadow>
+        <tubeGeometry args={[COASTER_CURVE, 96, 0.075, 8, true]} />
+        <meshStandardMaterial color="#4a4f58" metalness={0.55} roughness={0.4} />
+      </mesh>
+      {/* Inner secondary rail for visual depth */}
+      <mesh position={[0, -0.16, 0]} castShadow>
+        <tubeGeometry args={[COASTER_CURVE, 64, 0.05, 6, true]} />
+        <meshStandardMaterial color="#6a6f78" metalness={0.4} roughness={0.5} />
+      </mesh>
+
+      {/* Track supports — vertical pillars at each sample point */}
       {supports.map((s) => (
         <mesh
           key={s.key}
-          position={[s.x, COASTER_Y / 2, s.z]}
+          position={[s.x, s.y / 2, s.z]}
           castShadow
         >
-          <cylinderGeometry args={[0.07, 0.1, COASTER_Y, 6]} />
-          <meshStandardMaterial color="#666b75" />
+          <cylinderGeometry args={[0.05, 0.08, s.y, 6]} />
+          <meshStandardMaterial color="#5a5f68" />
         </mesh>
       ))}
 
-      {/* Track ring — a flat torus at height COASTER_Y */}
-      <mesh
-        position={[0, COASTER_Y, 0]}
-        rotation={[Math.PI / 2, 0, 0]}
-        castShadow
-      >
-        <torusGeometry args={[COASTER_R, 0.07, 8, 36]} />
-        <meshStandardMaterial color="#3a3f4a" metalness={0.5} roughness={0.4} />
-      </mesh>
-      {/* Track inner rail */}
-      <mesh
-        position={[0, COASTER_Y - 0.12, 0]}
-        rotation={[Math.PI / 2, 0, 0]}
-        castShadow
-      >
-        <torusGeometry args={[COASTER_R - 0.05, 0.05, 6, 36]} />
-        <meshStandardMaterial color="#5a5f6a" metalness={0.5} roughness={0.5} />
-      </mesh>
-
-      {/* A few decorative flags around the ring */}
-      {[0, Math.PI * 0.6, Math.PI * 1.2, Math.PI * 1.7].map((a, i) => (
-        <group
-          key={`f${i}`}
-          position={[
-            Math.cos(a) * (COASTER_R + 0.4),
-            0,
-            Math.sin(a) * (COASTER_R + 0.4),
-          ]}
+      {/* Bunting flags arching between two posts at the south entrance */}
+      {bunting.map((b) => {
+        const a = (b.t - 0.5) * Math.PI * 0.55;
+        // Arch over the entry: x sweeps -2.5 to +2.5, dips in y
+        const x = Math.sin(a) * 3.0;
+        const y = 1.7 + Math.cos(a) * 0.6;
+        const z = PARK_ENTRY_OFFSET + 0.7;
+        return (
+          <mesh key={b.key} position={[x, y, z]} rotation={[0, 0, -a]}>
+            <coneGeometry args={[0.07, 0.18, 3]} />
+            <meshStandardMaterial color={b.color} side={THREE.DoubleSide} />
+          </mesh>
+        );
+      })}
+      {/* Bunting poles */}
+      {[-3.0, 3.0].map((x, i) => (
+        <mesh
+          key={`bp${i}`}
+          position={[x, 1.1, PARK_ENTRY_OFFSET + 0.7]}
+          castShadow
         >
-          <mesh position={[0, 0.8, 0]} castShadow>
-            <cylinderGeometry args={[0.025, 0.025, 1.6, 6]} />
-            <meshStandardMaterial color="#a0a0a0" />
-          </mesh>
-          <mesh position={[0.18, 1.45, 0]}>
-            <planeGeometry args={[0.32, 0.2]} />
-            <meshStandardMaterial
-              color={["#3a4f8b", "#d83a3a", "#ffd83a", "#3a8a4f"][i]}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-        </group>
+          <cylinderGeometry args={[0.04, 0.04, 2.2, 6]} />
+          <meshStandardMaterial color="#a0a0a0" />
+        </mesh>
       ))}
+
+      {/* Big rides inside the coaster ring */}
+      <FerrisWheel position={[1.4, 0, -0.3]} />
+      <Carousel position={[-1.5, 0, 0.3]} />
+
+      {/* Snack carts on the south side, flanking the entrance */}
+      <PopcornCart position={[-2.5, 0, PARK_ENTRY_OFFSET]} rotationY={0.4} />
+      <IceCreamCart position={[2.4, 0, PARK_ENTRY_OFFSET]} rotationY={-0.3} />
+
+      {/* Balloon cluster */}
+      <BalloonBunch position={[-3.4, 0, PARK_ENTRY_OFFSET - 0.5]} />
     </group>
   );
 }
@@ -1146,12 +1217,9 @@ function CoasterCart({
   useFrame(() => {
     const c = coasterRef.current;
     if (!ref.current) return;
-    const a = c.t * Math.PI * 2;
-    ref.current.position.x = PARK.x + Math.cos(a) * COASTER_R;
-    ref.current.position.z = PARK.z + Math.sin(a) * COASTER_R;
-    ref.current.position.y = COASTER_Y;
-    // Cart faces the direction of motion (tangent)
-    ref.current.rotation.y = Math.atan2(-Math.sin(a), Math.cos(a)) + Math.PI / 2;
+    const pos = coasterWorldAt(c.t);
+    ref.current.position.set(pos.x, pos.y, pos.z);
+    ref.current.rotation.y = pos.angle;
   });
   return (
     <group ref={ref}>
@@ -1165,7 +1233,7 @@ function CoasterCart({
         <boxGeometry args={[0.52, 0.04, 0.72]} />
         <meshStandardMaterial color="#f4f1de" />
       </mesh>
-      {/* Wheels (visual only) */}
+      {/* Wheels */}
       {[-0.22, 0.22].map((zoff, i) => (
         <group key={i}>
           <mesh position={[-0.27, 0.08, zoff]} rotation={[0, 0, Math.PI / 2]}>
@@ -1178,6 +1246,364 @@ function CoasterCart({
           </mesh>
         </group>
       ))}
+    </group>
+  );
+}
+
+function FerrisWheel({ position }: { position: [number, number, number] }) {
+  const wheelRef = useRef<THREE.Group>(null);
+  const cabinRefs = useRef<Array<THREE.Group | null>>([]);
+  const COLORS = useMemo(
+    () => ["#d83a3a", "#3a4f8b", "#ffd83a", "#3a8a4f", "#a83a8a", "#d8a04a"],
+    []
+  );
+  const WHEEL_R = 1.55;
+  const WHEEL_Y = 2.2;
+
+  useFrame((_, dt) => {
+    if (wheelRef.current) {
+      wheelRef.current.rotation.z += dt * 0.38;
+      // Keep each cabin upright by cancelling the wheel's rotation
+      const wr = wheelRef.current.rotation.z;
+      for (const c of cabinRefs.current) {
+        if (c) c.rotation.z = -wr;
+      }
+    }
+  });
+
+  return (
+    <group position={position}>
+      {/* Two A-frame support legs */}
+      {[-1, 1].map((side, i) => (
+        <group key={i}>
+          <mesh
+            position={[side * 0.75, WHEEL_Y / 2, 0]}
+            rotation={[0, 0, side * 0.18]}
+            castShadow
+          >
+            <cylinderGeometry args={[0.05, 0.08, WHEEL_Y + 0.1, 8]} />
+            <meshStandardMaterial color="#888c95" />
+          </mesh>
+        </group>
+      ))}
+      {/* Central axle hub */}
+      <mesh
+        position={[0, WHEEL_Y, 0]}
+        rotation={[0, 0, Math.PI / 2]}
+        castShadow
+      >
+        <cylinderGeometry args={[0.14, 0.14, 0.5, 12]} />
+        <meshStandardMaterial color="#a83a3a" />
+      </mesh>
+
+      <group ref={wheelRef} position={[0, WHEEL_Y, 0]}>
+        {/* Outer rim */}
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[WHEEL_R, 0.05, 6, 32]} />
+          <meshStandardMaterial color="#d83a3a" />
+        </mesh>
+        {/* Inner support ring */}
+        <mesh rotation={[Math.PI / 2, 0, 0]} scale={[0.55, 1, 0.55]}>
+          <torusGeometry args={[WHEEL_R, 0.04, 6, 24]} />
+          <meshStandardMaterial color="#a02828" />
+        </mesh>
+        {/* Spokes */}
+        {Array.from({ length: 6 }).map((_, i) => {
+          const a = (i / 6) * Math.PI * 2;
+          return (
+            <mesh
+              key={`sp${i}`}
+              position={[
+                (Math.cos(a) * WHEEL_R) / 2,
+                (Math.sin(a) * WHEEL_R) / 2,
+                0,
+              ]}
+              rotation={[0, 0, a]}
+              castShadow
+            >
+              <boxGeometry args={[WHEEL_R, 0.025, 0.025]} />
+              <meshStandardMaterial color="#c8c8c8" />
+            </mesh>
+          );
+        })}
+        {/* Cabins on the rim */}
+        {Array.from({ length: 6 }).map((_, i) => {
+          const a = (i / 6) * Math.PI * 2;
+          return (
+            <group
+              key={`c${i}`}
+              position={[Math.cos(a) * WHEEL_R, Math.sin(a) * WHEEL_R, 0]}
+              ref={(el) => {
+                cabinRefs.current[i] = el;
+              }}
+            >
+              {/* hanger */}
+              <mesh position={[0, 0.06, 0]}>
+                <boxGeometry args={[0.02, 0.12, 0.02]} />
+                <meshStandardMaterial color="#666" />
+              </mesh>
+              {/* Cabin body */}
+              <mesh position={[0, -0.15, 0]} castShadow>
+                <boxGeometry args={[0.36, 0.28, 0.4]} />
+                <meshStandardMaterial color={COLORS[i % COLORS.length]} />
+              </mesh>
+              {/* Roof */}
+              <mesh position={[0, 0.02, 0]} castShadow>
+                <boxGeometry args={[0.42, 0.04, 0.46]} />
+                <meshStandardMaterial color="#f4f1de" />
+              </mesh>
+            </group>
+          );
+        })}
+      </group>
+    </group>
+  );
+}
+
+function Carousel({ position }: { position: [number, number, number] }) {
+  const platformRef = useRef<THREE.Group>(null);
+  useFrame((_, dt) => {
+    if (platformRef.current) platformRef.current.rotation.y += dt * 0.5;
+  });
+  const HORSE_COLORS = useMemo(
+    () => ["#f4f1de", "#d8a8a8", "#a8c8e8", "#e8c8a8", "#c8a8d8", "#a8d8c8"],
+    []
+  );
+  return (
+    <group position={position}>
+      {/* Base disc */}
+      <mesh position={[0, 0.06, 0]} receiveShadow>
+        <cylinderGeometry args={[1.0, 1.05, 0.12, 24]} />
+        <meshStandardMaterial color="#d4a04a" />
+      </mesh>
+      {/* Center pole */}
+      <mesh position={[0, 0.75, 0]}>
+        <cylinderGeometry args={[0.07, 0.07, 1.2, 8]} />
+        <meshStandardMaterial color="#a0a0a0" metalness={0.5} />
+      </mesh>
+      {/* Striped roof — alternating red/white wedges */}
+      {Array.from({ length: 12 }).map((_, i) => (
+        <mesh
+          key={i}
+          position={[0, 1.5, 0]}
+          rotation={[0, (i / 12) * Math.PI * 2, 0]}
+          castShadow
+        >
+          <coneGeometry
+            args={[1.1, 0.55, 12, 1, false, 0, Math.PI / 6]}
+          />
+          <meshStandardMaterial color={i % 2 === 0 ? "#d83a3a" : "#f4f1de"} />
+        </mesh>
+      ))}
+      {/* Top finial */}
+      <mesh position={[0, 1.85, 0]} castShadow>
+        <sphereGeometry args={[0.08, 8, 6]} />
+        <meshStandardMaterial color="#d4a04a" metalness={0.5} />
+      </mesh>
+
+      {/* Rotating ring of horses */}
+      <group ref={platformRef} position={[0, 0.12, 0]}>
+        {Array.from({ length: 6 }).map((_, i) => {
+          const a = (i / 6) * Math.PI * 2;
+          const r = 0.72;
+          const x = Math.cos(a) * r;
+          const z = Math.sin(a) * r;
+          const color = HORSE_COLORS[i % HORSE_COLORS.length];
+          return (
+            <group
+              key={i}
+              position={[x, 0, z]}
+              rotation={[0, -a + Math.PI / 2, 0]}
+            >
+              {/* Vertical pole */}
+              <mesh position={[0, 0.7, 0]}>
+                <cylinderGeometry args={[0.018, 0.018, 1.3, 6]} />
+                <meshStandardMaterial color="#d4a04a" metalness={0.5} />
+              </mesh>
+              {/* Horse body */}
+              <mesh position={[0, 0.45, 0]} castShadow>
+                <boxGeometry args={[0.34, 0.18, 0.13]} />
+                <meshStandardMaterial color={color} />
+              </mesh>
+              {/* Horse neck + head */}
+              <mesh
+                position={[0.16, 0.55, 0]}
+                rotation={[0, 0, 0.5]}
+                castShadow
+              >
+                <boxGeometry args={[0.16, 0.13, 0.1]} />
+                <meshStandardMaterial color={color} />
+              </mesh>
+              <mesh
+                position={[0.22, 0.62, 0]}
+                rotation={[0, 0, 0.5]}
+                castShadow
+              >
+                <boxGeometry args={[0.1, 0.08, 0.09]} />
+                <meshStandardMaterial color={color} />
+              </mesh>
+              {/* Mane */}
+              <mesh position={[0.1, 0.6, 0]} rotation={[0, 0, 0.3]}>
+                <boxGeometry args={[0.05, 0.13, 0.13]} />
+                <meshStandardMaterial color="#5a3a2a" />
+              </mesh>
+              {/* Legs */}
+              {[[-0.1, 0.04], [0.1, 0.04], [-0.1, -0.04], [0.1, -0.04]].map(
+                ([lx, lz], j) => (
+                  <mesh key={j} position={[lx, 0.28, lz]} castShadow>
+                    <boxGeometry args={[0.04, 0.18, 0.04]} />
+                    <meshStandardMaterial color={color} />
+                  </mesh>
+                )
+              )}
+            </group>
+          );
+        })}
+      </group>
+    </group>
+  );
+}
+
+function PopcornCart({
+  position,
+  rotationY = 0,
+}: {
+  position: [number, number, number];
+  rotationY?: number;
+}) {
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {/* Cart base */}
+      <mesh position={[0, 0.35, 0]} castShadow>
+        <boxGeometry args={[0.55, 0.5, 0.4]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Striped roof */}
+      <mesh position={[0, 0.85, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+        <coneGeometry args={[0.45, 0.3, 4]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Popcorn pile inside */}
+      <mesh position={[0, 0.65, 0.05]}>
+        <sphereGeometry args={[0.12, 8, 6]} />
+        <meshStandardMaterial color="#f8e8a0" />
+      </mesh>
+      {/* Wheels */}
+      {[-0.18, 0.18].map((x, i) => (
+        <mesh
+          key={i}
+          position={[x, 0.1, 0]}
+          rotation={[Math.PI / 2, 0, 0]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.1, 0.1, 0.04, 10]} />
+          <meshStandardMaterial color="#2a2a2a" />
+        </mesh>
+      ))}
+      {/* Sign */}
+      <Text
+        position={[0, 0.42, 0.21]}
+        fontSize={0.07}
+        color="#f4f1de"
+        anchorX="center"
+        anchorY="middle"
+      >
+        POPCORN
+      </Text>
+    </group>
+  );
+}
+
+function IceCreamCart({
+  position,
+  rotationY = 0,
+}: {
+  position: [number, number, number];
+  rotationY?: number;
+}) {
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      <mesh position={[0, 0.35, 0]} castShadow>
+        <boxGeometry args={[0.55, 0.5, 0.4]} />
+        <meshStandardMaterial color="#f4b5d3" />
+      </mesh>
+      {/* Big ice cream cone on top */}
+      <mesh position={[0, 0.85, 0]} rotation={[Math.PI, 0, 0]} castShadow>
+        <coneGeometry args={[0.15, 0.3, 8]} />
+        <meshStandardMaterial color="#d4a878" />
+      </mesh>
+      <mesh position={[0, 0.78, 0]} castShadow>
+        <sphereGeometry args={[0.13, 10, 8]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {[-0.18, 0.18].map((x, i) => (
+        <mesh
+          key={i}
+          position={[x, 0.1, 0]}
+          rotation={[Math.PI / 2, 0, 0]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.1, 0.1, 0.04, 10]} />
+          <meshStandardMaterial color="#2a2a2a" />
+        </mesh>
+      ))}
+      <Text
+        position={[0, 0.42, 0.21]}
+        fontSize={0.07}
+        color="#a83a8a"
+        anchorX="center"
+        anchorY="middle"
+      >
+        ICE CREAM
+      </Text>
+    </group>
+  );
+}
+
+function BalloonBunch({
+  position,
+}: {
+  position: [number, number, number];
+}) {
+  const COLORS = ["#d83a3a", "#3a4f8b", "#ffd83a", "#3a8a4f", "#a83a8a"];
+  const balloonRef = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (balloonRef.current) {
+      balloonRef.current.rotation.y =
+        Math.sin(state.clock.elapsedTime * 0.6) * 0.1;
+      balloonRef.current.position.y = Math.sin(state.clock.elapsedTime * 1.2) * 0.04;
+    }
+  });
+  return (
+    <group position={position}>
+      {/* Anchor (small box, like a vendor table) */}
+      <mesh position={[0, 0.2, 0]} castShadow>
+        <boxGeometry args={[0.18, 0.4, 0.18]} />
+        <meshStandardMaterial color="#a04a30" />
+      </mesh>
+      <group ref={balloonRef} position={[0, 0.5, 0]}>
+        {COLORS.map((color, i) => {
+          const ang = (i / COLORS.length) * Math.PI * 2;
+          const r = 0.12;
+          const xo = Math.cos(ang) * r;
+          const zo = Math.sin(ang) * r;
+          const h = 0.95 + (i % 2) * 0.15;
+          return (
+            <group key={i} position={[xo, 0, zo]}>
+              {/* String */}
+              <mesh position={[0, h / 2, 0]}>
+                <cylinderGeometry args={[0.005, 0.005, h, 4]} />
+                <meshStandardMaterial color="#cccccc" />
+              </mesh>
+              {/* Balloon */}
+              <mesh position={[0, h + 0.16, 0]} castShadow>
+                <sphereGeometry args={[0.13, 10, 8]} />
+                <meshStandardMaterial color={color} />
+              </mesh>
+            </group>
+          );
+        })}
+      </group>
     </group>
   );
 }
@@ -1455,8 +1881,8 @@ function Character({
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
-      // Lift the character up to the coaster cart while riding
-      rootRef.current.position.y = c.mode === "riding" ? COASTER_Y + 0.36 : 0;
+      // y is driven by the game tick during ride (track height); zero on foot.
+      rootRef.current.position.y = c.mode === "riding" ? c.y + 0.36 : 0;
       // Smoothly rotate to face direction. Snap during ride so we always
       // match the cart's heading.
       const cur = rootRef.current.rotation.y;
