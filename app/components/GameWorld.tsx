@@ -19,7 +19,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee";
+type CharMode = "idle" | "flee" | "riding";
 
 type CharState = {
   x: number;
@@ -39,6 +39,12 @@ type GatorState = {
   chasing: boolean;
 };
 
+type CoasterState = {
+  t: number; // 0..1 position on track
+  laps: number; // total laps completed this ride
+  riding: boolean;
+};
+
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
   target: React.MutableRefObject<{
@@ -50,6 +56,8 @@ type SharedRefs = {
   doors: React.MutableRefObject<DoorState>;
   gator: React.MutableRefObject<GatorState>;
   approachingGator: React.MutableRefObject<boolean>;
+  coaster: React.MutableRefObject<CoasterState>;
+  approachingPark: React.MutableRefObject<boolean>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
@@ -61,6 +69,14 @@ const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
 const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
 const CHAR_RADIUS = 0.32; // for building collision
+
+// Amusement park
+const PARK = { x: -13, z: -9 };
+const COASTER_R = 2.4; // track radius
+const COASTER_Y = 1.5; // track height (and where the cart + rider sit)
+const RIDE_LAPS = 2;
+const RIDE_LAP_SECONDS = 3.5; // per lap
+const PARK_ENTRY_OFFSET = 3.1; // how far south of park center to stand and board
 
 // Resolve building collisions by pushing the character out of any
 // building footprint (rotated rectangle inflated by CHAR_RADIUS).
@@ -125,6 +141,12 @@ export default function GameWorld() {
     chasing: false,
   });
   const approachingGatorRef = useRef(false);
+  const coasterRef = useRef<CoasterState>({
+    t: 0,
+    laps: 0,
+    riding: false,
+  });
+  const approachingParkRef = useRef(false);
 
   const pathname = usePathname();
   const router = useRouter();
@@ -149,6 +171,9 @@ export default function GameWorld() {
       pendingNavRef.current = null;
       approachingGatorRef.current = false;
       gatorRef.current.chasing = false;
+      approachingParkRef.current = false;
+      coasterRef.current.riding = false;
+      coasterRef.current.t = 0;
     } else {
       targetRef.current = null;
       pendingNavRef.current = null;
@@ -163,6 +188,8 @@ export default function GameWorld() {
       doors: doorsRef,
       gator: gatorRef,
       approachingGator: approachingGatorRef,
+      coaster: coasterRef,
+      approachingPark: approachingParkRef,
     }),
     []
   );
@@ -205,6 +232,35 @@ function Scene({
     const char = refs.char.current;
     const target = refs.target.current;
     const gator = refs.gator.current;
+    const coaster = refs.coaster.current;
+
+    // ── 0. Coaster ride ──
+    // Character is riding the cart: position is driven by the track parameter t.
+    if (char.mode === "riding") {
+      coaster.t += clampedDt / RIDE_LAP_SECONDS;
+      if (coaster.t >= 1) {
+        coaster.t = 0;
+        coaster.laps += 1;
+        if (coaster.laps >= RIDE_LAPS) {
+          // Ride is over — step off the cart at the entry point and walk home
+          coaster.laps = 0;
+          coaster.riding = false;
+          char.mode = "idle";
+          char.x = PARK.x;
+          char.z = PARK.z + PARK_ENTRY_OFFSET;
+          char.angle = Math.atan2(-char.x, -char.z); // face plaza
+          refs.target.current = { x: 0, z: 0, sectionId: null };
+          char.walking = true;
+        }
+      }
+      if (coaster.riding) {
+        const a = coaster.t * Math.PI * 2;
+        char.x = PARK.x + Math.cos(a) * COASTER_R;
+        char.z = PARK.z + Math.sin(a) * COASTER_R;
+        // Face tangent direction of motion along the circle
+        char.angle = Math.atan2(-Math.sin(a), Math.cos(a)) + Math.PI / 2;
+      }
+    }
 
     // ── 1. Character movement ──
     if (isOnHome && char.mode === "flee") {
@@ -249,6 +305,14 @@ function Scene({
           char.mode = "flee";
           char.walking = true;
           gator.chasing = true;
+        } else if (refs.approachingPark.current) {
+          // Board the coaster!
+          refs.approachingPark.current = false;
+          char.mode = "riding";
+          char.walking = false;
+          coaster.riding = true;
+          coaster.t = 0;
+          coaster.laps = 0;
         }
         refs.target.current = null;
       } else {
@@ -324,7 +388,10 @@ function Scene({
 
   function isBusy() {
     return (
-      refs.char.current.mode === "flee" || refs.gator.current.chasing
+      refs.char.current.mode === "flee" ||
+      refs.char.current.mode === "riding" ||
+      refs.gator.current.chasing ||
+      refs.coaster.current.riding
     );
   }
 
@@ -359,6 +426,18 @@ function Scene({
     refs.approachingGator.current = true;
   }
 
+  function handleParkClick() {
+    if (!isOnHome || isBusy()) return;
+    // Walk to the park entrance (south of park, near the ticket booth)
+    refs.target.current = {
+      x: PARK.x,
+      z: PARK.z + PARK_ENTRY_OFFSET,
+      sectionId: null,
+    };
+    refs.char.current.walking = true;
+    refs.approachingPark.current = true;
+  }
+
   return (
     <>
       <Lights />
@@ -366,7 +445,12 @@ function Scene({
       <Clouds />
       <Ground onClick={handleGroundClick} />
       <Plaza />
-      <Environment gatorRef={refs.gator} onGatorClick={handleGatorClick} />
+      <Environment
+        gatorRef={refs.gator}
+        onGatorClick={handleGatorClick}
+        coasterRef={refs.coaster}
+        onParkClick={handleParkClick}
+      />
       {SECTIONS.map((s) => (
         <Building
           key={s.id}
@@ -451,9 +535,13 @@ function Ground({ onClick }: { onClick: (e: ThreeEvent<MouseEvent>) => void }) {
 function Environment({
   gatorRef,
   onGatorClick,
+  coasterRef,
+  onParkClick,
 }: {
   gatorRef: React.MutableRefObject<GatorState>;
   onGatorClick: () => void;
+  coasterRef: React.MutableRefObject<CoasterState>;
+  onParkClick: () => void;
 }) {
   return (
     <>
@@ -468,15 +556,19 @@ function Environment({
       {/* Golf course to the southwest */}
       <GolfCourse position={[-11.5, 0, 9]} />
 
+      {/* Amusement park to the northwest (opposite the golf course) */}
+      <AmusementPark onSelect={onParkClick} />
+      <CoasterCart coasterRef={coasterRef} />
+
       {/* Scattered regular trees around the world perimeter */}
-      <Tree position={[13, 0, 1]} scale={1.1} />
-      <Tree position={[-13, 0, -1]} />
+      <Tree position={[15, 0, 1]} scale={1.1} />
+      <Tree position={[-7, 0, 0]} />
       <Tree position={[9, 0, 13]} scale={1.2} />
       <Tree position={[-7, 0, 14]} />
-      <Tree position={[0, 0, -14]} scale={1.05} />
+      <Tree position={[2, 0, -16]} scale={1.05} />
       <Tree position={[18, 0, -2]} scale={0.95} />
-      <Tree position={[-17, 0, 4]} />
-      <Tree position={[-18, 0, -12]} scale={1.15} />
+      <Tree position={[-19, 0, 5]} />
+      <Tree position={[-21, 0, -14]} scale={1.15} />
     </>
   );
 }
@@ -910,6 +1002,186 @@ function GolfCourse({
   );
 }
 
+function AmusementPark({ onSelect }: { onSelect: () => void }) {
+  // The park sits at PARK.x, PARK.z. The coaster track is a horizontal ring
+  // raised on supports. A red ticket booth on the south face is the click
+  // target (the obvious "entrance").
+  const supports = useMemo(() => {
+    return Array.from({ length: 8 }).map((_, i) => {
+      const a = (i / 8) * Math.PI * 2;
+      return {
+        x: Math.cos(a) * COASTER_R,
+        z: Math.sin(a) * COASTER_R,
+        key: i,
+      };
+    });
+  }, []);
+  return (
+    <group position={[PARK.x, 0, PARK.z]}>
+      {/* Ticket booth — clickable entrance facing south (+Z, toward plaza) */}
+      <group position={[0, 0, PARK_ENTRY_OFFSET - 0.2]}>
+        <mesh
+          position={[0, 0.7, 0]}
+          castShadow
+          onClick={(e) => {
+            onSelect();
+            e.stopPropagation();
+          }}
+          onPointerOver={(e) => {
+            document.body.style.cursor = "pointer";
+            e.stopPropagation();
+          }}
+          onPointerOut={() => {
+            document.body.style.cursor = "auto";
+          }}
+        >
+          <boxGeometry args={[1.6, 1.4, 0.9]} />
+          <meshStandardMaterial color="#d83a3a" />
+        </mesh>
+        {/* Striped roof — alternating red and white pyramid */}
+        <mesh position={[0, 1.55, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+          <coneGeometry args={[1.25, 0.55, 4]} />
+          <meshStandardMaterial color="#f4f1de" flatShading />
+        </mesh>
+        <mesh position={[0, 1.55, 0]} rotation={[0, Math.PI / 4, 0]}>
+          <coneGeometry args={[1.27, 0.55, 4, 1, true]} />
+          <meshStandardMaterial
+            color="#d83a3a"
+            side={THREE.DoubleSide}
+            transparent
+            opacity={0.5}
+          />
+        </mesh>
+        {/* Flag on top */}
+        <mesh position={[0, 2.0, 0]} castShadow>
+          <cylinderGeometry args={[0.02, 0.02, 0.6, 6]} />
+          <meshStandardMaterial color="#a0a0a0" />
+        </mesh>
+        <mesh position={[0.18, 2.18, 0]} castShadow>
+          <planeGeometry args={[0.35, 0.2]} />
+          <meshStandardMaterial color="#ffd83a" side={THREE.DoubleSide} />
+        </mesh>
+        {/* Booth window */}
+        <mesh position={[0, 0.85, 0.46]}>
+          <planeGeometry args={[0.8, 0.45]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Sign label */}
+        <Text
+          position={[0, 1.25, 0.46]}
+          fontSize={0.16}
+          color="#f4f1de"
+          anchorX="center"
+          anchorY="middle"
+          letterSpacing={0.05}
+        >
+          PARK
+        </Text>
+      </group>
+
+      {/* Coaster track supports — vertical posts under the ring */}
+      {supports.map((s) => (
+        <mesh
+          key={s.key}
+          position={[s.x, COASTER_Y / 2, s.z]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.07, 0.1, COASTER_Y, 6]} />
+          <meshStandardMaterial color="#666b75" />
+        </mesh>
+      ))}
+
+      {/* Track ring — a flat torus at height COASTER_Y */}
+      <mesh
+        position={[0, COASTER_Y, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        castShadow
+      >
+        <torusGeometry args={[COASTER_R, 0.07, 8, 36]} />
+        <meshStandardMaterial color="#3a3f4a" metalness={0.5} roughness={0.4} />
+      </mesh>
+      {/* Track inner rail */}
+      <mesh
+        position={[0, COASTER_Y - 0.12, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        castShadow
+      >
+        <torusGeometry args={[COASTER_R - 0.05, 0.05, 6, 36]} />
+        <meshStandardMaterial color="#5a5f6a" metalness={0.5} roughness={0.5} />
+      </mesh>
+
+      {/* A few decorative flags around the ring */}
+      {[0, Math.PI * 0.6, Math.PI * 1.2, Math.PI * 1.7].map((a, i) => (
+        <group
+          key={`f${i}`}
+          position={[
+            Math.cos(a) * (COASTER_R + 0.4),
+            0,
+            Math.sin(a) * (COASTER_R + 0.4),
+          ]}
+        >
+          <mesh position={[0, 0.8, 0]} castShadow>
+            <cylinderGeometry args={[0.025, 0.025, 1.6, 6]} />
+            <meshStandardMaterial color="#a0a0a0" />
+          </mesh>
+          <mesh position={[0.18, 1.45, 0]}>
+            <planeGeometry args={[0.32, 0.2]} />
+            <meshStandardMaterial
+              color={["#3a4f8b", "#d83a3a", "#ffd83a", "#3a8a4f"][i]}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function CoasterCart({
+  coasterRef,
+}: {
+  coasterRef: React.MutableRefObject<CoasterState>;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const c = coasterRef.current;
+    if (!ref.current) return;
+    const a = c.t * Math.PI * 2;
+    ref.current.position.x = PARK.x + Math.cos(a) * COASTER_R;
+    ref.current.position.z = PARK.z + Math.sin(a) * COASTER_R;
+    ref.current.position.y = COASTER_Y;
+    // Cart faces the direction of motion (tangent)
+    ref.current.rotation.y = Math.atan2(-Math.sin(a), Math.cos(a)) + Math.PI / 2;
+  });
+  return (
+    <group ref={ref}>
+      {/* Cart body */}
+      <mesh position={[0, 0.18, 0]} castShadow>
+        <boxGeometry args={[0.5, 0.36, 0.7]} />
+        <meshStandardMaterial color="#cc2828" />
+      </mesh>
+      {/* Cart trim */}
+      <mesh position={[0, 0.36, 0]}>
+        <boxGeometry args={[0.52, 0.04, 0.72]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Wheels (visual only) */}
+      {[-0.22, 0.22].map((zoff, i) => (
+        <group key={i}>
+          <mesh position={[-0.27, 0.08, zoff]} rotation={[0, 0, Math.PI / 2]}>
+            <cylinderGeometry args={[0.07, 0.07, 0.04, 8]} />
+            <meshStandardMaterial color="#1a1a1a" />
+          </mesh>
+          <mesh position={[0.27, 0.08, zoff]} rotation={[0, 0, Math.PI / 2]}>
+            <cylinderGeometry args={[0.07, 0.07, 0.04, 8]} />
+            <meshStandardMaterial color="#1a1a1a" />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function Plaza() {
   return (
     <>
@@ -1183,15 +1455,35 @@ function Character({
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
-      // Smoothly rotate to face direction (LERP angles to avoid pop on big jumps)
+      // Lift the character up to the coaster cart while riding
+      rootRef.current.position.y = c.mode === "riding" ? COASTER_Y + 0.36 : 0;
+      // Smoothly rotate to face direction. Snap during ride so we always
+      // match the cart's heading.
       const cur = rootRef.current.rotation.y;
       let diff = c.angle - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      rootRef.current.rotation.y = cur + diff * 0.2;
+      rootRef.current.rotation.y =
+        c.mode === "riding" ? c.angle : cur + diff * 0.2;
     }
 
-    // Limb swing
+    if (c.mode === "riding") {
+      // Arms way up — riding thrill — plus a little oscillation
+      const wave = Math.sin(t * 5) * 0.15;
+      const armsUp = -Math.PI * 0.85 + wave;
+      if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = armsUp;
+      if (rightShoulderRef.current)
+        rightShoulderRef.current.rotation.x = armsUp;
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      if (bodyRef.current) {
+        // Subtle vertical bounce as the cart goes over track joints
+        bodyRef.current.position.y = Math.abs(Math.sin(t * 9)) * 0.03;
+      }
+      return;
+    }
+
+    // Limb swing (walking)
     const swing = c.walking ? Math.sin(c.stepPhase * Math.PI * 2) * 0.7 : 0;
     if (leftShoulderRef.current)
       leftShoulderRef.current.rotation.x = swing;
