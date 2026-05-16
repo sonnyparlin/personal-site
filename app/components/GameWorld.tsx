@@ -410,10 +410,11 @@ function Scene({
     if (char.mode === "golfing") {
       refs.golf.current.t += clampedDt / GOLF_DURATION;
       const gt = refs.golf.current.t;
-      // Pinned to the tee, facing west
+      // Pinned to the tee, facing south (sideways to the target line so
+      // the swing happens across the body like a real RH golfer).
       char.x = GOLF_TEE.x;
       char.z = GOLF_TEE.z;
-      char.angle = -Math.PI / 2;
+      char.angle = 0;
       // Celebration jumps after the ball lands
       if (gt > 0.55 && gt < 0.88) {
         const jumpT = (gt - 0.55) / 0.33;
@@ -527,11 +528,13 @@ function Scene({
             coaster.t = 0;
             coaster.laps = 0;
           } else if (refs.approachingGolf.current) {
-            // Address the ball — start the golf sequence
+            // Address the ball — start the golf sequence. Face SOUTH so
+            // the target line (west toward the hole) runs along the
+            // character's LEFT side: a proper right-handed golfer stance.
             refs.approachingGolf.current = false;
             char.mode = "golfing";
             char.walking = false;
-            char.angle = -Math.PI / 2; // face west toward the hole
+            char.angle = 0;
             refs.golf.current.active = true;
             refs.golf.current.t = 0;
           }
@@ -2366,11 +2369,8 @@ function Character({
   const clubRef = useRef<THREE.Group>(null);
   // Pivot at body-center, same Y as the shoulders. The club is parented here
   // (not the right shoulder) so both hands appear to grip a centered club.
-  // Rotates with `armAngle` so the club swings in sync with the arms.
+  // Rotates in sync with the shoulders during the golf swing.
   const clubHolderRef = useRef<THREE.Group>(null);
-  // Tilt the arms slightly inward during the golf address/swing so the
-  // hands end up close together on the grip rather than ~0.66 apart.
-  const GOLF_SHOULDER_INWARD = 0.42;
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -2421,51 +2421,53 @@ function Character({
 
     if (c.mode === "golfing") {
       const gt = golfRef.current.t;
-      // Arm pose phases — sign convention: positive armAngle rotates the
-      // arm BACK and UP (proper backswing), negative rotates it FORWARD
-      // and UP (follow-through). Address sits slightly forward (-0.4),
-      // impact passes through 0 (arms straight down).
-      //   address  (0..0.18): arms forward+down
-      //   backswing(0.18..0.32): arms swing back and up to ~+2.8
-      //   downswing(0.32..0.36): rapid whip through impact (0) to follow-through
-      //   follow   (0.36..0.55): arms forward-up hold
-      //   celebrate(0.55..0.88): arms up, oscillating with a "yes!" wave
+      // Right-handed golf swing as an ACROSS-THE-BODY motion (rotation.z
+      // around the spine axis). Positive z swings the arm to the RIGHT
+      // (over the trail shoulder, i.e. backswing); negative z swings it
+      // LEFT toward the target (follow-through). Impact passes through 0.
+      //   address  (0..0.18): hands together slightly toward target (-0.3)
+      //   backswing(0.18..0.32): swing up over trail shoulder (+2.5)
+      //   downswing(0.32..0.36): whip down through impact (0) to follow-through (-2.5)
+      //   follow   (0.36..0.55): hold over lead shoulder
+      //   celebrate(0.55..0.88): arms thrown up with a "yes!" wave
       //   relax    (0.88..1.00): drop arms back to sides
-      let armAngle = 0;
+      let swingZ = 0;
       if (gt < 0.18) {
-        armAngle = -0.4; // address — slight forward lean
+        swingZ = -0.3; // address — hands just left of body center
       } else if (gt < 0.32) {
         const p = (gt - 0.18) / 0.14;
-        armAngle = -0.4 + p * 3.2; // back to top of backswing (+2.8)
+        swingZ = -0.3 + p * 2.8; // up to top of backswing (+2.5)
       } else if (gt < 0.36) {
         const p = (gt - 0.32) / 0.04;
-        // Downswing: whip from top (+2.8) through impact (~0 around p=0.67)
-        // to follow-through forward-up (-1.4). Ball-flight starts at gt=0.35
-        // which lands almost exactly on the impact frame.
-        armAngle = 2.8 - p * 4.2;
+        // Downswing: whip from +2.5 through impact (~0 at p≈0.5) to
+        // follow-through (-2.5). Ball-flight starts at gt=0.35 (p=0.75)
+        // which is just past impact — perfect.
+        swingZ = 2.5 - p * 5.0;
       } else if (gt < 0.55) {
-        armAngle = -1.4; // follow-through hold (arms forward-up)
+        swingZ = -2.5; // follow-through hold over lead shoulder
       } else if (gt < 0.88) {
         const wave = Math.sin(t * 9) * 0.25;
-        armAngle = -Math.PI * 0.75 + wave;
+        swingZ = -Math.PI * 0.8 + wave; // celebrate
       } else {
         const p = (gt - 0.88) / 0.12;
-        armAngle = -Math.PI * 0.75 + p * Math.PI * 0.75; // ease back to 0
+        swingZ = -Math.PI * 0.8 + p * Math.PI * 0.8; // ease back to 0
       }
       if (leftShoulderRef.current) {
-        leftShoulderRef.current.rotation.x = armAngle;
-        leftShoulderRef.current.rotation.z = GOLF_SHOULDER_INWARD;
+        leftShoulderRef.current.rotation.x = 0;
+        leftShoulderRef.current.rotation.z = swingZ;
       }
       if (rightShoulderRef.current) {
-        rightShoulderRef.current.rotation.x = armAngle;
-        rightShoulderRef.current.rotation.z = -GOLF_SHOULDER_INWARD;
+        rightShoulderRef.current.rotation.x = 0;
+        rightShoulderRef.current.rotation.z = swingZ;
       }
       if (clubHolderRef.current) {
-        clubHolderRef.current.rotation.x = armAngle;
+        clubHolderRef.current.rotation.x = 0;
+        clubHolderRef.current.rotation.z = swingZ;
       }
       if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
       if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
-      // Slight forward lean while addressing/swinging
+      // Slight forward bend at the hips while addressing/swinging — a
+      // golfer hinges forward over the ball.
       if (bodyRef.current) {
         if (gt < 0.4) bodyRef.current.rotation.x = 0.25;
         else if (gt < 0.55) bodyRef.current.rotation.x = 0.1;
@@ -2478,11 +2480,14 @@ function Character({
       // Clear any leftover lean when leaving golf mode
       bodyRef.current.rotation.x = 0;
     }
-    // Clear the golf-only inward shoulder tilt and the club-holder rotation
-    // so the character walks normally outside of golf mode.
+    // Clear the golf-only rotations so the character walks normally
+    // outside of golf mode.
     if (leftShoulderRef.current) leftShoulderRef.current.rotation.z = 0;
     if (rightShoulderRef.current) rightShoulderRef.current.rotation.z = 0;
-    if (clubHolderRef.current) clubHolderRef.current.rotation.x = 0;
+    if (clubHolderRef.current) {
+      clubHolderRef.current.rotation.x = 0;
+      clubHolderRef.current.rotation.z = 0;
+    }
 
     // Limb swing (walking)
     const swing = c.walking ? Math.sin(c.stepPhase * Math.PI * 2) * 0.7 : 0;
@@ -2741,18 +2746,18 @@ function CameraRig({
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
       camHijackedRef.current = true;
     } else if (c.mode === "flee") {
-      // Cinematic chase-cam during the gator chase. Follow the character
-      // from above-and-behind in the chase direction (the chase always
-      // runs from the lake at NE back to the plaza). y=7 keeps the
-      // camera above every palm frond and building roof so it never
-      // clips into geometry as it tracks the action.
+      // Chase-cam IN FRONT of the runner: positioned ahead along the
+      // chase direction (which always points toward the plaza/origin)
+      // so the character sprints TOWARD the camera with the gator
+      // chasing him behind. y=6 keeps the line of sight above the
+      // MUSIC building roof when the chase passes near it.
       const mag = Math.hypot(c.x, c.z);
       const ux = mag > 0.5 ? c.x / mag : 1;
       const uz = mag > 0.5 ? c.z / mag : 0;
       wantCam = {
-        x: c.x + ux * 4,
-        y: 7,
-        z: c.z + uz * 4,
+        x: c.x - ux * 5,
+        y: 6,
+        z: c.z - uz * 5,
       };
       camHijackedRef.current = true;
     } else if (camHijackedRef.current) {
