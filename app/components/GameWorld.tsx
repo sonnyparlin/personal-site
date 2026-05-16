@@ -487,6 +487,8 @@ function Scene({
         char.mode = "idle";
         char.walking = false;
         char.stepPhase = 0;
+        // Face the camera (looking at the plaza from +Z) when arriving back
+        char.angle = 0;
         gator.chasing = false;
       } else {
         const step = FLEE_SPEED * clampedDt;
@@ -552,6 +554,11 @@ function Scene({
             char.angle = 0;
             refs.golf.current.active = true;
             refs.golf.current.t = 0;
+          } else {
+            // Plain arrival with no section / approach flag — this is the
+            // walk-back to the plaza after an activity ends. Face the
+            // camera (which looks at the plaza from +Z).
+            char.angle = 0;
           }
           refs.target.current = null;
         }
@@ -1580,11 +1587,24 @@ function AmusementPark({ onSelect }: { onSelect: () => void }) {
 
   return (
     <group position={[PARK.x, 0, PARK.z]}>
-      {/* Park ground patch — sandy/dirt, makes the area read as a fairground */}
+      {/* Park ground patch — sandy/dirt, makes the area read as a fairground.
+          The whole patch is clickable so the user can click anywhere on the
+          park to send the character over (not just the ticket booth). */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, 0.015, 0]}
         receiveShadow
+        onClick={(e) => {
+          onSelect();
+          e.stopPropagation();
+        }}
+        onPointerOver={(e) => {
+          document.body.style.cursor = "pointer";
+          e.stopPropagation();
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = "auto";
+        }}
       >
         <planeGeometry args={[PARK_GROUND_W, PARK_GROUND_D]} />
         <meshStandardMaterial color="#c8a878" />
