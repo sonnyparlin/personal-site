@@ -2535,14 +2535,31 @@ function Character({
           <meshStandardMaterial color={SKIN} />
         </mesh>
 
-        {/* Beard — oblate spheroid that wraps the jaw uniformly from every angle */}
-        <mesh position={[0, 1.36, 0]} scale={[1.2, 0.85, 1.2]} castShadow>
-          <sphereGeometry args={[0.185, 14, 12]} />
+        {/* Beard — full bushy beard that wraps the jaw from cheek to chin,
+            then a second "goatee drop" that extends below the jawline.
+            Together they read as a thick well-groomed beard from any angle. */}
+        <mesh position={[0, 1.34, 0.005]} scale={[1.28, 1.0, 1.28]} castShadow>
+          <sphereGeometry args={[0.2, 16, 14]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
-        {/* Mustache — small dark patch above the lip on the front of the face */}
-        <mesh position={[0, 1.47, 0.18]} rotation={[0.2, 0, 0]}>
-          <boxGeometry args={[0.13, 0.035, 0.04]} />
+        {/* Goatee drop — extends past the chin */}
+        <mesh position={[0, 1.18, 0.05]} scale={[0.9, 1.2, 0.85]} castShadow>
+          <sphereGeometry args={[0.13, 14, 12]} />
+          <meshStandardMaterial color={BEARD} />
+        </mesh>
+        {/* Sideburn fill — bridges the beard up to the head on each side */}
+        <mesh position={[-0.18, 1.46, 0.0]} scale={[0.6, 0.9, 0.9]} castShadow>
+          <sphereGeometry args={[0.1, 10, 8]} />
+          <meshStandardMaterial color={BEARD} />
+        </mesh>
+        <mesh position={[0.18, 1.46, 0.0]} scale={[0.6, 0.9, 0.9]} castShadow>
+          <sphereGeometry args={[0.1, 10, 8]} />
+          <meshStandardMaterial color={BEARD} />
+        </mesh>
+        {/* Mustache — wider patch above the lip that visually merges into
+            the beard at the corners of the mouth */}
+        <mesh position={[0, 1.47, 0.19]} rotation={[0.15, 0, 0]}>
+          <boxGeometry args={[0.17, 0.05, 0.04]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
 
