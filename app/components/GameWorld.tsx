@@ -221,7 +221,10 @@ function lineHitsAnyBuilding(
 }
 
 // Outer-ring waypoints used to bypass the building cluster. Picked so each
-// one is clear of every building from the plaza's perspective.
+// one is clear of every building from the plaza's perspective. The
+// inner "corridor" waypoints (3, -4) / (-3, -4) thread between HOME and
+// MUSIC / JIU JITSU so the gator and the coaster-walk-back take a near-
+// direct path instead of swinging way out east or west.
 const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: -8, z: 4 },    // SW (between CODE and the golf course)
   { x: -8, z: -5 },   // NW (south-west of JIU JITSU, on the way to the park)
@@ -230,6 +233,8 @@ const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: 0, z: 8 },     // S (between CODE and CHESS)
   { x: -8, z: 0 },    // W
   { x: 8, z: 0 },     // E
+  { x: 3, z: -4 },    // NE corridor between HOME and MUSIC (toward the gator)
+  { x: -3, z: -4 },   // NW corridor between HOME and JIU JITSU (toward the park)
 ];
 
 // Return the sequence of waypoints to walk through to get from (fromX, fromZ)
@@ -427,8 +432,13 @@ function Scene({
         refs.golf.current.active = false;
         char.mode = "idle";
         char.y = 0;
-        // Walk back to the plaza
-        refs.target.current = { x: 0, z: 0, sectionId: null };
+        // Walk back to the plaza — route via bypass waypoints so the
+        // path doesn't clip the CODE building between the tee and the
+        // plaza.
+        const path = routeTo(char.x, char.z, 0, 0);
+        const first = path[0];
+        refs.target.current = { x: first.x, z: first.z, sectionId: null };
+        refs.pathQueue.current = path.slice(1);
         char.walking = true;
       }
     }
@@ -449,7 +459,12 @@ function Scene({
           char.x = PARK.x;
           char.z = PARK.z + PARK_ENTRY_OFFSET;
           char.angle = Math.atan2(-char.x, -char.z); // face plaza
-          refs.target.current = { x: 0, z: 0, sectionId: null };
+          // Walk back to the plaza — route via bypass waypoints so the
+          // path doesn't clip the JIU JITSU building.
+          const path = routeTo(char.x, char.z, 0, 0);
+          const first = path[0];
+          refs.target.current = { x: first.x, z: first.z, sectionId: null };
+          refs.pathQueue.current = path.slice(1);
           char.walking = true;
         }
       }
