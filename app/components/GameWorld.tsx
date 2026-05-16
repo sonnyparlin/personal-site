@@ -19,7 +19,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding";
+type CharMode = "idle" | "flee" | "riding" | "golfing";
 
 type CharState = {
   x: number;
@@ -51,6 +51,11 @@ type FamilyState = {
   t: number; // 0..1 progress of the HOME-door easter-egg animation
 };
 
+type GolfState = {
+  active: boolean;
+  t: number; // 0..1 progress of the golf easter-egg animation
+};
+
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
   target: React.MutableRefObject<{
@@ -65,6 +70,8 @@ type SharedRefs = {
   coaster: React.MutableRefObject<CoasterState>;
   approachingPark: React.MutableRefObject<boolean>;
   family: React.MutableRefObject<FamilyState>;
+  golf: React.MutableRefObject<GolfState>;
+  approachingGolf: React.MutableRefObject<boolean>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
@@ -77,6 +84,12 @@ const DOOR_CLOSE_SPEED = 4;
 const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
 const CHAR_RADIUS = 0.32; // for building collision
 const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
+
+// Golf easter egg
+const GOLF_POSITION = { x: -11.5, z: 9 };
+const GOLF_TEE = { x: -6.5, z: 9 };
+const GOLF_HOLE = { x: -15, z: 8.6 };
+const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
 // Amusement park
 const PARK = { x: -13, z: -9 };
@@ -202,6 +215,8 @@ export default function GameWorld() {
   });
   const approachingParkRef = useRef(false);
   const familyRef = useRef<FamilyState>({ active: false, t: 0 });
+  const golfRef = useRef<GolfState>({ active: false, t: 0 });
+  const approachingGolfRef = useRef(false);
 
   const pathname = usePathname();
   const router = useRouter();
@@ -231,11 +246,17 @@ export default function GameWorld() {
       coasterRef.current.t = 0;
       familyRef.current.active = false;
       familyRef.current.t = 0;
+      golfRef.current.active = false;
+      golfRef.current.t = 0;
+      approachingGolfRef.current = false;
     } else {
       targetRef.current = null;
       pendingNavRef.current = null;
       familyRef.current.active = false;
       familyRef.current.t = 0;
+      golfRef.current.active = false;
+      golfRef.current.t = 0;
+      approachingGolfRef.current = false;
     }
   }, [pathname]);
 
@@ -250,6 +271,8 @@ export default function GameWorld() {
       coaster: coasterRef,
       approachingPark: approachingParkRef,
       family: familyRef,
+      golf: golfRef,
+      approachingGolf: approachingGolfRef,
     }),
     []
   );
@@ -293,6 +316,32 @@ function Scene({
     const target = refs.target.current;
     const gator = refs.gator.current;
     const coaster = refs.coaster.current;
+
+    // ── 0a. Golf hole-in-one ──
+    if (char.mode === "golfing") {
+      refs.golf.current.t += clampedDt / GOLF_DURATION;
+      const gt = refs.golf.current.t;
+      // Pinned to the tee, facing west
+      char.x = GOLF_TEE.x;
+      char.z = GOLF_TEE.z;
+      char.angle = -Math.PI / 2;
+      // Celebration jumps after the ball lands
+      if (gt > 0.55 && gt < 0.88) {
+        const jumpT = (gt - 0.55) / 0.33;
+        char.y = Math.max(0, Math.sin(jumpT * Math.PI * 4)) * 0.32;
+      } else {
+        char.y = 0;
+      }
+      if (gt >= 1) {
+        refs.golf.current.t = 0;
+        refs.golf.current.active = false;
+        char.mode = "idle";
+        char.y = 0;
+        // Walk back to the plaza
+        refs.target.current = { x: 0, z: 0, sectionId: null };
+        char.walking = true;
+      }
+    }
 
     // ── 0. Coaster ride ──
     // Character is riding the cart: position is driven by the track parameter t.
@@ -374,6 +423,14 @@ function Scene({
           coaster.riding = true;
           coaster.t = 0;
           coaster.laps = 0;
+        } else if (refs.approachingGolf.current) {
+          // Address the ball — start the golf sequence
+          refs.approachingGolf.current = false;
+          char.mode = "golfing";
+          char.walking = false;
+          char.angle = -Math.PI / 2; // face west toward the hole
+          refs.golf.current.active = true;
+          refs.golf.current.t = 0;
         }
         refs.target.current = null;
       } else {
@@ -469,9 +526,11 @@ function Scene({
     return (
       refs.char.current.mode === "flee" ||
       refs.char.current.mode === "riding" ||
+      refs.char.current.mode === "golfing" ||
       refs.gator.current.chasing ||
       refs.coaster.current.riding ||
-      refs.family.current.active
+      refs.family.current.active ||
+      refs.golf.current.active
     );
   }
 
@@ -518,6 +577,18 @@ function Scene({
     refs.approachingPark.current = true;
   }
 
+  function handleGolfClick() {
+    if (!isOnHome || isBusy()) return;
+    refs.target.current = {
+      x: GOLF_TEE.x,
+      z: GOLF_TEE.z,
+      sectionId: null,
+    };
+    refs.char.current.walking = true;
+    refs.approachingGolf.current = true;
+  }
+
+
   return (
     <>
       <Lights />
@@ -530,6 +601,8 @@ function Scene({
         onGatorClick={handleGatorClick}
         coasterRef={refs.coaster}
         onParkClick={handleParkClick}
+        golfRef={refs.golf}
+        onGolfClick={handleGolfClick}
       />
       {SECTIONS.map((s) => (
         <Building
@@ -539,7 +612,7 @@ function Scene({
           onSelect={() => handleBuildingClick(s)}
         />
       ))}
-      <Character charRef={refs.char} />
+      <Character charRef={refs.char} golfRef={refs.golf} />
       <Family familyRef={refs.family} />
       <CameraRig charRef={refs.char} pathname={pathname} />
     </>
@@ -618,11 +691,15 @@ function Environment({
   onGatorClick,
   coasterRef,
   onParkClick,
+  golfRef,
+  onGolfClick,
 }: {
   gatorRef: React.MutableRefObject<GatorState>;
   onGatorClick: () => void;
   coasterRef: React.MutableRefObject<CoasterState>;
   onParkClick: () => void;
+  golfRef: React.MutableRefObject<GolfState>;
+  onGolfClick: () => void;
 }) {
   return (
     <>
@@ -635,13 +712,22 @@ function Environment({
       <PalmTree position={[14.5, 0, -6.3]} />
 
       {/* Golf course to the southwest */}
-      <GolfCourse position={[-11.5, 0, 9]} />
+      <GolfCourse position={[-11.5, 0, 9]} onSelect={onGolfClick} />
+      <GolfBall golfRef={golfRef} />
 
       {/* Amusement park to the northwest (opposite the golf course) */}
       <AmusementPark onSelect={onParkClick} />
       <CoasterCart coasterRef={coasterRef} />
 
-      {/* Scattered regular trees around the world perimeter */}
+      {/* Distant rolling hills at the far edges of the world */}
+      <Hill position={[-28, 0, -26]} scale={1.4} color="#4a7a30" />
+      <Hill position={[26, 0, -28]} scale={1.6} color="#3d6824" />
+      <Hill position={[28, 0, 24]} scale={1.3} color="#4a7a30" />
+      <Hill position={[-26, 0, 26]} scale={1.5} color="#3d6824" />
+      <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
+      <Hill position={[32, 0, -8]} scale={1.2} color="#3d6824" />
+
+      {/* Mix of regular oaks and pine trees */}
       <Tree position={[15, 0, 1]} scale={1.1} />
       <Tree position={[-7, 0, 0]} />
       <Tree position={[9, 0, 13]} scale={1.2} />
@@ -650,6 +736,38 @@ function Environment({
       <Tree position={[18, 0, -2]} scale={0.95} />
       <Tree position={[-19, 0, 5]} />
       <Tree position={[-21, 0, -14]} scale={1.15} />
+      <PineTree position={[-22, 0, -6]} scale={1.0} />
+      <PineTree position={[-24, 0, 8]} scale={1.3} />
+      <PineTree position={[22, 0, 10]} scale={1.1} />
+      <PineTree position={[24, 0, -16]} scale={1.5} />
+      <PineTree position={[12, 0, -19]} scale={1.0} />
+      <PineTree position={[-12, 0, -20]} scale={1.2} />
+      <PineTree position={[-3, 0, 20]} scale={1.1} />
+      <PineTree position={[8, 0, 19]} scale={1.4} />
+
+      {/* Bushes scattered around the perimeter for ground texture */}
+      <Bush position={[6, 0, 4]} scale={1.0} />
+      <Bush position={[-5, 0, 6]} scale={0.85} color="#356b30" />
+      <Bush position={[10, 0, -6]} scale={0.9} />
+      <Bush position={[-10, 0, -5]} scale={1.1} color="#446e2a" />
+      <Bush position={[17, 0, 5]} scale={0.95} />
+      <Bush position={[16, 0, -10]} scale={1.0} color="#356b30" />
+      <Bush position={[-15, 0, 1]} scale={1.05} />
+      <Bush position={[-16, 0, -8]} scale={0.9} />
+      <Bush position={[-7, 0, -10]} scale={1.0} color="#446e2a" />
+      <Bush position={[3, 0, 17]} scale={1.1} />
+      <Bush position={[-1, 0, -19]} scale={0.95} color="#356b30" />
+      <Bush position={[20, 0, 18]} scale={1.2} />
+      <Bush position={[-20, 0, 16]} scale={1.0} />
+      <Bush position={[19, 0, -18]} scale={0.9} color="#446e2a" />
+      <Bush position={[-19, 0, -20]} scale={1.1} />
+
+      {/* Birds drifting across the sky */}
+      <Bird initialX={-20} y={10} z={-12} speed={1.8} size={1.0} flapPhase={0} />
+      <Bird initialX={-12} y={11} z={-14} speed={1.8} size={0.95} flapPhase={0.4} />
+      <Bird initialX={-4} y={10.4} z={-12.8} speed={1.8} size={0.9} flapPhase={0.8} />
+      <Bird initialX={18} y={9} z={4} speed={-1.4} size={1.1} flapPhase={1.6} />
+      <Bird initialX={6} y={12} z={16} speed={1.2} size={0.85} flapPhase={2.1} />
     </>
   );
 }
@@ -1030,13 +1148,30 @@ function Tree({
 
 function GolfCourse({
   position,
+  onSelect,
 }: {
   position: [number, number, number];
+  onSelect: () => void;
 }) {
   return (
     <group position={position}>
-      {/* Fairway — a wider rectangular patch of brighter grass */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.011, 0]} receiveShadow>
+      {/* Fairway — clickable target for the hole-in-one easter egg */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.011, 0]}
+        receiveShadow
+        onClick={(e) => {
+          onSelect();
+          e.stopPropagation();
+        }}
+        onPointerOver={(e) => {
+          document.body.style.cursor = "pointer";
+          e.stopPropagation();
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = "auto";
+        }}
+      >
         <planeGeometry args={[10, 6]} />
         <meshStandardMaterial color="#7ab84a" />
       </mesh>
@@ -1079,6 +1214,205 @@ function GolfCourse({
         <circleGeometry args={[1.0, 20]} />
         <meshStandardMaterial color="#e8d8a8" />
       </mesh>
+    </group>
+  );
+}
+
+// Golf ball, animated during the hole-in-one easter egg.
+// Phases (gt = golf.t in [0,1]):
+//   gt < 0.35  : ball at the tee
+//   0.35..0.55 : flight from tee to hole along a parabolic arc
+//   0.55..0.95 : ball sitting in the cup
+//   >= 0.95    : hidden again
+function GolfBall({
+  golfRef,
+}: {
+  golfRef: React.MutableRefObject<GolfState>;
+}) {
+  const ref = useRef<THREE.Mesh>(null);
+  useFrame(() => {
+    const g = golfRef.current;
+    if (!ref.current) return;
+    if (!g.active) {
+      ref.current.visible = false;
+      return;
+    }
+    const gt = g.t;
+    if (gt < 0.35) {
+      ref.current.visible = true;
+      ref.current.position.set(GOLF_TEE.x, 0.08, GOLF_TEE.z);
+    } else if (gt < 0.55) {
+      const p = (gt - 0.35) / 0.2;
+      ref.current.visible = true;
+      ref.current.position.x = GOLF_TEE.x + (GOLF_HOLE.x - GOLF_TEE.x) * p;
+      ref.current.position.z = GOLF_TEE.z + (GOLF_HOLE.z - GOLF_TEE.z) * p;
+      // Parabolic arc, peaks at ~2.2 units high
+      ref.current.position.y = Math.sin(p * Math.PI) * 2.2 + 0.08;
+    } else if (gt < 0.95) {
+      ref.current.visible = true;
+      ref.current.position.set(GOLF_HOLE.x, 0.02, GOLF_HOLE.z);
+    } else {
+      ref.current.visible = false;
+    }
+  });
+  return (
+    <mesh ref={ref} visible={false} castShadow>
+      <sphereGeometry args={[0.08, 12, 8]} />
+      <meshStandardMaterial color="#f8f6e8" roughness={0.6} />
+    </mesh>
+  );
+}
+
+function Hill({
+  position,
+  scale = 1,
+  color = "#3d6824",
+}: {
+  position: [number, number, number];
+  scale?: number;
+  color?: string;
+}) {
+  // Wide, low dome — half-sphere with the bottom hemisphere chopped off.
+  return (
+    <mesh
+      position={position}
+      scale={[scale, scale * 0.55, scale]}
+      castShadow
+      receiveShadow
+    >
+      <sphereGeometry
+        args={[3.5, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2]}
+      />
+      <meshStandardMaterial color={color} flatShading />
+    </mesh>
+  );
+}
+
+function PineTree({
+  position,
+  scale = 1,
+}: {
+  position: [number, number, number];
+  scale?: number;
+}) {
+  const trunkH = 0.7 * scale;
+  return (
+    <group position={position}>
+      {/* Bare trunk */}
+      <mesh position={[0, trunkH / 2, 0]} castShadow>
+        <cylinderGeometry args={[0.12, 0.16, trunkH, 6]} />
+        <meshStandardMaterial color="#4a2c14" />
+      </mesh>
+      {/* Three stacked cone layers, narrowing toward the top */}
+      {[0, 1, 2].map((i) => {
+        const r = (1.0 - i * 0.18) * 0.85 * scale;
+        const h = 1.05 * scale;
+        const yPos = trunkH + 0.05 + i * (h * 0.6);
+        const color = i === 0 ? "#2a5a30" : i === 1 ? "#326234" : "#3a7a3a";
+        return (
+          <mesh key={i} position={[0, yPos, 0]} castShadow>
+            <coneGeometry args={[r, h, 10]} />
+            <meshStandardMaterial color={color} flatShading />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
+function Bush({
+  position,
+  scale = 1,
+  color = "#3d6824",
+}: {
+  position: [number, number, number];
+  scale?: number;
+  color?: string;
+}) {
+  return (
+    <group position={position}>
+      <mesh position={[0, 0.22 * scale, 0]} castShadow>
+        <sphereGeometry args={[0.32 * scale, 8, 6]} />
+        <meshStandardMaterial color={color} flatShading />
+      </mesh>
+      <mesh
+        position={[0.22 * scale, 0.16 * scale, 0.1 * scale]}
+        castShadow
+      >
+        <sphereGeometry args={[0.22 * scale, 8, 6]} />
+        <meshStandardMaterial color={color} flatShading />
+      </mesh>
+      <mesh
+        position={[-0.18 * scale, 0.18 * scale, -0.12 * scale]}
+        castShadow
+      >
+        <sphereGeometry args={[0.24 * scale, 8, 6]} />
+        <meshStandardMaterial color={color} flatShading />
+      </mesh>
+    </group>
+  );
+}
+
+function Bird({
+  initialX,
+  y,
+  z,
+  speed,
+  size = 1,
+  flapPhase = 0,
+}: {
+  initialX: number;
+  y: number;
+  z: number;
+  speed: number;
+  size?: number;
+  flapPhase?: number;
+}) {
+  const root = useRef<THREE.Group>(null);
+  const leftWing = useRef<THREE.Group>(null);
+  const rightWing = useRef<THREE.Group>(null);
+  const startedRef = useRef(false);
+  useFrame((state, dt) => {
+    if (!root.current) return;
+    if (!startedRef.current) {
+      root.current.position.x = initialX;
+      // Bird faces direction of motion: rotate around Y based on sign of speed
+      root.current.rotation.y = speed > 0 ? -Math.PI / 2 : Math.PI / 2;
+      startedRef.current = true;
+    }
+    root.current.position.x += speed * dt;
+    // Wrap around the world so the birds keep cycling
+    if (root.current.position.x > 38) root.current.position.x = -38;
+    if (root.current.position.x < -38) root.current.position.x = 38;
+    // A little vertical bob
+    root.current.position.y =
+      y + Math.sin(state.clock.elapsedTime * 1.8 + flapPhase) * 0.18;
+    // Wings flap
+    const flap = Math.sin(state.clock.elapsedTime * 9 + flapPhase) * 0.7;
+    if (leftWing.current) leftWing.current.rotation.z = flap;
+    if (rightWing.current) rightWing.current.rotation.z = -flap;
+  });
+  return (
+    <group ref={root} position={[initialX, y, z]}>
+      {/* Body */}
+      <mesh>
+        <boxGeometry args={[0.18 * size, 0.06 * size, 0.08 * size]} />
+        <meshStandardMaterial color="#2a2a2a" />
+      </mesh>
+      {/* Left wing — pivot at body */}
+      <group ref={leftWing}>
+        <mesh position={[0, 0, 0.14 * size]} castShadow>
+          <boxGeometry args={[0.12 * size, 0.02 * size, 0.28 * size]} />
+          <meshStandardMaterial color="#2a2a2a" />
+        </mesh>
+      </group>
+      {/* Right wing */}
+      <group ref={rightWing}>
+        <mesh position={[0, 0, -0.14 * size]} castShadow>
+          <boxGeometry args={[0.12 * size, 0.02 * size, 0.28 * size]} />
+          <meshStandardMaterial color="#2a2a2a" />
+        </mesh>
+      </group>
     </group>
   );
 }
@@ -1898,8 +2232,10 @@ const EYE = "#1a1a1a";
 
 function Character({
   charRef,
+  golfRef,
 }: {
   charRef: React.MutableRefObject<CharState>;
+  golfRef: React.MutableRefObject<GolfState>;
 }) {
   const rootRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Group>(null);
@@ -1914,16 +2250,20 @@ function Character({
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
-      // y is driven by the game tick during ride (track height); zero on foot.
-      rootRef.current.position.y = c.mode === "riding" ? c.y + 0.36 : 0;
-      // Smoothly rotate to face direction. Snap during ride so we always
-      // match the cart's heading.
+      // y is driven by the game tick for ride (track height) and golf
+      // (celebration jumps); zero on foot otherwise.
+      rootRef.current.position.y =
+        c.mode === "riding" ? c.y + 0.36 : c.mode === "golfing" ? c.y : 0;
+      // Smoothly rotate to face direction. Snap during ride / golf so we
+      // always match the expected heading.
       const cur = rootRef.current.rotation.y;
       let diff = c.angle - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       rootRef.current.rotation.y =
-        c.mode === "riding" ? c.angle : cur + diff * 0.2;
+        c.mode === "riding" || c.mode === "golfing"
+          ? c.angle
+          : cur + diff * 0.2;
     }
 
     if (c.mode === "riding") {
@@ -1940,6 +2280,51 @@ function Character({
         bodyRef.current.position.y = Math.abs(Math.sin(t * 9)) * 0.03;
       }
       return;
+    }
+
+    if (c.mode === "golfing") {
+      const gt = golfRef.current.t;
+      // Arm pose phases:
+      //   address  (0..0.18): arms forward+down, hands together at "club"
+      //   backswing(0.18..0.32): both arms rotate way up & back
+      //   downswing(0.32..0.36): rapid forward whip into impact
+      //   follow   (0.36..0.55): arms swept across, settled
+      //   celebrate(0.55..0.88): arms thrown up, oscillating
+      //   relax    (0.88..1.00): drop arms back to sides
+      let armAngle = 0;
+      if (gt < 0.18) {
+        armAngle = -0.4;
+      } else if (gt < 0.32) {
+        const p = (gt - 0.18) / 0.14;
+        armAngle = -0.4 - p * 2.4; // back to ~-2.8
+      } else if (gt < 0.36) {
+        const p = (gt - 0.32) / 0.04;
+        armAngle = -2.8 + p * 4.2; // whip from -2.8 to +1.4
+      } else if (gt < 0.55) {
+        armAngle = 1.0; // follow-through hold
+      } else if (gt < 0.88) {
+        const wave = Math.sin(t * 9) * 0.25;
+        armAngle = -Math.PI * 0.75 + wave;
+      } else {
+        const p = (gt - 0.88) / 0.12;
+        armAngle = -Math.PI * 0.75 + p * Math.PI * 0.75; // ease back to 0
+      }
+      if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = armAngle;
+      if (rightShoulderRef.current) rightShoulderRef.current.rotation.x = armAngle;
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      // Slight forward lean while addressing/swinging
+      if (bodyRef.current) {
+        if (gt < 0.4) bodyRef.current.rotation.x = 0.25;
+        else if (gt < 0.55) bodyRef.current.rotation.x = 0.1;
+        else bodyRef.current.rotation.x = 0;
+        bodyRef.current.position.y = 0;
+      }
+      return;
+    }
+    if (bodyRef.current) {
+      // Clear any leftover lean when leaving golf mode
+      bodyRef.current.rotation.x = 0;
     }
 
     // Limb swing (walking)
