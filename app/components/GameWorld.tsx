@@ -2599,6 +2599,18 @@ function Character({
 
 // -------------------- camera --------------------
 
+// Default plaza vantage — matches the Canvas's initial camera position so the
+// "glide back" after a cinematic mode lands exactly where the user expects.
+const CAM_DEFAULT = { x: 0, y: 11, z: 14 };
+
+// Midpoint between tee and hole — the focal point during the golf swing so
+// both the character (right of frame) and the cup (left of frame) are visible
+// while the ball flies between them.
+const GOLF_MIDPOINT = {
+  x: (GOLF_TEE.x + GOLF_HOLE.x) / 2,
+  z: (GOLF_TEE.z + GOLF_HOLE.z) / 2,
+};
+
 function CameraRig({
   charRef,
   pathname,
@@ -2608,40 +2620,77 @@ function CameraRig({
 }) {
   const targetVec = useMemo(() => new THREE.Vector3(0, 1, 0), []);
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
+  // Tracks whether a special mode has hijacked the camera position. Set on
+  // entry to riding/golfing; cleared once the camera has glided back close
+  // to CAM_DEFAULT. Used so the post-ride walk-back gets a camera return.
+  const camHijackedRef = useRef(false);
 
   useFrame((state, dt) => {
     const c = charRef.current;
-    // OrbitControls .target lerps toward the character whenever they're moving
-    // OR locked in a special mode (riding, golfing, fleeing). Otherwise it
-    // glides back to the plaza.
-    const followChar =
+
+    // ── Target ────────────────────────────────────────────────────────────
+    // OrbitControls .target lerps toward the character whenever they're
+    // moving or locked in a special mode. For golfing we instead focus on
+    // the midpoint between the tee and the hole so the ball flight stays
+    // framed. Otherwise the target glides back to the plaza.
+    let wantTX = 0;
+    let wantTZ = 0;
+    let wantTY = 1;
+    if (c.mode === "golfing") {
+      wantTX = GOLF_MIDPOINT.x;
+      wantTZ = GOLF_MIDPOINT.z;
+      wantTY = 1;
+    } else if (
       c.walking ||
       c.mode === "riding" ||
-      c.mode === "golfing" ||
-      c.mode === "flee";
-    const wantX = followChar ? c.x : 0;
-    const wantZ = followChar ? c.z : 0;
-    const wantY = followChar ? 1 + c.y * 0.5 : 1;
-    targetVec.x += (wantX - targetVec.x) * Math.min(1, dt * 2.5);
-    targetVec.y += (wantY - targetVec.y) * Math.min(1, dt * 2.5);
-    targetVec.z += (wantZ - targetVec.z) * Math.min(1, dt * 2.5);
+      c.mode === "flee"
+    ) {
+      wantTX = c.x;
+      wantTZ = c.z;
+      wantTY = 1 + c.y * 0.5;
+    }
+    targetVec.x += (wantTX - targetVec.x) * Math.min(1, dt * 2.5);
+    targetVec.y += (wantTY - targetVec.y) * Math.min(1, dt * 2.5);
+    targetVec.z += (wantTZ - targetVec.z) * Math.min(1, dt * 2.5);
 
-    // For special modes, also pull the camera *position* toward a cinematic
-    // vantage so the character is clearly framed (otherwise the camera stays
-    // at the plaza and the action happens far in the distance).
+    // ── Position ──────────────────────────────────────────────────────────
+    // For special modes, lerp the camera position toward a cinematic vantage
+    // so the action is clearly framed. After the mode ends, glide back to
+    // CAM_DEFAULT so the post-ride walk back to the plaza stays in view.
     let wantCam: { x: number; y: number; z: number } | null = null;
+    let camLerpSpeed = 2.0;
     if (c.mode === "golfing") {
-      // Side-on view of the swing, from south of the tee looking N toward
-      // the character. The hole is to the west, so this puts the swing in
-      // profile and keeps the ball flight visible across the frame.
-      wantCam = { x: c.x + 1.2, y: 2.6, z: c.z + 5.2 };
+      // Wide view from south-east of the swing line — pulled back and
+      // shifted east so portrait viewports fit the character (right of
+      // frame) plus the cup (left of frame), and so the line of sight to
+      // the character clears the oak tree at (-7, 0, 14).
+      wantCam = {
+        x: GOLF_TEE.x + 3.5,
+        y: 7,
+        z: GOLF_TEE.z + 13,
+      };
+      camHijackedRef.current = true;
     } else if (c.mode === "riding") {
       // Cinematic chase-cam following the cart from behind-and-above.
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
+      camHijackedRef.current = true;
+    } else if (camHijackedRef.current) {
+      // Special mode just ended — glide the camera back to the default
+      // plaza vantage. Once close enough, stop overriding so the user can
+      // freely orbit again.
+      wantCam = CAM_DEFAULT;
+      camLerpSpeed = 1.4;
+      const cam = state.camera;
+      const dx = cam.position.x - CAM_DEFAULT.x;
+      const dy = cam.position.y - CAM_DEFAULT.y;
+      const dz = cam.position.z - CAM_DEFAULT.z;
+      if (Math.hypot(dx, dy, dz) < 0.5) {
+        camHijackedRef.current = false;
+      }
     }
     if (wantCam) {
       const cam = state.camera;
-      const k = Math.min(1, dt * 2.0);
+      const k = Math.min(1, dt * camLerpSpeed);
       cam.position.x += (wantCam.x - cam.position.x) * k;
       cam.position.y += (wantCam.y - cam.position.y) * k;
       cam.position.z += (wantCam.z - cam.position.z) * k;
