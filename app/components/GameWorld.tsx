@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useMemo, useRef } from "react";
-import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
 import * as THREE from "three";
@@ -685,13 +685,6 @@ function Scene({
     walkTo(t.x, t.z, section.id);
   }
 
-  function handleGroundClick(e: ThreeEvent<MouseEvent>) {
-    if (!isOnHome || isBusy()) return;
-    const p = e.point;
-    walkTo(p.x, p.z, null);
-    e.stopPropagation();
-  }
-
   function handleGatorClick() {
     if (!isOnHome || isBusy()) return;
     // Walk to a spot just in front of the gator (on the line back to plaza)
@@ -722,7 +715,7 @@ function Scene({
       <Lights />
       <Sky />
       <Clouds />
-      <Ground onClick={handleGroundClick} />
+      <Ground />
       <Plaza />
       <Environment
         gatorRef={refs.gator}
@@ -798,13 +791,12 @@ function Sky() {
   );
 }
 
-function Ground({ onClick }: { onClick: (e: ThreeEvent<MouseEvent>) => void }) {
+function Ground() {
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, 0, 0]}
       receiveShadow
-      onClick={onClick}
     >
       <planeGeometry args={[90, 90]} />
       <meshStandardMaterial color="#5a8a3a" />
