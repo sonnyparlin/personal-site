@@ -46,6 +46,11 @@ type CoasterState = {
   riding: boolean;
 };
 
+type FamilyState = {
+  active: boolean;
+  t: number; // 0..1 progress of the HOME-door easter-egg animation
+};
+
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
   target: React.MutableRefObject<{
@@ -59,6 +64,7 @@ type SharedRefs = {
   approachingGator: React.MutableRefObject<boolean>;
   coaster: React.MutableRefObject<CoasterState>;
   approachingPark: React.MutableRefObject<boolean>;
+  family: React.MutableRefObject<FamilyState>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
@@ -70,6 +76,7 @@ const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
 const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
 const CHAR_RADIUS = 0.32; // for building collision
+const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
 
 // Amusement park
 const PARK = { x: -13, z: -9 };
@@ -194,6 +201,7 @@ export default function GameWorld() {
     riding: false,
   });
   const approachingParkRef = useRef(false);
+  const familyRef = useRef<FamilyState>({ active: false, t: 0 });
 
   const pathname = usePathname();
   const router = useRouter();
@@ -221,9 +229,13 @@ export default function GameWorld() {
       approachingParkRef.current = false;
       coasterRef.current.riding = false;
       coasterRef.current.t = 0;
+      familyRef.current.active = false;
+      familyRef.current.t = 0;
     } else {
       targetRef.current = null;
       pendingNavRef.current = null;
+      familyRef.current.active = false;
+      familyRef.current.t = 0;
     }
   }, [pathname]);
 
@@ -237,6 +249,7 @@ export default function GameWorld() {
       approachingGator: approachingGatorRef,
       coaster: coasterRef,
       approachingPark: approachingParkRef,
+      family: familyRef,
     }),
     []
   );
@@ -420,16 +433,34 @@ function Scene({
         : Math.max(0, cur - DOOR_CLOSE_SPEED * clampedDt);
     }
 
-    // Navigate when door fully open
+    // Navigate when door fully open. EXCEPT for HOME — first the family
+    // (wife, son, two dogs) jumps out and waves before the section opens.
     if (refs.pendingNav.current) {
       const openness = refs.doors.current[refs.pendingNav.current];
       if (openness >= 0.999) {
         const id = refs.pendingNav.current;
-        refs.pendingNav.current = null;
-        queueMicrotask(() => {
-          const sec = SECTIONS.find((s) => s.id === id);
-          if (sec) router.push(sec.path);
-        });
+        if (id === "personal-life") {
+          if (!refs.family.current.active) {
+            refs.family.current.active = true;
+            refs.family.current.t = 0;
+          } else {
+            refs.family.current.t += clampedDt / HOME_FAMILY_DURATION;
+            if (refs.family.current.t >= 1) {
+              refs.pendingNav.current = null;
+              refs.family.current.active = false;
+              refs.family.current.t = 0;
+              queueMicrotask(() => {
+                router.push("/personal-life");
+              });
+            }
+          }
+        } else {
+          refs.pendingNav.current = null;
+          queueMicrotask(() => {
+            const sec = SECTIONS.find((s) => s.id === id);
+            if (sec) router.push(sec.path);
+          });
+        }
       }
     }
   });
@@ -439,7 +470,8 @@ function Scene({
       refs.char.current.mode === "flee" ||
       refs.char.current.mode === "riding" ||
       refs.gator.current.chasing ||
-      refs.coaster.current.riding
+      refs.coaster.current.riding ||
+      refs.family.current.active
     );
   }
 
@@ -508,6 +540,7 @@ function Scene({
         />
       ))}
       <Character charRef={refs.char} />
+      <Family familyRef={refs.family} />
       <CameraRig charRef={refs.char} pathname={pathname} />
     </>
   );
@@ -2093,5 +2126,371 @@ function CameraRig({
       maxPolarAngle={Math.PI * 0.48}
       target={[0, 1, 0]}
     />
+  );
+}
+
+// -------------------- family easter egg --------------------
+
+// HOME building's door is at (0, 0, -BUILDING_D/2 + s.z) ≈ (0, 0, -4.9).
+// Family members spawn at the door and spread out south (toward the plaza).
+const HOME_DOOR = { x: 0, z: -4.9 };
+const FAMILY_TARGETS = [
+  { x: -1.4, z: -3.6, kind: "wife" as const, color: "#c95e8a" },
+  { x: 1.2, z: -3.4, kind: "son" as const, color: "#3a5fb8" },
+  { x: -0.6, z: -2.9, kind: "dog" as const, color: "#8b6a3f" },
+  { x: 0.6, z: -2.8, kind: "dog" as const, color: "#3a2a1a" },
+];
+
+function familyMemberPos(t: number, targetX: number, targetZ: number) {
+  // Phase split: emerge (0..0.22), play (0.22..0.85), retreat (0.85..1)
+  const door = HOME_DOOR;
+  let lerp = 0;
+  if (t < 0.22) {
+    lerp = t / 0.22;
+  } else if (t < 0.85) {
+    lerp = 1;
+  } else {
+    lerp = 1 - (t - 0.85) / 0.15;
+  }
+  const x = door.x + (targetX - door.x) * lerp;
+  const z = door.z + (targetZ - door.z) * lerp;
+  // Jumping: only during the play phase
+  let y = 0;
+  if (t > 0.22 && t < 0.85) {
+    const phase = (t - 0.22) * Math.PI * 6;
+    y = Math.max(0, Math.sin(phase)) * 0.35;
+  }
+  return { x, y, z };
+}
+
+function Family({
+  familyRef,
+}: {
+  familyRef: React.MutableRefObject<FamilyState>;
+}) {
+  const rootRefs = useRef<Array<THREE.Group | null>>([]);
+  const armRefs = useRef<Array<THREE.Group | null>>([]);
+  const tailRefs = useRef<Array<THREE.Group | null>>([]);
+
+  useFrame((state) => {
+    const f = familyRef.current;
+    const tNow = state.clock.elapsedTime;
+
+    if (!f.active) {
+      // Hide everyone
+      for (const r of rootRefs.current) {
+        if (r) r.visible = false;
+      }
+      return;
+    }
+
+    FAMILY_TARGETS.forEach((m, i) => {
+      const root = rootRefs.current[i];
+      if (!root) return;
+      root.visible = true;
+      const pos = familyMemberPos(f.t, m.x, m.z);
+      root.position.set(pos.x, pos.y, pos.z);
+      // Face south (+Z) toward the camera-default-facing area
+      root.rotation.y = Math.PI;
+
+      // Person: wave the waving arm
+      if (m.kind !== "dog") {
+        const arm = armRefs.current[i];
+        if (arm) {
+          // Right arm raised, oscillating side-to-side
+          const wave = -Math.PI * 0.85 + Math.sin(tNow * 8 + i) * 0.45;
+          arm.rotation.z = wave;
+        }
+      }
+
+      // Dog: wag tail fast, bounce extra
+      if (m.kind === "dog") {
+        const tail = tailRefs.current[i];
+        if (tail) {
+          tail.rotation.y = Math.sin(tNow * 14 + i * 0.7) * 0.7;
+        }
+      }
+    });
+  });
+
+  return (
+    <>
+      {FAMILY_TARGETS.map((m, i) => (
+        <group
+          key={i}
+          ref={(el) => {
+            rootRefs.current[i] = el;
+          }}
+          visible={false}
+        >
+          {m.kind === "wife" ? (
+            <Wife
+              shirtColor={m.color}
+              armRef={(el) => {
+                armRefs.current[i] = el;
+              }}
+            />
+          ) : m.kind === "son" ? (
+            <Son
+              shirtColor={m.color}
+              armRef={(el) => {
+                armRefs.current[i] = el;
+              }}
+            />
+          ) : (
+            <Dog
+              furColor={m.color}
+              tailRef={(el) => {
+                tailRefs.current[i] = el;
+              }}
+            />
+          )}
+        </group>
+      ))}
+    </>
+  );
+}
+
+const SKIN_FAMILY = "#e5b896";
+const HAIR_BROWN = "#5a3a20";
+const HAIR_SANDY = "#a87a4a";
+
+function Wife({
+  shirtColor,
+  armRef,
+}: {
+  shirtColor: string;
+  armRef: (el: THREE.Group | null) => void;
+}) {
+  return (
+    <group>
+      {/* Pants */}
+      <mesh position={[0, 0.32, 0]} castShadow>
+        <boxGeometry args={[0.34, 0.5, 0.24]} />
+        <meshStandardMaterial color="#2a3a5a" />
+      </mesh>
+      {/* Shoes */}
+      <mesh position={[-0.1, 0.06, 0.02]} castShadow>
+        <boxGeometry args={[0.13, 0.08, 0.18]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.1, 0.06, 0.02]} castShadow>
+        <boxGeometry args={[0.13, 0.08, 0.18]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Shirt / top */}
+      <mesh position={[0, 0.85, 0]} castShadow>
+        <boxGeometry args={[0.45, 0.6, 0.26]} />
+        <meshStandardMaterial color={shirtColor} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, 1.3, 0]} castShadow>
+        <sphereGeometry args={[0.18, 12, 10]} />
+        <meshStandardMaterial color={SKIN_FAMILY} />
+      </mesh>
+      {/* Hair — back + sides */}
+      <mesh position={[0, 1.34, -0.04]} castShadow>
+        <boxGeometry args={[0.36, 0.34, 0.34]} />
+        <meshStandardMaterial color={HAIR_BROWN} />
+      </mesh>
+      {/* Hair falls past shoulders */}
+      <mesh position={[0, 1.0, -0.13]} castShadow>
+        <boxGeometry args={[0.34, 0.4, 0.06]} />
+        <meshStandardMaterial color={HAIR_BROWN} />
+      </mesh>
+      {/* Face (slightly forward so it covers the hair on the front) */}
+      <mesh position={[0, 1.3, 0.08]}>
+        <boxGeometry args={[0.26, 0.22, 0.15]} />
+        <meshStandardMaterial color={SKIN_FAMILY} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-0.07, 1.32, 0.16]}>
+        <sphereGeometry args={[0.022, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.07, 1.32, 0.16]}>
+        <sphereGeometry args={[0.022, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Smile */}
+      <mesh position={[0, 1.22, 0.16]}>
+        <boxGeometry args={[0.07, 0.015, 0.005]} />
+        <meshBasicMaterial color="#a82838" />
+      </mesh>
+      {/* Static left arm (down at side) */}
+      <mesh position={[-0.27, 0.85, 0]} castShadow>
+        <boxGeometry args={[0.1, 0.55, 0.12]} />
+        <meshStandardMaterial color={shirtColor} />
+      </mesh>
+      {/* Right arm — pivoted at shoulder so it can wave */}
+      <group position={[0.25, 1.08, 0]} ref={armRef}>
+        <mesh position={[0.0, -0.22, 0]} castShadow>
+          <boxGeometry args={[0.1, 0.45, 0.12]} />
+          <meshStandardMaterial color={shirtColor} />
+        </mesh>
+        {/* Forearm + hand */}
+        <mesh position={[0.0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.09, 0.18, 0.1]} />
+          <meshStandardMaterial color={SKIN_FAMILY} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function Son({
+  shirtColor,
+  armRef,
+}: {
+  shirtColor: string;
+  armRef: (el: THREE.Group | null) => void;
+}) {
+  // Same construction as Wife but smaller and short hair
+  return (
+    <group scale={0.78}>
+      {/* Pants */}
+      <mesh position={[0, 0.3, 0]} castShadow>
+        <boxGeometry args={[0.32, 0.46, 0.22]} />
+        <meshStandardMaterial color="#3a2818" />
+      </mesh>
+      <mesh position={[-0.09, 0.06, 0.02]} castShadow>
+        <boxGeometry args={[0.13, 0.07, 0.16]} />
+        <meshStandardMaterial color="#f8f8f0" />
+      </mesh>
+      <mesh position={[0.09, 0.06, 0.02]} castShadow>
+        <boxGeometry args={[0.13, 0.07, 0.16]} />
+        <meshStandardMaterial color="#f8f8f0" />
+      </mesh>
+      {/* Shirt */}
+      <mesh position={[0, 0.78, 0]} castShadow>
+        <boxGeometry args={[0.4, 0.55, 0.22]} />
+        <meshStandardMaterial color={shirtColor} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, 1.18, 0]} castShadow>
+        <sphereGeometry args={[0.17, 12, 10]} />
+        <meshStandardMaterial color={SKIN_FAMILY} />
+      </mesh>
+      {/* Hair — short brown cap */}
+      <mesh position={[0, 1.28, -0.01]} castShadow>
+        <sphereGeometry args={[0.17, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial color={HAIR_SANDY} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-0.06, 1.2, 0.15]}>
+        <sphereGeometry args={[0.022, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.06, 1.2, 0.15]}>
+        <sphereGeometry args={[0.022, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Big grin */}
+      <mesh position={[0, 1.1, 0.16]}>
+        <boxGeometry args={[0.1, 0.025, 0.005]} />
+        <meshBasicMaterial color="#a82838" />
+      </mesh>
+      {/* Static left arm */}
+      <mesh position={[-0.25, 0.78, 0]} castShadow>
+        <boxGeometry args={[0.1, 0.5, 0.11]} />
+        <meshStandardMaterial color={shirtColor} />
+      </mesh>
+      {/* Right arm — waving */}
+      <group position={[0.23, 0.98, 0]} ref={armRef}>
+        <mesh position={[0.0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.1, 0.4, 0.11]} />
+          <meshStandardMaterial color={shirtColor} />
+        </mesh>
+        <mesh position={[0.0, -0.43, 0]} castShadow>
+          <boxGeometry args={[0.09, 0.16, 0.1]} />
+          <meshStandardMaterial color={SKIN_FAMILY} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function Dog({
+  furColor,
+  tailRef,
+}: {
+  furColor: string;
+  tailRef: (el: THREE.Group | null) => void;
+}) {
+  const FUR_DARK = "#2a1a0d";
+  return (
+    <group scale={0.95}>
+      {/* Body */}
+      <mesh position={[0, 0.28, 0]} castShadow>
+        <boxGeometry args={[0.32, 0.22, 0.55]} />
+        <meshStandardMaterial color={furColor} />
+      </mesh>
+      {/* Belly highlight */}
+      <mesh position={[0, 0.18, 0]}>
+        <boxGeometry args={[0.3, 0.04, 0.5]} />
+        <meshStandardMaterial color="#f4e6d0" />
+      </mesh>
+      {/* Head — front of body (+Z direction since model faces +Z) */}
+      <mesh position={[0, 0.36, 0.34]} castShadow>
+        <boxGeometry args={[0.28, 0.24, 0.24]} />
+        <meshStandardMaterial color={furColor} />
+      </mesh>
+      {/* Snout */}
+      <mesh position={[0, 0.28, 0.5]} castShadow>
+        <boxGeometry args={[0.16, 0.14, 0.16]} />
+        <meshStandardMaterial color={furColor} />
+      </mesh>
+      {/* Nose */}
+      <mesh position={[0, 0.32, 0.59]}>
+        <sphereGeometry args={[0.04, 8, 6]} />
+        <meshStandardMaterial color={FUR_DARK} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-0.07, 0.42, 0.45]}>
+        <sphereGeometry args={[0.025, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.07, 0.42, 0.45]}>
+        <sphereGeometry args={[0.025, 8, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Floppy ears */}
+      <mesh position={[-0.14, 0.46, 0.28]} rotation={[0.3, 0, -0.4]} castShadow>
+        <boxGeometry args={[0.04, 0.18, 0.12]} />
+        <meshStandardMaterial color={FUR_DARK} />
+      </mesh>
+      <mesh position={[0.14, 0.46, 0.28]} rotation={[0.3, 0, 0.4]} castShadow>
+        <boxGeometry args={[0.04, 0.18, 0.12]} />
+        <meshStandardMaterial color={FUR_DARK} />
+      </mesh>
+      {/* Tongue */}
+      <mesh position={[0, 0.24, 0.58]}>
+        <boxGeometry args={[0.07, 0.02, 0.07]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Tail — pivot at back of body, points up and back */}
+      <group position={[0, 0.38, -0.28]} ref={tailRef}>
+        <mesh
+          position={[0, 0.08, -0.1]}
+          rotation={[-0.5, 0, 0]}
+          castShadow
+        >
+          <boxGeometry args={[0.06, 0.06, 0.24]} />
+          <meshStandardMaterial color={furColor} />
+        </mesh>
+      </group>
+      {/* Legs */}
+      {[
+        [-0.11, 0.21],
+        [0.11, 0.21],
+        [-0.11, -0.21],
+        [0.11, -0.21],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.1, z]} castShadow>
+          <boxGeometry args={[0.08, 0.2, 0.1]} />
+          <meshStandardMaterial color={furColor} />
+        </mesh>
+      ))}
+    </group>
   );
 }
