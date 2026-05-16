@@ -2340,6 +2340,13 @@ function Character({
   const leftHipRef = useRef<THREE.Group>(null);
   const rightHipRef = useRef<THREE.Group>(null);
   const clubRef = useRef<THREE.Group>(null);
+  // Pivot at body-center, same Y as the shoulders. The club is parented here
+  // (not the right shoulder) so both hands appear to grip a centered club.
+  // Rotates with `armAngle` so the club swings in sync with the arms.
+  const clubHolderRef = useRef<THREE.Group>(null);
+  // Tilt the arms slightly inward during the golf address/swing so the
+  // hands end up close together on the grip rather than ~0.66 apart.
+  const GOLF_SHOULDER_INWARD = 0.42;
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -2385,24 +2392,30 @@ function Character({
 
     if (c.mode === "golfing") {
       const gt = golfRef.current.t;
-      // Arm pose phases:
-      //   address  (0..0.18): arms forward+down, hands together at "club"
-      //   backswing(0.18..0.32): both arms rotate way up & back
-      //   downswing(0.32..0.36): rapid forward whip into impact
-      //   follow   (0.36..0.55): arms swept across, settled
-      //   celebrate(0.55..0.88): arms thrown up, oscillating
+      // Arm pose phases — sign convention: positive armAngle rotates the
+      // arm BACK and UP (proper backswing), negative rotates it FORWARD
+      // and UP (follow-through). Address sits slightly forward (-0.4),
+      // impact passes through 0 (arms straight down).
+      //   address  (0..0.18): arms forward+down
+      //   backswing(0.18..0.32): arms swing back and up to ~+2.8
+      //   downswing(0.32..0.36): rapid whip through impact (0) to follow-through
+      //   follow   (0.36..0.55): arms forward-up hold
+      //   celebrate(0.55..0.88): arms up, oscillating with a "yes!" wave
       //   relax    (0.88..1.00): drop arms back to sides
       let armAngle = 0;
       if (gt < 0.18) {
-        armAngle = -0.4;
+        armAngle = -0.4; // address — slight forward lean
       } else if (gt < 0.32) {
         const p = (gt - 0.18) / 0.14;
-        armAngle = -0.4 - p * 2.4; // back to ~-2.8
+        armAngle = -0.4 + p * 3.2; // back to top of backswing (+2.8)
       } else if (gt < 0.36) {
         const p = (gt - 0.32) / 0.04;
-        armAngle = -2.8 + p * 4.2; // whip from -2.8 to +1.4
+        // Downswing: whip from top (+2.8) through impact (~0 around p=0.67)
+        // to follow-through forward-up (-1.4). Ball-flight starts at gt=0.35
+        // which lands almost exactly on the impact frame.
+        armAngle = 2.8 - p * 4.2;
       } else if (gt < 0.55) {
-        armAngle = 1.0; // follow-through hold
+        armAngle = -1.4; // follow-through hold (arms forward-up)
       } else if (gt < 0.88) {
         const wave = Math.sin(t * 9) * 0.25;
         armAngle = -Math.PI * 0.75 + wave;
@@ -2410,8 +2423,17 @@ function Character({
         const p = (gt - 0.88) / 0.12;
         armAngle = -Math.PI * 0.75 + p * Math.PI * 0.75; // ease back to 0
       }
-      if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = armAngle;
-      if (rightShoulderRef.current) rightShoulderRef.current.rotation.x = armAngle;
+      if (leftShoulderRef.current) {
+        leftShoulderRef.current.rotation.x = armAngle;
+        leftShoulderRef.current.rotation.z = GOLF_SHOULDER_INWARD;
+      }
+      if (rightShoulderRef.current) {
+        rightShoulderRef.current.rotation.x = armAngle;
+        rightShoulderRef.current.rotation.z = -GOLF_SHOULDER_INWARD;
+      }
+      if (clubHolderRef.current) {
+        clubHolderRef.current.rotation.x = armAngle;
+      }
       if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
       if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
       // Slight forward lean while addressing/swinging
@@ -2427,6 +2449,11 @@ function Character({
       // Clear any leftover lean when leaving golf mode
       bodyRef.current.rotation.x = 0;
     }
+    // Clear the golf-only inward shoulder tilt and the club-holder rotation
+    // so the character walks normally outside of golf mode.
+    if (leftShoulderRef.current) leftShoulderRef.current.rotation.z = 0;
+    if (rightShoulderRef.current) rightShoulderRef.current.rotation.z = 0;
+    if (clubHolderRef.current) clubHolderRef.current.rotation.x = 0;
 
     // Limb swing (walking)
     const swing = c.walking ? Math.sin(c.stepPhase * Math.PI * 2) * 0.7 : 0;
@@ -2542,29 +2569,38 @@ function Character({
             <meshBasicMaterial color={TATTOO} />
           </mesh>
 
-          {/* Golf club — child of the right shoulder so it follows the swing.
-              Hidden unless the character is in golfing mode. Tilted slightly
-              forward so the head sits in front of the body during address. */}
-          <group ref={clubRef} visible={false} position={[0, -0.62, 0.08]} rotation={[0.45, 0, 0]}>
-            {/* Grip (rubber wrap, near the hands) */}
-            <mesh position={[0, -0.08, 0]} castShadow>
-              <cylinderGeometry args={[0.022, 0.022, 0.16, 8]} />
+        </group>
+
+        {/* Golf club — child of a body-centered pivot so it appears to be
+            gripped by BOTH hands meeting in front of the body (the shoulders
+            tilt inward during golf so the hands meet near x=0). The pivot
+            rotates in sync with the arm swing. Hidden outside golf mode. */}
+        <group ref={clubHolderRef} position={[0, 1.22, 0.05]}>
+          <group ref={clubRef} visible={false} position={[0, -0.62, 0.08]} rotation={[0.35, 0, 0]}>
+            {/* Grip (rubber wrap, at the hands) */}
+            <mesh position={[0, -0.06, 0]} castShadow>
+              <cylinderGeometry args={[0.025, 0.025, 0.22, 10]} />
               <meshStandardMaterial color="#1a1a1a" />
             </mesh>
-            {/* Shaft (steel, extends past the hands toward the ground) */}
-            <mesh position={[0, -0.55, 0]} castShadow>
-              <cylinderGeometry args={[0.012, 0.012, 0.78, 8]} />
+            {/* Shaft (steel, extends past the hands toward the ball) */}
+            <mesh position={[0, -0.58, 0]} castShadow>
+              <cylinderGeometry args={[0.013, 0.013, 0.82, 10]} />
               <meshStandardMaterial color="#cfd2d4" metalness={0.6} roughness={0.3} />
             </mesh>
-            {/* Club head (iron) — angled face pointing forward toward the ball */}
-            <group position={[0, -0.96, 0.04]}>
+            {/* Hosel (where shaft meets head) */}
+            <mesh position={[0, -1.0, 0.01]} castShadow>
+              <cylinderGeometry args={[0.018, 0.014, 0.06, 8]} />
+              <meshStandardMaterial color="#9aa0a4" metalness={0.7} roughness={0.35} />
+            </mesh>
+            {/* Club head (iron) — wide flat face addressing the ball */}
+            <group position={[0.02, -1.04, 0.06]}>
               <mesh castShadow>
-                <boxGeometry args={[0.16, 0.07, 0.05]} />
+                <boxGeometry args={[0.18, 0.09, 0.06]} />
                 <meshStandardMaterial color="#9aa0a4" metalness={0.7} roughness={0.35} />
               </mesh>
               {/* Sole */}
-              <mesh position={[0, -0.04, 0.005]}>
-                <boxGeometry args={[0.16, 0.012, 0.06]} />
+              <mesh position={[0, -0.05, 0.005]}>
+                <boxGeometry args={[0.18, 0.014, 0.07]} />
                 <meshStandardMaterial color="#6a6f72" metalness={0.6} roughness={0.4} />
               </mesh>
             </group>
@@ -2660,14 +2696,15 @@ function CameraRig({
     let wantCam: { x: number; y: number; z: number } | null = null;
     let camLerpSpeed = 2.0;
     if (c.mode === "golfing") {
-      // Wide view from south-east of the swing line — pulled back and
-      // shifted east so portrait viewports fit the character (right of
-      // frame) plus the cup (left of frame), and so the line of sight to
-      // the character clears the oak tree at (-7, 0, 14).
+      // Down-the-line shot from behind-and-trail-side of the character —
+      // similar to a golf TV camera. The character faces west toward the
+      // hole, so "behind" = east, and a right-handed golfer's trail side
+      // is south (+Z). Offset south so we see his profile + the club
+      // (otherwise his body blocks the swing entirely).
       wantCam = {
-        x: GOLF_TEE.x + 3.5,
-        y: 7,
-        z: GOLF_TEE.z + 13,
+        x: GOLF_TEE.x + 4.5,
+        y: 3,
+        z: GOLF_TEE.z + 3.5,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
