@@ -63,6 +63,10 @@ type SharedRefs = {
     z: number;
     sectionId: SectionId | null;
   } | null>;
+  // Remaining waypoints to traverse before the *current* target's arrival
+  // handlers fire. Each arrival pops the next waypoint and treats it as the
+  // new target. Section / approach flags are deferred until the queue is empty.
+  pathQueue: React.MutableRefObject<{ x: number; z: number }[]>;
   pendingNav: React.MutableRefObject<SectionId | null>;
   doors: React.MutableRefObject<DoorState>;
   gator: React.MutableRefObject<GatorState>;
@@ -180,6 +184,80 @@ function resolveCollisions(x: number, z: number): { x: number; z: number } {
   return { x: nx, z: nz };
 }
 
+// Sample a straight line segment and report if it crosses any building's
+// inflated footprint. Used to decide whether a walk needs an intermediate
+// waypoint to avoid getting stuck on a corner.
+function lineHitsAnyBuilding(
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number
+): boolean {
+  const halfW = BUILDING_W / 2 + CHAR_RADIUS + 0.05;
+  const halfD = BUILDING_D / 2 + CHAR_RADIUS + 0.05;
+  for (const s of SECTIONS) {
+    const a = buildingAngle(s);
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    const samples = 24;
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples;
+      const wx = x1 + (x2 - x1) * t;
+      const wz = z1 + (z2 - z1) * t;
+      const dx = wx - s.x;
+      const dz = wz - s.z;
+      const lx = cos * dx + sin * dz;
+      const lz = -sin * dx + cos * dz;
+      if (Math.abs(lx) < halfW && Math.abs(lz) < halfD) return true;
+    }
+  }
+  return false;
+}
+
+// Outer-ring waypoints used to bypass the building cluster. Picked so each
+// one is clear of every building from the plaza's perspective.
+const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
+  { x: -8, z: 4 },    // SW (between CODE and the golf course)
+  { x: -8, z: -5 },   // NW (south-west of JIU JITSU, on the way to the park)
+  { x: 8, z: 4 },     // SE
+  { x: 8, z: -5 },    // NE
+  { x: 0, z: 8 },     // S (between CODE and CHESS)
+  { x: -8, z: 0 },    // W
+  { x: 8, z: 0 },     // E
+];
+
+// Return the sequence of waypoints to walk through to get from (fromX, fromZ)
+// to (toX, toZ) without clipping a building. The final entry is always the
+// destination. If the direct line is clear, returns just [destination].
+function routeTo(
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number
+): { x: number; z: number }[] {
+  if (!lineHitsAnyBuilding(fromX, fromZ, toX, toZ)) {
+    return [{ x: toX, z: toZ }];
+  }
+  // Pick the bypass waypoint that minimises total path length while keeping
+  // both legs clear of buildings.
+  let best: { x: number; z: number } | null = null;
+  let bestCost = Infinity;
+  for (const w of BYPASS_WAYPOINTS) {
+    if (lineHitsAnyBuilding(fromX, fromZ, w.x, w.z)) continue;
+    if (lineHitsAnyBuilding(w.x, w.z, toX, toZ)) continue;
+    const cost =
+      Math.hypot(w.x - fromX, w.z - fromZ) +
+      Math.hypot(toX - w.x, toZ - w.z);
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = w;
+    }
+  }
+  if (best) return [best, { x: toX, z: toZ }];
+  // Fallback: walk straight and let collision push-out do its best.
+  return [{ x: toX, z: toZ }];
+}
+
 // -------------------- entry point --------------------
 
 export default function GameWorld() {
@@ -197,6 +275,7 @@ export default function GameWorld() {
     z: number;
     sectionId: SectionId | null;
   } | null>(null);
+  const pathQueueRef = useRef<{ x: number; z: number }[]>([]);
   const pendingNavRef = useRef<SectionId | null>(null);
   const doorsRef = useRef<DoorState>(
     Object.fromEntries(SECTIONS.map((s) => [s.id, 0])) as DoorState
@@ -238,6 +317,7 @@ export default function GameWorld() {
       charRef.current.walking = false;
       charRef.current.mode = "idle";
       targetRef.current = null;
+      pathQueueRef.current = [];
       pendingNavRef.current = null;
       approachingGatorRef.current = false;
       gatorRef.current.chasing = false;
@@ -251,6 +331,7 @@ export default function GameWorld() {
       approachingGolfRef.current = false;
     } else {
       targetRef.current = null;
+      pathQueueRef.current = [];
       pendingNavRef.current = null;
       familyRef.current.active = false;
       familyRef.current.t = 0;
@@ -264,6 +345,7 @@ export default function GameWorld() {
     () => ({
       char: charRef,
       target: targetRef,
+      pathQueue: pathQueueRef,
       pendingNav: pendingNavRef,
       doors: doorsRef,
       gator: gatorRef,
@@ -286,6 +368,7 @@ export default function GameWorld() {
         camera={{ position: [0, 11, 14], fov: 45, near: 0.1, far: 250 }}
         gl={{ antialias: true }}
       >
+
         <color attach="background" args={["#1a1a2e"]} />
         <fog attach="fog" args={["#7fa8c8", 45, 95]} />
         <Scene refs={refs} router={router} isOnHome={isOnHome} pathname={pathname ?? "/"} />
@@ -402,37 +485,52 @@ function Scene({
       if (dist < ARRIVE_DIST) {
         char.x = target.x;
         char.z = target.z;
-        char.walking = false;
-        char.stepPhase = 0;
-        if (target.sectionId) {
-          const sec = SECTIONS.find((s) => s.id === target.sectionId);
-          if (sec) {
-            char.angle = Math.atan2(sec.x - char.x, sec.z - char.z);
+        // If there are more waypoints queued, the current "arrival" is just
+        // a pass-through to the next leg. Don't fire any of the approach /
+        // section handlers until the queue is empty.
+        if (refs.pathQueue.current.length > 0) {
+          // More waypoints queued — treat this arrival as a pass-through
+          // and continue walking to the next leg. Approach / section
+          // handlers stay deferred until the queue is empty.
+          const next = refs.pathQueue.current.shift()!;
+          refs.target.current = {
+            x: next.x,
+            z: next.z,
+            sectionId: target.sectionId,
+          };
+        } else {
+          char.walking = false;
+          char.stepPhase = 0;
+          if (target.sectionId) {
+            const sec = SECTIONS.find((s) => s.id === target.sectionId);
+            if (sec) {
+              char.angle = Math.atan2(sec.x - char.x, sec.z - char.z);
+            }
+            refs.pendingNav.current = target.sectionId;
+          } else if (refs.approachingGator.current) {
+            refs.approachingGator.current = false;
+            char.mode = "flee";
+            char.walking = true;
+            gator.chasing = true;
+          } else if (refs.approachingPark.current) {
+            // Board the coaster!
+            refs.approachingPark.current = false;
+            char.mode = "riding";
+            char.walking = false;
+            coaster.riding = true;
+            coaster.t = 0;
+            coaster.laps = 0;
+          } else if (refs.approachingGolf.current) {
+            // Address the ball — start the golf sequence
+            refs.approachingGolf.current = false;
+            char.mode = "golfing";
+            char.walking = false;
+            char.angle = -Math.PI / 2; // face west toward the hole
+            refs.golf.current.active = true;
+            refs.golf.current.t = 0;
           }
-          refs.pendingNav.current = target.sectionId;
-        } else if (refs.approachingGator.current) {
-          refs.approachingGator.current = false;
-          char.mode = "flee";
-          char.walking = true;
-          gator.chasing = true;
-        } else if (refs.approachingPark.current) {
-          // Board the coaster!
-          refs.approachingPark.current = false;
-          char.mode = "riding";
-          char.walking = false;
-          coaster.riding = true;
-          coaster.t = 0;
-          coaster.laps = 0;
-        } else if (refs.approachingGolf.current) {
-          // Address the ball — start the golf sequence
-          refs.approachingGolf.current = false;
-          char.mode = "golfing";
-          char.walking = false;
-          char.angle = -Math.PI / 2; // face west toward the hole
-          refs.golf.current.active = true;
-          refs.golf.current.t = 0;
+          refs.target.current = null;
         }
-        refs.target.current = null;
       } else {
         const step = WALK_SPEED * clampedDt;
         const proposed = resolveCollisions(
@@ -534,18 +632,31 @@ function Scene({
     );
   }
 
+  // Helper: set a target and pre-populate the path queue with any waypoints
+  // needed to bypass building corners between here and there.
+  function walkTo(
+    destX: number,
+    destZ: number,
+    sectionId: SectionId | null
+  ) {
+    const c = refs.char.current;
+    const path = routeTo(c.x, c.z, destX, destZ);
+    const first = path[0];
+    refs.target.current = { x: first.x, z: first.z, sectionId };
+    refs.pathQueue.current = path.slice(1);
+    refs.char.current.walking = true;
+  }
+
   function handleBuildingClick(section: Section) {
     if (!isOnHome || isBusy()) return;
     const t = doorTarget(section);
-    refs.target.current = { x: t.x, z: t.z, sectionId: section.id };
-    refs.char.current.walking = true;
+    walkTo(t.x, t.z, section.id);
   }
 
   function handleGroundClick(e: ThreeEvent<MouseEvent>) {
     if (!isOnHome || isBusy()) return;
     const p = e.point;
-    refs.target.current = { x: p.x, z: p.z, sectionId: null };
-    refs.char.current.walking = true;
+    walkTo(p.x, p.z, null);
     e.stopPropagation();
   }
 
@@ -556,35 +667,20 @@ function Scene({
     const r = Math.hypot(g.x, g.z);
     const offset = 1.6; // stand this far from the gator before it pounces
     const k = (r - offset) / r;
-    refs.target.current = {
-      x: g.x * k,
-      z: g.z * k,
-      sectionId: null,
-    };
-    refs.char.current.walking = true;
+    walkTo(g.x * k, g.z * k, null);
     refs.approachingGator.current = true;
   }
 
   function handleParkClick() {
     if (!isOnHome || isBusy()) return;
     // Walk to the park entrance (south of park, near the ticket booth)
-    refs.target.current = {
-      x: PARK.x,
-      z: PARK.z + PARK_ENTRY_OFFSET,
-      sectionId: null,
-    };
-    refs.char.current.walking = true;
+    walkTo(PARK.x, PARK.z + PARK_ENTRY_OFFSET, null);
     refs.approachingPark.current = true;
   }
 
   function handleGolfClick() {
     if (!isOnHome || isBusy()) return;
-    refs.target.current = {
-      x: GOLF_TEE.x,
-      z: GOLF_TEE.z,
-      sectionId: null,
-    };
-    refs.char.current.walking = true;
+    walkTo(GOLF_TEE.x, GOLF_TEE.z, null);
     refs.approachingGolf.current = true;
   }
 
@@ -2243,10 +2339,15 @@ function Character({
   const rightShoulderRef = useRef<THREE.Group>(null);
   const leftHipRef = useRef<THREE.Group>(null);
   const rightHipRef = useRef<THREE.Group>(null);
+  const clubRef = useRef<THREE.Group>(null);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
     const c = charRef.current;
+    // Show the golf club only while addressing / swinging.
+    if (clubRef.current) {
+      clubRef.current.visible = c.mode === "golfing";
+    }
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
@@ -2440,6 +2541,34 @@ function Character({
             <boxGeometry args={[0.14, 0.025, 0.16]} />
             <meshBasicMaterial color={TATTOO} />
           </mesh>
+
+          {/* Golf club — child of the right shoulder so it follows the swing.
+              Hidden unless the character is in golfing mode. Tilted slightly
+              forward so the head sits in front of the body during address. */}
+          <group ref={clubRef} visible={false} position={[0, -0.62, 0.08]} rotation={[0.45, 0, 0]}>
+            {/* Grip (rubber wrap, near the hands) */}
+            <mesh position={[0, -0.08, 0]} castShadow>
+              <cylinderGeometry args={[0.022, 0.022, 0.16, 8]} />
+              <meshStandardMaterial color="#1a1a1a" />
+            </mesh>
+            {/* Shaft (steel, extends past the hands toward the ground) */}
+            <mesh position={[0, -0.55, 0]} castShadow>
+              <cylinderGeometry args={[0.012, 0.012, 0.78, 8]} />
+              <meshStandardMaterial color="#cfd2d4" metalness={0.6} roughness={0.3} />
+            </mesh>
+            {/* Club head (iron) — angled face pointing forward toward the ball */}
+            <group position={[0, -0.96, 0.04]}>
+              <mesh castShadow>
+                <boxGeometry args={[0.16, 0.07, 0.05]} />
+                <meshStandardMaterial color="#9aa0a4" metalness={0.7} roughness={0.35} />
+              </mesh>
+              {/* Sole */}
+              <mesh position={[0, -0.04, 0.005]}>
+                <boxGeometry args={[0.16, 0.012, 0.06]} />
+                <meshStandardMaterial color="#6a6f72" metalness={0.6} roughness={0.4} />
+              </mesh>
+            </group>
+          </group>
         </group>
 
         {/* Legs — pivot at hip */}
@@ -2480,17 +2609,44 @@ function CameraRig({
   const targetVec = useMemo(() => new THREE.Vector3(0, 1, 0), []);
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
 
-  useFrame((_, dt) => {
+  useFrame((state, dt) => {
     const c = charRef.current;
-    // OrbitControls .target lerps toward character when walking to a section,
-    // back to origin otherwise.
-    const targetingSection = c.walking;
-    const wantX = targetingSection ? c.x : 0;
-    const wantZ = targetingSection ? c.z : 0;
-    const wantY = 1;
+    // OrbitControls .target lerps toward the character whenever they're moving
+    // OR locked in a special mode (riding, golfing, fleeing). Otherwise it
+    // glides back to the plaza.
+    const followChar =
+      c.walking ||
+      c.mode === "riding" ||
+      c.mode === "golfing" ||
+      c.mode === "flee";
+    const wantX = followChar ? c.x : 0;
+    const wantZ = followChar ? c.z : 0;
+    const wantY = followChar ? 1 + c.y * 0.5 : 1;
     targetVec.x += (wantX - targetVec.x) * Math.min(1, dt * 2.5);
     targetVec.y += (wantY - targetVec.y) * Math.min(1, dt * 2.5);
     targetVec.z += (wantZ - targetVec.z) * Math.min(1, dt * 2.5);
+
+    // For special modes, also pull the camera *position* toward a cinematic
+    // vantage so the character is clearly framed (otherwise the camera stays
+    // at the plaza and the action happens far in the distance).
+    let wantCam: { x: number; y: number; z: number } | null = null;
+    if (c.mode === "golfing") {
+      // Side-on view of the swing, from south of the tee looking N toward
+      // the character. The hole is to the west, so this puts the swing in
+      // profile and keeps the ball flight visible across the frame.
+      wantCam = { x: c.x + 1.2, y: 2.6, z: c.z + 5.2 };
+    } else if (c.mode === "riding") {
+      // Cinematic chase-cam following the cart from behind-and-above.
+      wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
+    }
+    if (wantCam) {
+      const cam = state.camera;
+      const k = Math.min(1, dt * 2.0);
+      cam.position.x += (wantCam.x - cam.position.x) * k;
+      cam.position.y += (wantCam.y - cam.position.y) * k;
+      cam.position.z += (wantCam.z - cam.position.z) * k;
+    }
+
     if (controlsRef.current) {
       controlsRef.current.target.copy(targetVec);
       controlsRef.current.update();
