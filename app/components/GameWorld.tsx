@@ -2134,14 +2134,61 @@ function CameraRig({
 // HOME building's door is at (0, 0, -BUILDING_D/2 + s.z) ≈ (0, 0, -4.9).
 // Family members spawn at the door and spread out south (toward the plaza).
 const HOME_DOOR = { x: 0, z: -4.9 };
-const FAMILY_TARGETS = [
-  { x: -1.4, z: -3.6, kind: "wife" as const, color: "#c95e8a" },
-  { x: 1.2, z: -3.4, kind: "son" as const, color: "#3a5fb8" },
-  { x: -0.6, z: -2.9, kind: "dog" as const, color: "#8b6a3f" },
-  { x: 0.6, z: -2.8, kind: "dog" as const, color: "#3a2a1a" },
+type FamilyMember = {
+  x: number;
+  z: number;
+  kind: "wife" | "son" | "dog";
+  color: string;
+  // Per-member bounce params so they don't all jump in lockstep.
+  bouncePhase: number; // radians offset into the sin wave
+  bounceFreq: number; // angular frequency (radians per unit-t)
+  bounceHeight: number; // peak Y in world units
+};
+
+const FAMILY_TARGETS: FamilyMember[] = [
+  // Wife — measured, lighter bounce
+  {
+    x: -1.4,
+    z: -3.6,
+    kind: "wife",
+    color: "#c95e8a",
+    bouncePhase: 0.0,
+    bounceFreq: 18.0,
+    bounceHeight: 0.26,
+  },
+  // Son — slightly higher, slower
+  {
+    x: 1.2,
+    z: -3.4,
+    kind: "son",
+    color: "#4a5a32",
+    bouncePhase: 2.1,
+    bounceFreq: 16.5,
+    bounceHeight: 0.32,
+  },
+  // Dog 1 — fast & high
+  {
+    x: -0.6,
+    z: -2.9,
+    kind: "dog",
+    color: "#8b6a3f",
+    bouncePhase: 0.9,
+    bounceFreq: 23.0,
+    bounceHeight: 0.42,
+  },
+  // Dog 2 — even faster, different rhythm
+  {
+    x: 0.6,
+    z: -2.8,
+    kind: "dog",
+    color: "#3a2a1a",
+    bouncePhase: 3.4,
+    bounceFreq: 25.5,
+    bounceHeight: 0.46,
+  },
 ];
 
-function familyMemberPos(t: number, targetX: number, targetZ: number) {
+function familyMemberPos(t: number, m: FamilyMember) {
   // Phase split: emerge (0..0.22), play (0.22..0.85), retreat (0.85..1)
   const door = HOME_DOOR;
   let lerp = 0;
@@ -2152,13 +2199,13 @@ function familyMemberPos(t: number, targetX: number, targetZ: number) {
   } else {
     lerp = 1 - (t - 0.85) / 0.15;
   }
-  const x = door.x + (targetX - door.x) * lerp;
-  const z = door.z + (targetZ - door.z) * lerp;
-  // Jumping: only during the play phase
+  const x = door.x + (m.x - door.x) * lerp;
+  const z = door.z + (m.z - door.z) * lerp;
+  // Jumping: only during the play phase; per-member phase, frequency, height
   let y = 0;
   if (t > 0.22 && t < 0.85) {
-    const phase = (t - 0.22) * Math.PI * 6;
-    y = Math.max(0, Math.sin(phase)) * 0.35;
+    const phase = (t - 0.22) * m.bounceFreq + m.bouncePhase;
+    y = Math.max(0, Math.sin(phase)) * m.bounceHeight;
   }
   return { x, y, z };
 }
@@ -2188,26 +2235,28 @@ function Family({
       const root = rootRefs.current[i];
       if (!root) return;
       root.visible = true;
-      const pos = familyMemberPos(f.t, m.x, m.z);
+      const pos = familyMemberPos(f.t, m);
       root.position.set(pos.x, pos.y, pos.z);
       // Face south (+Z) toward the camera-default-facing area
       root.rotation.y = Math.PI;
 
-      // Person: wave the waving arm
+      // Person: wave the waving arm at a per-member frequency and phase
       if (m.kind !== "dog") {
         const arm = armRefs.current[i];
         if (arm) {
-          // Right arm raised, oscillating side-to-side
-          const wave = -Math.PI * 0.85 + Math.sin(tNow * 8 + i) * 0.45;
+          const freq = m.kind === "wife" ? 7.5 : 9.5;
+          const wave =
+            -Math.PI * 0.85 + Math.sin(tNow * freq + m.bouncePhase * 1.7) * 0.45;
           arm.rotation.z = wave;
         }
       }
 
-      // Dog: wag tail fast, bounce extra
+      // Dog: wag tail (different speed per dog)
       if (m.kind === "dog") {
         const tail = tailRefs.current[i];
         if (tail) {
-          tail.rotation.y = Math.sin(tNow * 14 + i * 0.7) * 0.7;
+          tail.rotation.y =
+            Math.sin(tNow * (12 + i * 2.5) + m.bouncePhase) * 0.75;
         }
       }
     });
@@ -2252,8 +2301,11 @@ function Family({
 }
 
 const SKIN_FAMILY = "#e5b896";
-const HAIR_BROWN = "#5a3a20";
-const HAIR_SANDY = "#a87a4a";
+const HAIR_RED = "#b94e22"; // wife — red head
+const HAIR_BUZZED = "#3a2820"; // son — military buzzcut, dark
+const FATIGUE_BASE = "#4a5a32"; // olive drab
+const FATIGUE_DARK = "#36422a"; // shadowed patches
+const BOOTS = "#1f1a14";
 
 function Wife({
   shirtColor,
@@ -2291,12 +2343,12 @@ function Wife({
       {/* Hair — back + sides */}
       <mesh position={[0, 1.34, -0.04]} castShadow>
         <boxGeometry args={[0.36, 0.34, 0.34]} />
-        <meshStandardMaterial color={HAIR_BROWN} />
+        <meshStandardMaterial color={HAIR_RED} />
       </mesh>
       {/* Hair falls past shoulders */}
       <mesh position={[0, 1.0, -0.13]} castShadow>
         <boxGeometry args={[0.34, 0.4, 0.06]} />
-        <meshStandardMaterial color={HAIR_BROWN} />
+        <meshStandardMaterial color={HAIR_RED} />
       </mesh>
       {/* Face (slightly forward so it covers the hair on the front) */}
       <mesh position={[0, 1.3, 0.08]}>
@@ -2345,64 +2397,111 @@ function Son({
   shirtColor: string;
   armRef: (el: THREE.Group | null) => void;
 }) {
-  // Same construction as Wife but smaller and short hair
+  // 21-year-old, U.S. Army. Olive-drab fatigues, dark buzzcut, black boots,
+  // small flag patch on the right shoulder.
+  void shirtColor; // overridden by the fatigue palette below
+  const fatigues = FATIGUE_BASE;
+  const fatigueDark = FATIGUE_DARK;
   return (
-    <group scale={0.78}>
-      {/* Pants */}
-      <mesh position={[0, 0.3, 0]} castShadow>
-        <boxGeometry args={[0.32, 0.46, 0.22]} />
-        <meshStandardMaterial color="#3a2818" />
+    <group scale={0.96}>
+      {/* Fatigue pants */}
+      <mesh position={[0, 0.36, 0]} castShadow>
+        <boxGeometry args={[0.34, 0.6, 0.24]} />
+        <meshStandardMaterial color={fatigues} />
       </mesh>
-      <mesh position={[-0.09, 0.06, 0.02]} castShadow>
-        <boxGeometry args={[0.13, 0.07, 0.16]} />
-        <meshStandardMaterial color="#f8f8f0" />
+      {/* Camo patches on pants for texture */}
+      <mesh position={[-0.08, 0.42, 0.121]}>
+        <boxGeometry args={[0.08, 0.12, 0.005]} />
+        <meshStandardMaterial color={fatigueDark} />
       </mesh>
-      <mesh position={[0.09, 0.06, 0.02]} castShadow>
-        <boxGeometry args={[0.13, 0.07, 0.16]} />
-        <meshStandardMaterial color="#f8f8f0" />
+      <mesh position={[0.1, 0.22, 0.121]}>
+        <boxGeometry args={[0.1, 0.08, 0.005]} />
+        <meshStandardMaterial color={fatigueDark} />
       </mesh>
-      {/* Shirt */}
-      <mesh position={[0, 0.78, 0]} castShadow>
-        <boxGeometry args={[0.4, 0.55, 0.22]} />
-        <meshStandardMaterial color={shirtColor} />
+      {/* Combat boots */}
+      <mesh position={[-0.09, 0.08, 0.03]} castShadow>
+        <boxGeometry args={[0.14, 0.16, 0.2]} />
+        <meshStandardMaterial color={BOOTS} />
+      </mesh>
+      <mesh position={[0.09, 0.08, 0.03]} castShadow>
+        <boxGeometry args={[0.14, 0.16, 0.2]} />
+        <meshStandardMaterial color={BOOTS} />
+      </mesh>
+      {/* Belt */}
+      <mesh position={[0, 0.66, 0]}>
+        <boxGeometry args={[0.36, 0.06, 0.26]} />
+        <meshStandardMaterial color={BOOTS} />
+      </mesh>
+      {/* Belt buckle */}
+      <mesh position={[0, 0.66, 0.13]}>
+        <boxGeometry args={[0.06, 0.04, 0.01]} />
+        <meshStandardMaterial color="#c8b06a" metalness={0.6} roughness={0.4} />
+      </mesh>
+      {/* Fatigue jacket / shirt */}
+      <mesh position={[0, 0.96, 0]} castShadow>
+        <boxGeometry args={[0.44, 0.58, 0.26]} />
+        <meshStandardMaterial color={fatigues} />
+      </mesh>
+      {/* Camo patches on shirt */}
+      <mesh position={[-0.12, 1.08, 0.131]}>
+        <boxGeometry args={[0.08, 0.1, 0.005]} />
+        <meshStandardMaterial color={fatigueDark} />
+      </mesh>
+      <mesh position={[0.12, 0.86, 0.131]}>
+        <boxGeometry args={[0.08, 0.08, 0.005]} />
+        <meshStandardMaterial color={fatigueDark} />
+      </mesh>
+      {/* US flag patch on right sleeve (worn backward as in real uniform) */}
+      <mesh position={[0.215, 1.04, 0.07]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[0.06, 0.04]} />
+        <meshStandardMaterial color="#b22234" side={THREE.DoubleSide} />
+      </mesh>
+      <mesh position={[0.215, 1.06, 0.05]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[0.025, 0.02]} />
+        <meshStandardMaterial color="#3c3b6e" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Name tape on chest */}
+      <mesh position={[-0.08, 1.06, 0.131]}>
+        <boxGeometry args={[0.12, 0.04, 0.004]} />
+        <meshStandardMaterial color={fatigueDark} />
       </mesh>
       {/* Head */}
-      <mesh position={[0, 1.18, 0]} castShadow>
-        <sphereGeometry args={[0.17, 12, 10]} />
+      <mesh position={[0, 1.36, 0]} castShadow>
+        <sphereGeometry args={[0.18, 12, 10]} />
         <meshStandardMaterial color={SKIN_FAMILY} />
       </mesh>
-      {/* Hair — short brown cap */}
-      <mesh position={[0, 1.28, -0.01]} castShadow>
-        <sphereGeometry args={[0.17, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color={HAIR_SANDY} />
+      {/* Buzzcut — thin cap, very close to scalp */}
+      <mesh position={[0, 1.45, -0.01]} castShadow>
+        <sphereGeometry args={[0.185, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2.4]} />
+        <meshStandardMaterial color={HAIR_BUZZED} />
       </mesh>
       {/* Eyes */}
-      <mesh position={[-0.06, 1.2, 0.15]}>
+      <mesh position={[-0.07, 1.38, 0.16]}>
         <sphereGeometry args={[0.022, 8, 6]} />
         <meshBasicMaterial color="#1a1a1a" />
       </mesh>
-      <mesh position={[0.06, 1.2, 0.15]}>
+      <mesh position={[0.07, 1.38, 0.16]}>
         <sphereGeometry args={[0.022, 8, 6]} />
         <meshBasicMaterial color="#1a1a1a" />
       </mesh>
-      {/* Big grin */}
-      <mesh position={[0, 1.1, 0.16]}>
-        <boxGeometry args={[0.1, 0.025, 0.005]} />
+      {/* Grin */}
+      <mesh position={[0, 1.28, 0.17]}>
+        <boxGeometry args={[0.09, 0.02, 0.005]} />
         <meshBasicMaterial color="#a82838" />
       </mesh>
       {/* Static left arm */}
-      <mesh position={[-0.25, 0.78, 0]} castShadow>
-        <boxGeometry args={[0.1, 0.5, 0.11]} />
-        <meshStandardMaterial color={shirtColor} />
+      <mesh position={[-0.27, 0.96, 0]} castShadow>
+        <boxGeometry args={[0.11, 0.52, 0.12]} />
+        <meshStandardMaterial color={fatigues} />
       </mesh>
-      {/* Right arm — waving */}
-      <group position={[0.23, 0.98, 0]} ref={armRef}>
-        <mesh position={[0.0, -0.2, 0]} castShadow>
-          <boxGeometry args={[0.1, 0.4, 0.11]} />
-          <meshStandardMaterial color={shirtColor} />
+      {/* Right arm — pivots at shoulder, waves */}
+      <group position={[0.25, 1.18, 0]} ref={armRef}>
+        <mesh position={[0.0, -0.22, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.44, 0.12]} />
+          <meshStandardMaterial color={fatigues} />
         </mesh>
-        <mesh position={[0.0, -0.43, 0]} castShadow>
-          <boxGeometry args={[0.09, 0.16, 0.1]} />
+        <mesh position={[0.0, -0.48, 0]} castShadow>
+          <boxGeometry args={[0.1, 0.18, 0.11]} />
           <meshStandardMaterial color={SKIN_FAMILY} />
         </mesh>
       </group>
