@@ -2535,24 +2535,26 @@ function Character({
           <meshStandardMaterial color={SKIN} />
         </mesh>
 
-        {/* Beard — full bushy beard that wraps the jaw from cheek to chin,
-            then a second "goatee drop" that extends below the jawline.
-            Together they read as a thick well-groomed beard from any angle. */}
-        <mesh position={[0, 1.34, 0.005]} scale={[1.28, 1.0, 1.28]} castShadow>
+        {/* Beard — full bushy beard on the FRONT and SIDES of the jaw only;
+            shifted forward and shallow in depth so the back of the mesh
+            tucks inside the head sphere (i.e. invisible from behind). A
+            second "goatee drop" extends below the jawline. */}
+        <mesh position={[0, 1.34, 0.09]} scale={[1.28, 1.0, 0.95]} castShadow>
           <sphereGeometry args={[0.2, 16, 14]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
-        {/* Goatee drop — extends past the chin */}
-        <mesh position={[0, 1.18, 0.05]} scale={[0.9, 1.2, 0.85]} castShadow>
+        {/* Goatee drop — extends past the chin (front-only) */}
+        <mesh position={[0, 1.18, 0.07]} scale={[0.9, 1.2, 0.75]} castShadow>
           <sphereGeometry args={[0.13, 14, 12]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
-        {/* Sideburn fill — bridges the beard up to the head on each side */}
-        <mesh position={[-0.18, 1.46, 0.0]} scale={[0.6, 0.9, 0.9]} castShadow>
+        {/* Sideburn fill — bridges the beard up to the head on each side,
+            kept narrow in depth so it doesn't wrap behind the ears */}
+        <mesh position={[-0.18, 1.46, 0.04]} scale={[0.6, 0.9, 0.65]} castShadow>
           <sphereGeometry args={[0.1, 10, 8]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
-        <mesh position={[0.18, 1.46, 0.0]} scale={[0.6, 0.9, 0.9]} castShadow>
+        <mesh position={[0.18, 1.46, 0.04]} scale={[0.6, 0.9, 0.65]} castShadow>
           <sphereGeometry args={[0.1, 10, 8]} />
           <meshStandardMaterial color={BEARD} />
         </mesh>
