@@ -86,6 +86,12 @@ const ARRIVE_DIST = 0.18;
 const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
 const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
+// Lake footprint (matches the Lake component in Environment). Used to
+// auto-trigger the gator chase whenever the character wanders within
+// striking distance of the water.
+const LAKE_CENTER = { x: 11.5, z: -8 };
+const LAKE_RADIUS = 2.8;
+const WATER_TRIGGER_RADIUS = LAKE_RADIUS + 1.2; // shore + a small buffer
 const CHAR_RADIUS = 0.32; // for building collision
 const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
 
@@ -544,6 +550,32 @@ function Scene({
       }
     } else if (!char.walking) {
       char.stepPhase = 0;
+    }
+
+    // ── 1b. Water proximity → auto-trigger gator chase ──
+    // If the character wanders within striking distance of the lake while
+    // otherwise unbusy, the gator springs out and the chase begins. This
+    // covers both deliberate gator clicks and incidental "I clicked too
+    // close to the water" cases.
+    if (
+      isOnHome &&
+      char.mode === "idle" &&
+      !gator.chasing &&
+      !coaster.riding &&
+      !refs.golf.current.active &&
+      !refs.family.current.active &&
+      !refs.pendingNav.current
+    ) {
+      const ldx = char.x - LAKE_CENTER.x;
+      const ldz = char.z - LAKE_CENTER.z;
+      if (Math.hypot(ldx, ldz) < WATER_TRIGGER_RADIUS) {
+        char.mode = "flee";
+        char.walking = true;
+        gator.chasing = true;
+        refs.target.current = null;
+        refs.pathQueue.current = [];
+        refs.approachingGator.current = false;
+      }
     }
 
     // ── 2. Gator movement ──
@@ -2715,6 +2747,21 @@ function CameraRig({
     } else if (c.mode === "riding") {
       // Cinematic chase-cam following the cart from behind-and-above.
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
+      camHijackedRef.current = true;
+    } else if (c.mode === "flee") {
+      // Cinematic chase-cam during the gator chase. Follow the character
+      // from above-and-behind in the chase direction (the chase always
+      // runs from the lake at NE back to the plaza). y=7 keeps the
+      // camera above every palm frond and building roof so it never
+      // clips into geometry as it tracks the action.
+      const mag = Math.hypot(c.x, c.z);
+      const ux = mag > 0.5 ? c.x / mag : 1;
+      const uz = mag > 0.5 ? c.z / mag : 0;
+      wantCam = {
+        x: c.x + ux * 4,
+        y: 7,
+        z: c.z + uz * 4,
+      };
       camHijackedRef.current = true;
     } else if (camHijackedRef.current) {
       // Special mode just ended — glide the camera back to the default
