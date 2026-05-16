@@ -2360,8 +2360,11 @@ function Character({
       rootRef.current.position.z = c.z;
       // y is driven by the game tick for ride (track height) and golf
       // (celebration jumps); zero on foot otherwise.
+      // While riding, lower the character so the hips (at body-local y=0.66)
+      // sit on the cart's top surface (cart-local y=0.36). Otherwise the
+      // character would stand on top of the cart instead of sitting in it.
       rootRef.current.position.y =
-        c.mode === "riding" ? c.y + 0.36 : c.mode === "golfing" ? c.y : 0;
+        c.mode === "riding" ? c.y - 0.30 : c.mode === "golfing" ? c.y : 0;
       // Smoothly rotate to face direction. Snap during ride / golf so we
       // always match the expected heading.
       const cur = rootRef.current.rotation.y;
@@ -2381,8 +2384,10 @@ function Character({
       if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = armsUp;
       if (rightShoulderRef.current)
         rightShoulderRef.current.rotation.x = armsUp;
-      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
-      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      // Seated pose — legs bend forward at the hip so they stick out in
+      // front of the body (toward the cart's nose), feet up off the floor.
+      if (leftHipRef.current) leftHipRef.current.rotation.x = -Math.PI / 2;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = -Math.PI / 2;
       if (bodyRef.current) {
         // Subtle vertical bounce as the cart goes over track joints
         bodyRef.current.position.y = Math.abs(Math.sin(t * 9)) * 0.03;
