@@ -762,7 +762,7 @@ function Scene({
         <Character charRef={refs.char} golfRef={refs.golf} />
       </Suspense>
       <Family familyRef={refs.family} />
-      <CameraRig charRef={refs.char} pathname={pathname} />
+      <CameraRig charRef={refs.char} gatorRef={refs.gator} pathname={pathname} />
     </>
   );
 }
@@ -2765,9 +2765,11 @@ const GOLF_MIDPOINT = {
 
 function CameraRig({
   charRef,
+  gatorRef,
   pathname,
 }: {
   charRef: React.MutableRefObject<CharState>;
+  gatorRef: React.MutableRefObject<GatorState>;
   pathname: string;
 }) {
   const targetVec = useMemo(() => new THREE.Vector3(0, 1, 0), []);
@@ -2828,18 +2830,27 @@ function CameraRig({
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
       camHijackedRef.current = true;
     } else if (c.mode === "flee") {
-      // Chase-cam IN FRONT of the runner: positioned ahead along the
-      // chase direction (which always points toward the plaza/origin)
-      // so the character sprints TOWARD the camera with the gator
-      // chasing him behind. y=6 keeps the line of sight above the
-      // MUSIC building roof when the chase passes near it.
-      const mag = Math.hypot(c.x, c.z);
-      const ux = mag > 0.5 ? c.x / mag : 1;
-      const uz = mag > 0.5 ? c.z / mag : 0;
+      // Chase-cam IN FRONT of the runner — but specifically on the side
+      // OPPOSITE the gator, so the gator stays behind the character in
+      // the frame throughout the chase (instead of dropping off the
+      // edge as the character nears the plaza and the chase axis
+      // collapses to zero length).
+      const g = gatorRef.current;
+      const gx = c.x - g.x;
+      const gz = c.z - g.z;
+      const gDist = Math.hypot(gx, gz);
+      // Unit vector pointing FROM gator TO char. Camera sits 5.5 units
+      // further along this line so the optical axis runs camera→char→gator.
+      const ux = gDist > 0.5 ? gx / gDist : 0.7;
+      const uz = gDist > 0.5 ? gz / gDist : 0.7;
       wantCam = {
-        x: c.x - ux * 5,
-        y: 6,
-        z: c.z - uz * 5,
+        // y=4 keeps the line of sight low enough that the gator (at
+        // y≈1) doesn't drop off the bottom of the frame near the end
+        // of the chase, while still high enough to clear the MUSIC
+        // building roof when the chase passes by it.
+        x: c.x + ux * 5.5,
+        y: 4,
+        z: c.z + uz * 5.5,
       };
       camHijackedRef.current = true;
     } else if (camHijackedRef.current) {
