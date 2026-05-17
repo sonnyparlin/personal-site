@@ -206,30 +206,39 @@ const COASTER_CURVE = (() => {
     );
   };
 
-  // Anchor: ellipse position at the midpoint of the loop window —
-  // the loop enters and exits at this point.
-  const tMid = (LOOP_T0 + LOOP_T1) / 2;
-  const anchor = ellipsePos(tMid);
+  // Loop entry and exit on the ellipse. The vertical loop sits on
+  // a LINEAR INTERP between these two points, so the curve is
+  // continuous with the ellipse at both LOOP_T0 and LOOP_T1 (the
+  // previous anchor-based approach jumped the position to the
+  // ellipse midpoint, which created a sharp visual kink at the
+  // loop entry — CatmullRom couldn't smooth out that big a
+  // position jump).
+  const loopEntry = ellipsePos(LOOP_T0);
+  const loopExit = ellipsePos(LOOP_T1);
 
   for (let i = 0; i < N; i++) {
     const t = i / N;
     if (t >= LOOP_T0 && t <= LOOP_T1) {
-      // 360° vertical loop in the YZ plane centred above the anchor.
-      // Loop opens and closes at the anchor's XZ; lifts to y =
-      // anchor.y + 2*LOOP_RADIUS at the top, then back down.
       const tLoop = (t - LOOP_T0) / (LOOP_T1 - LOOP_T0);
       const loopA = 2 * Math.PI * tLoop;
-      // Standard "vertical loop entering from bottom" parametric:
-      //   z = z_anchor + R * sin(angle)
-      //   y = y_anchor + R - R * cos(angle)
-      // At loopA=0: position = anchor (bottom of loop, entering).
-      // At loopA=π: position = (anchor.x, anchor.y + 2R, anchor.z) (top, upside-down).
-      // At loopA=2π: position = anchor (bottom again, exiting).
+      // Linear path from entry → exit acts as the loop's "axis";
+      // the loop overlay then rises out of it in y and oscillates
+      // around it in z.
+      const baseX = loopEntry.x + (loopExit.x - loopEntry.x) * tLoop;
+      const baseY = loopEntry.y + (loopExit.y - loopEntry.y) * tLoop;
+      const baseZ = loopEntry.z + (loopExit.z - loopEntry.z) * tLoop;
+      // Standard "vertical loop entering from bottom" parametric
+      // overlaid on the linear path:
+      //   z_overlay = R * sin(angle)
+      //   y_overlay = R - R * cos(angle)
+      // At loopA=0: overlay = (0, 0, 0) → position = loopEntry.
+      // At loopA=π: overlay = (0, 2R, 0) → top of loop.
+      // At loopA=2π: overlay = (0, 0, 0) → position = loopExit.
       pts.push(
         new THREE.Vector3(
-          anchor.x,
-          anchor.y + LOOP_RADIUS * (1 - Math.cos(loopA)),
-          anchor.z + LOOP_RADIUS * Math.sin(loopA)
+          baseX,
+          baseY + LOOP_RADIUS * (1 - Math.cos(loopA)),
+          baseZ + LOOP_RADIUS * Math.sin(loopA)
         )
       );
     } else {
@@ -589,9 +598,26 @@ function Scene({
         // Forward roll to absorb the impact — keeps moving forward
         // (south) along the ground. Visual roll is done by the
         // Character component reading b.phase + b.t.
+        //
+        // Lift the character ROOT during the tucked middle of the
+        // roll so the rotation pivot (at the root's origin = the
+        // feet) ends up roughly at the body's tucked-ball centre.
+        // Without this, the rotation axis is at the feet and the
+        // head/body swings *below* the ground at the 180° point.
+        // Match the body-bend ramp (0..0.18 ramps in, 0.82..1
+        // ramps out) so the lift eases in and out, not snaps.
+        const TUCK_LIFT = 0.7;
+        let charY = 0;
+        if (b.t < 0.18) charY = (b.t / 0.18) * TUCK_LIFT;
+        else if (b.t < 0.82) charY = TUCK_LIFT;
+        else charY = ((1 - b.t) / 0.18) * TUCK_LIFT;
         char.x = BALLOON_POSITION.x;
-        char.z = BALLOON_POSITION.z + 1.5 + b.t * 2.5;
-        char.y = 0;
+        // Distance bumped to ~3.5 so the rolling distance roughly
+        // matches the circumference of the ball (2π·R ≈ 4.4 for
+        // R=0.7), giving the tumble a "ball rolling" cadence
+        // instead of looking like it's sliding.
+        char.z = BALLOON_POSITION.z + 1.5 + b.t * 3.5;
+        char.y = charY;
         char.angle = 0;
         if (b.t >= 1) {
           // Done! End ballooning mode and walk back to the start spot.
@@ -2355,10 +2381,15 @@ function GolfCourse({
       {/* Hole 3 — south end, closest to the farm */}
       <GolfHole greenLocal={[-5, 12]} teeLocal={[3, 8]} />
 
-      {/* Sand bunkers scattered across the course */}
+      {/* Sand bunkers scattered across the course. Each is positioned
+          so its ellipse doesn't overlap any green or the water
+          hazard (otherwise the overlapping discs z-fight). */}
+      {/* Guarding Hole 1's east approach (the line from tee to
+          green). Moved out from inside the green to clear the new
+          bigger 3.6-radius Hole 1 green. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-2, 0.013, -5]}
+        position={[2, 0.013, -7]}
         scale={[1.8, 1, 1]}
         receiveShadow
       >
@@ -2374,9 +2405,11 @@ function GolfCourse({
         <circleGeometry args={[0.9, 20]} />
         <meshStandardMaterial color="#e8d8a8" />
       </mesh>
+      {/* Sand pit east of the water hazard. Moved further east so
+          its disc doesn't overlap the water hazard's disc. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[2, 0.013, 5]}
+        position={[4, 0.013, 6]}
         scale={[1.4, 1, 1]}
         receiveShadow
       >
