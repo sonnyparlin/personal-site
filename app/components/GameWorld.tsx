@@ -4451,6 +4451,31 @@ function CameraRig({
 
     if (controlsRef.current) {
       controlsRef.current.target.copy(targetVec);
+      // Drone tour: when the user is idle — character standing on
+      // the plaza, not walking, not in a cinematic mode, not
+      // actively dragging the camera (OrbitControls pauses
+      // autoRotate during a drag internally) — slowly orbit the
+      // world AND oscillate the polar angle so the camera sweeps
+      // from near-overhead to near-horizontal and back. Gives the
+      // user a drone-like fly-around tour if they don't touch
+      // anything for a few seconds.
+      const isIdle =
+        c.mode === "idle" && !c.walking && !camHijackedRef.current;
+      controlsRef.current.autoRotate = isIdle;
+      if (isIdle) {
+        // Sinusoidal polar — sweeps between mostly-overhead and
+        // mostly-horizontal. Stays inside the OrbitControls polar
+        // limits (0.12π .. 0.48π). Period ~250s; autoRotate
+        // azimuth period at speed=0.4 is ~150s, so the drone's
+        // elevation barely changes within a single orbit.
+        const elevTime = state.clock.elapsedTime * 0.025;
+        const minPolar = Math.PI * 0.15;
+        const maxPolar = Math.PI * 0.45;
+        const polar =
+          minPolar +
+          (maxPolar - minPolar) * (0.5 + 0.5 * Math.sin(elevTime));
+        controlsRef.current.setPolarAngle(polar);
+      }
       controlsRef.current.update();
     }
   });
@@ -4468,6 +4493,7 @@ function CameraRig({
       minPolarAngle={Math.PI * 0.12}
       maxPolarAngle={Math.PI * 0.48}
       target={[0, 1, 0]}
+      autoRotateSpeed={0.4}
     />
   );
 }
