@@ -471,11 +471,13 @@ function Scene({
       b.t += clampedDt / phaseDur;
 
       if (b.phase === "rising") {
-        // Balloon lifts off; character rides along on top of the basket.
+        // Balloon lifts off; character rides along INSIDE the basket
+        // (low enough that legs are tucked behind basket walls, so the
+        // upper body + face are the prominent visible features).
         b.height = b.t * BALLOON_RISE_HEIGHT;
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z;
-        char.y = b.height + 0.55; // sit on basket lip
+        char.y = b.height + 0.18; // feet at basket-floor level
         char.angle = 0;
         if (b.t >= 1) {
           b.phase = "scared";
@@ -485,7 +487,7 @@ function Scene({
         // Brief beat at altitude — "uh oh".
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z;
-        char.y = b.height + 0.55;
+        char.y = b.height + 0.18;
         char.angle = 0;
         if (b.t >= 1) {
           b.phase = "jumping";
@@ -494,7 +496,7 @@ function Scene({
       } else if (b.phase === "jumping") {
         // Parabolic-ish fall from the basket to the ground; nudges
         // forward (south, toward the camera) so he lands clear.
-        const startY = b.height + 0.55;
+        const startY = b.height + 0.18;
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z + b.t * 1.5;
         char.y = Math.max(0, startY * (1 - b.t * b.t));
@@ -1594,10 +1596,15 @@ function Balloon({
       groupRef.current.position.y = 0;
     }
   });
-  // Geometry: envelope center sits ~2.5 units above the basket.
+  // Geometry: envelope sits far enough above the basket that the
+  // rider's head fits in the gap (basket top → envelope bottom).
   const ENV_R = 1.1;
-  const ENV_Y = 2.7;
+  const ENV_Y = 3.4; // raised — was 2.7; gives ~1.3 units of head-room
   const BASKET_Y = 0.45;
+  // Derived: basket top and envelope bottom (used to size the ropes
+  // exactly between them).
+  const BASKET_TOP = BASKET_Y + 0.275;
+  const ENV_BOTTOM = ENV_Y - ENV_R * 1.25; // sphere vertical scale = 1.25
   return (
     <group ref={groupRef} position={[BALLOON_POSITION.x, 0, BALLOON_POSITION.z]}>
       {/* Envelope — slightly elongated red/yellow striped sphere. The
@@ -1629,8 +1636,8 @@ function Balloon({
         />
         <meshStandardMaterial color="#ffd83a" />
       </mesh>
-      {/* Suspension ropes — four thin cylinders from envelope to basket
-          corners */}
+      {/* Suspension ropes — four thin cylinders running exactly from
+          the basket top to the envelope bottom. */}
       {[
         [-0.3, -0.3],
         [-0.3, 0.3],
@@ -1639,10 +1646,11 @@ function Balloon({
       ].map(([x, z], i) => (
         <mesh
           key={i}
-          position={[x * 0.95, (ENV_Y + BASKET_Y) / 2 - 0.4, z * 0.95]}
-          rotation={[0, 0, 0]}
+          position={[x * 0.95, (BASKET_TOP + ENV_BOTTOM) / 2, z * 0.95]}
         >
-          <cylinderGeometry args={[0.012, 0.012, ENV_Y - BASKET_Y - 0.6, 6]} />
+          <cylinderGeometry
+            args={[0.012, 0.012, ENV_BOTTOM - BASKET_TOP, 6]}
+          />
           <meshStandardMaterial color="#3a2a18" />
         </mesh>
       ))}
@@ -2658,8 +2666,10 @@ const EYE = "#1a1a1a";
 //     at the camera through the back of the cart's seat).
 function FaceBillboard({
   charRef,
+  balloonRef,
 }: {
   charRef: React.MutableRefObject<CharState>;
+  balloonRef: React.MutableRefObject<BalloonState>;
 }) {
   const tex = useTexture("/face.png");
   const meshRef = useRef<THREE.Mesh>(null);
@@ -2676,19 +2686,26 @@ function FaceBillboard({
       // Locked to body rotation — clear local rotation so the face
       // inherits whatever direction the body is facing (= cart tangent).
       mesh.rotation.set(0, 0, 0);
-      return;
-    }
+    } else {
+      // Billboard behavior: aim the plane's local -Z away from the
+      // camera so its +Z (the textured front face) ends up pointing
+      // at the camera.
+      mesh.getWorldPosition(meshWorld);
+      lookTarget.copy(meshWorld).multiplyScalar(2).sub(state.camera.position);
+      mesh.lookAt(lookTarget);
 
-    // Billboard behavior: aim the plane's local -Z away from the camera
-    // so its +Z (the textured front face) ends up pointing at the camera.
-    mesh.getWorldPosition(meshWorld);
-    lookTarget.copy(meshWorld).multiplyScalar(2).sub(state.camera.position);
-    mesh.lookAt(lookTarget);
+      // Bobblehead rock — side-to-side tilt synced to the step cycle.
+      // Layered on top of the billboard rotation as a local Z roll.
+      if (c.walking) {
+        mesh.rotation.z += Math.sin(c.stepPhase * Math.PI * 2) * 0.22;
+      }
 
-    // Bobblehead rock — side-to-side tilt synced to the step cycle.
-    // Layered on top of the billboard rotation as a local Z roll.
-    if (c.walking) {
-      mesh.rotation.z += Math.sin(c.stepPhase * Math.PI * 2) * 0.22;
+      // Scared shake during the balloon ride's scared phase — quick
+      // side-to-side tremor of the head to read as panic.
+      const b = balloonRef.current;
+      if (c.mode === "ballooning" && b.phase === "scared") {
+        mesh.rotation.z += Math.sin(state.clock.elapsedTime * 36) * 0.08;
+      }
     }
   });
 
@@ -2792,8 +2809,7 @@ function Character({
     if (c.mode === "ballooning") {
       const b = balloonRef.current;
       // Arms react to the phase: gripping the basket while rising,
-      // flailing during the scared/jump beats, straight-out during
-      // the forward roll. Legs reset to standing.
+      // flailing during the scared/jump beats, tucked during the roll.
       let armX = 0;
       if (b.phase === "rising") {
         // Light grip on the basket — arms slightly forward & down.
@@ -2806,7 +2822,7 @@ function Character({
         armX = -Math.PI * 0.5;
       } else if (b.phase === "rolling") {
         // Tucked in for the roll.
-        armX = -1.1;
+        armX = -2.2;
       }
       if (leftShoulderRef.current) {
         leftShoulderRef.current.rotation.x = armX;
@@ -2816,9 +2832,30 @@ function Character({
         rightShoulderRef.current.rotation.x = armX;
         rightShoulderRef.current.rotation.z = 0;
       }
-      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
-      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
-      if (bodyRef.current) bodyRef.current.position.y = 0;
+      // Legs: tuck the knees up during the roll (curls body into ball);
+      // otherwise standing.
+      let hipX = 0;
+      if (b.phase === "rolling") {
+        // Knees up tight to chest. -π/2 = legs out front (sitting); we
+        // want even more, like -2.2 (knees in toward chest).
+        hipX = -2.2;
+      }
+      if (leftHipRef.current) leftHipRef.current.rotation.x = hipX;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = hipX;
+      // Body bend: during the roll, the body tucks forward (bending at
+      // the waist) so the character rolls AS A BALL instead of rotating
+      // rigidly. Ramp into the tuck at the start of the roll and
+      // straighten back up at the end.
+      if (bodyRef.current) {
+        let bend = 0;
+        if (b.phase === "rolling") {
+          if (b.t < 0.18) bend = (b.t / 0.18) * (Math.PI / 2); // ramp to π/2
+          else if (b.t < 0.82) bend = Math.PI / 2; // hold tucked
+          else bend = ((1 - b.t) / 0.18) * (Math.PI / 2); // unbend
+        }
+        bodyRef.current.rotation.x = bend;
+        bodyRef.current.position.y = 0;
+      }
       return;
     }
 
@@ -2945,7 +2982,7 @@ function Character({
             locks to body rotation while riding the coaster so the face
             points down the track. */}
         <group position={[0, 1.45, 0]}>
-          <FaceBillboard charRef={charRef} />
+          <FaceBillboard charRef={charRef} balloonRef={balloonRef} />
         </group>
 
         {/* Neck tattoo */}
@@ -3112,7 +3149,10 @@ function CameraRig({
     ) {
       wantTX = c.x;
       wantTZ = c.z;
-      wantTY = 1 + c.y * 0.5;
+      // Ballooning tracks the rider's height 1:1 so the face stays
+      // dead-center as the balloon rises (vs. only halfway for other
+      // modes where the character barely leaves the ground).
+      wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
     }
     targetVec.x += (wantTX - targetVec.x) * Math.min(1, dt * 2.5);
     targetVec.y += (wantTY - targetVec.y) * Math.min(1, dt * 2.5);
@@ -3141,15 +3181,14 @@ function CameraRig({
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
       camHijackedRef.current = true;
     } else if (c.mode === "ballooning") {
-      // Stationary vantage south of the balloon launch pad — keeps
-      // the rising balloon, the panicked jump, and the forward roll
-      // all in the same frame. Stays at a fixed height so the camera
-      // doesn't track UP with the balloon (we want to see the gap
-      // between Sonny and the ground as it grows).
+      // Track the balloon's rise — camera y lifts 1:1 with the
+      // character so Sonny's face stays in frame at every altitude.
+      // Pulled back (z=10) so even the 6-unit rise + the ground
+      // can both fit in the portrait viewport.
       wantCam = {
         x: BALLOON_POSITION.x + 2,
-        y: 4,
-        z: BALLOON_POSITION.z + 8,
+        y: 2.5 + c.y,
+        z: BALLOON_POSITION.z + 10,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "flee") {
