@@ -111,9 +111,24 @@ const CHAR_RADIUS = 0.32; // for building collision
 const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
 
 // Golf easter egg
-const GOLF_POSITION = { x: -11.5, z: 9 };
-const GOLF_TEE = { x: -6.5, z: 9 };
-const GOLF_HOLE = { x: -15, z: 8.6 };
+// Golf course centre. The course now extends south from the play
+// area toward the farm, with multiple holes laid out as a small
+// course rather than a single fairway. GOLF_TEE/GOLF_HOLE refer to
+// the interactive hole used by the easter egg (Hole 1 — the
+// northern-most hole, closest to the plaza). The other holes are
+// decorative. The easter egg is a PUTT, not a full swing, so
+// GOLF_TEE sits on the green itself just east of the cup — the
+// character walks all the way onto the green and putts a short
+// distance to drop the ball in the hole.
+//
+// GOLF_TEE is where the CHARACTER stands; GOLF_BALL_START is where
+// the BALL sits at address (offset slightly west + north of the
+// character so the character isn't standing directly on top of the
+// ball and hiding it from the camera).
+const GOLF_POSITION = { x: -14, z: 17 };
+const GOLF_TEE = { x: -16.5, z: 9 };
+const GOLF_BALL_START = { x: -17.0, z: 8.7 };
+const GOLF_HOLE = { x: -18, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
 // Hot-air balloon easter egg (SE quadrant — south of the gator, right
@@ -1115,7 +1130,10 @@ function Environment({
       <PalmTree position={[14.5, 0, -6.3]} />
 
       {/* Golf course to the southwest */}
-      <GolfCourse position={[-11.5, 0, 9]} onSelect={onGolfClick} />
+      <GolfCourse
+        position={[GOLF_POSITION.x, 0, GOLF_POSITION.z]}
+        onSelect={onGolfClick}
+      />
       <GolfBall golfRef={golfRef} />
 
       {/* Hot-air balloon to the south-east (clickable easter egg) */}
@@ -2085,6 +2103,182 @@ function Tree({
   );
 }
 
+// One green + cup + flag + tee marker for a single hole. Local
+// positions are relative to the GolfCourse group. `greenRadius`
+// defaults to a normal-sized green; Hole 1 (the interactive putt)
+// uses a much larger green so the putt has visible space to roll.
+function GolfHole({
+  greenLocal,
+  teeLocal,
+  greenRadius = 1.8,
+}: {
+  greenLocal: [number, number];
+  teeLocal: [number, number];
+  greenRadius?: number;
+}) {
+  const [gx, gz] = greenLocal;
+  const [tx, tz] = teeLocal;
+  return (
+    <group>
+      {/* Putting green */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[gx, 0.013, gz]}
+        receiveShadow
+      >
+        <circleGeometry args={[greenRadius, 32]} />
+        <meshStandardMaterial color="#5fa838" />
+      </mesh>
+      {/* The cup */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gx, 0.015, gz]}>
+        <circleGeometry args={[0.12, 12]} />
+        <meshBasicMaterial color="#0a0a0a" />
+      </mesh>
+      {/* Flag pole */}
+      <mesh position={[gx, 0.85, gz]} castShadow>
+        <cylinderGeometry args={[0.025, 0.025, 1.7, 6]} />
+        <meshStandardMaterial color="#dcdce0" />
+      </mesh>
+      {/* Flag */}
+      <mesh position={[gx + 0.5, 1.55, gz]} castShadow>
+        <planeGeometry args={[0.85, 0.45]} />
+        <meshStandardMaterial color="#c83232" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Flag pole tip */}
+      <mesh position={[gx, 1.72, gz]}>
+        <sphereGeometry args={[0.05, 8, 6]} />
+        <meshStandardMaterial color="#d4a04a" metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Tee marker */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[tx, 0.014, tz]}
+        receiveShadow
+      >
+        <planeGeometry args={[1.2, 1.2]} />
+        <meshStandardMaterial color="#3e5a30" />
+      </mesh>
+    </group>
+  );
+}
+
+// Simple low-poly golf cart — white body, red striped roof, four
+// wheels, blue windshield, dark steering wheel.
+function GolfCart({
+  position,
+  rotation = 0,
+}: {
+  position: [number, number, number];
+  rotation?: number;
+}) {
+  return (
+    <group position={position} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.4, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.9, 0.45, 1.5]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Roof */}
+      <mesh position={[0, 1.25, 0]} castShadow>
+        <boxGeometry args={[1.0, 0.08, 1.6]} />
+        <meshStandardMaterial color="#cc2828" />
+      </mesh>
+      {/* Four roof supports */}
+      {(
+        [
+          [-0.42, -0.7],
+          [0.42, -0.7],
+          [-0.42, 0.7],
+          [0.42, 0.7],
+        ] as [number, number][]
+      ).map(([px, pz], i) => (
+        <mesh key={i} position={[px, 0.85, pz]}>
+          <cylinderGeometry args={[0.03, 0.03, 0.85, 6]} />
+          <meshStandardMaterial color="#888c95" />
+        </mesh>
+      ))}
+      {/* Windshield (front) */}
+      <mesh position={[0, 0.85, 0.78]} rotation={[Math.PI * 0.06, 0, 0]}>
+        <planeGeometry args={[0.78, 0.55]} />
+        <meshStandardMaterial
+          color="#9ab4c8"
+          transparent
+          opacity={0.7}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* Seat back */}
+      <mesh position={[0, 0.78, -0.2]}>
+        <boxGeometry args={[0.78, 0.36, 0.06]} />
+        <meshStandardMaterial color="#3a3a3a" />
+      </mesh>
+      {/* Steering wheel */}
+      <mesh position={[-0.18, 0.7, 0.5]} rotation={[Math.PI / 2 - 0.4, 0, 0]}>
+        <torusGeometry args={[0.1, 0.02, 6, 12]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Four wheels */}
+      {(
+        [
+          [-0.45, 0.55],
+          [0.45, 0.55],
+          [-0.45, -0.55],
+          [0.45, -0.55],
+        ] as [number, number][]
+      ).map(([wx, wz], i) => (
+        <mesh
+          key={`w${i}`}
+          position={[wx, 0.18, wz]}
+          rotation={[0, 0, Math.PI / 2]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.18, 0.18, 0.1, 10]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+      ))}
+      {/* Golf bag on the back */}
+      <mesh position={[0.25, 0.95, -0.7]} rotation={[0.2, 0, 0]} castShadow>
+        <cylinderGeometry args={[0.12, 0.1, 0.55, 8]} />
+        <meshStandardMaterial color="#3a4f8b" />
+      </mesh>
+      {/* Two club heads poking out of the bag */}
+      <mesh position={[0.25, 1.32, -0.78]} rotation={[0.3, 0, 0.2]}>
+        <boxGeometry args={[0.04, 0.18, 0.04]} />
+        <meshStandardMaterial color="#dcdce0" metalness={0.6} />
+      </mesh>
+      <mesh position={[0.32, 1.34, -0.74]} rotation={[0.3, 0, -0.15]}>
+        <boxGeometry args={[0.04, 0.18, 0.04]} />
+        <meshStandardMaterial color="#dcdce0" metalness={0.6} />
+      </mesh>
+    </group>
+  );
+}
+
+// Low, wide green mound used for the rolling-hills feel on the
+// fairway. Smaller than `Hill` (which is the world-perimeter
+// backdrop) and uses the same flat-shaded half-sphere look.
+function FairwayMound({
+  position,
+  scale = 1,
+  color = "#6aab38",
+}: {
+  position: [number, number, number];
+  scale?: number;
+  color?: string;
+}) {
+  return (
+    <mesh
+      position={position}
+      scale={[scale, scale * 0.35, scale]}
+      castShadow
+      receiveShadow
+    >
+      <sphereGeometry args={[2.2, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2]} />
+      <meshStandardMaterial color={color} flatShading />
+    </mesh>
+  );
+}
+
 function GolfCourse({
   position,
   onSelect,
@@ -2092,12 +2286,31 @@ function GolfCourse({
   position: [number, number, number];
   onSelect: () => void;
 }) {
+  // GolfCourse group is positioned at GOLF_POSITION = (-14, 0, 17).
+  // Local +x is east, local +z is south. The course extends from
+  // about local x=-9..+7 (world x=-23..-7, safely west of CODE at
+  // x=-4.9) and local z=-15..+15 (world z=2..32, reaching toward
+  // the south farm without overlapping it).
+  //
+  // Hole 1 (the interactive easter egg): tee at local (7, -8) =
+  // world GOLF_TEE (-7, 9), green at local (-4, -8.4) = world
+  // GOLF_HOLE (-18, 8.6). The other two holes are decorative.
   return (
     <group position={position}>
-      {/* Fairway — clickable target for the hole-in-one easter egg */}
+      {/* Rough — darker green border behind everything else */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.011, 0]}
+        position={[-1, 0.010, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[16, 32]} />
+        <meshStandardMaterial color="#558a36" />
+      </mesh>
+      {/* Main fairway covering the whole playable area — clickable
+          target for the hole-in-one easter egg. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-1, 0.011, 0]}
         receiveShadow
         onClick={(e) => {
           onSelect();
@@ -2111,59 +2324,103 @@ function GolfCourse({
           document.body.style.cursor = "auto";
         }}
       >
-        <planeGeometry args={[10, 6]} />
+        <planeGeometry args={[14, 30]} />
         <meshStandardMaterial color="#7ab84a" />
       </mesh>
-      {/* Putting green — slightly darker oval at one end */}
+
+      {/* Cart path — light grey strip winding south through the
+          course. Stays inside the rough boundary. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-3.5, 0.013, 0]}
+        position={[5, 0.012, -2]}
         receiveShadow
       >
-        <circleGeometry args={[1.6, 24]} />
-        <meshStandardMaterial color="#5fa838" />
+        <planeGeometry args={[0.9, 20]} />
+        <meshStandardMaterial color="#c8c4b8" />
       </mesh>
-      {/* The cup */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-3.5, 0.015, -0.4]}>
-        <circleGeometry args={[0.12, 12]} />
-        <meshBasicMaterial color="#0a0a0a" />
-      </mesh>
-      {/* Flag pole */}
-      <mesh position={[-3.5, 0.85, -0.4]} castShadow>
-        <cylinderGeometry args={[0.025, 0.025, 1.7, 6]} />
-        <meshStandardMaterial color="#dcdce0" />
-      </mesh>
-      {/* Flag */}
-      <mesh position={[-3.0, 1.55, -0.4]} castShadow>
-        <planeGeometry args={[0.85, 0.45]} />
-        <meshStandardMaterial color="#c83232" side={THREE.DoubleSide} />
-      </mesh>
-      {/* Flag pole tip */}
-      <mesh position={[-3.5, 1.72, -0.4]}>
-        <sphereGeometry args={[0.05, 8, 6]} />
-        <meshStandardMaterial color="#d4a04a" metalness={0.6} roughness={0.3} />
-      </mesh>
-      {/* Sand bunker — sits SE of the green, "guarding" the approach
-          from the tee. Positioned so its ellipse does not overlap the
-          green (centers far enough apart that the bunker's reach in
-          the green's direction + green radius < distance). */}
+
+      {/* Hole 1 (easter egg) — north end. Local (7, -8) tee →
+          local (-4, -8.4) green. Larger green than the other holes
+          so the rolling ball has visible space to travel during
+          the putt easter egg. */}
+      <GolfHole
+        greenLocal={[-4, -8.4]}
+        teeLocal={[7, -8]}
+        greenRadius={3.6}
+      />
+
+      {/* Hole 2 — middle of the course, dog-legs back the other way */}
+      <GolfHole greenLocal={[5, 2]} teeLocal={[-5, -2]} />
+
+      {/* Hole 3 — south end, closest to the farm */}
+      <GolfHole greenLocal={[-5, 12]} teeLocal={[3, 8]} />
+
+      {/* Sand bunkers scattered across the course */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-0.8, 0.013, 2.0]}
-        scale={[1.6, 1, 1]}
+        position={[-2, 0.013, -5]}
+        scale={[1.8, 1, 1]}
         receiveShadow
       >
         <circleGeometry args={[1.0, 20]} />
         <meshStandardMaterial color="#e8d8a8" />
       </mesh>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[2, 0.013, -10]}
+        scale={[1.5, 1, 1]}
+        receiveShadow
+      >
+        <circleGeometry args={[0.9, 20]} />
+        <meshStandardMaterial color="#e8d8a8" />
+      </mesh>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[2, 0.013, 5]}
+        scale={[1.4, 1, 1]}
+        receiveShadow
+      >
+        <circleGeometry args={[1.0, 20]} />
+        <meshStandardMaterial color="#e8d8a8" />
+      </mesh>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-3, 0.013, 9]}
+        scale={[1.6, 1, 1]}
+        receiveShadow
+      >
+        <circleGeometry args={[0.85, 20]} />
+        <meshStandardMaterial color="#e8d8a8" />
+      </mesh>
+
+      {/* Water hazard between holes 2 and 3 */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.013, 5.5]}
+        receiveShadow
+      >
+        <circleGeometry args={[1.6, 24]} />
+        <meshStandardMaterial color="#3e7ba8" roughness={0.4} metalness={0.1} />
+      </mesh>
+
+      {/* Rolling fairway mounds — give the course some terrain
+          variation instead of a flat plane */}
+      <FairwayMound position={[-5, 0, -3]} scale={0.9} />
+      <FairwayMound position={[4, 0, 0]} scale={1.0} color="#5fa838" />
+      <FairwayMound position={[-4, 0, 4]} scale={1.1} />
+      <FairwayMound position={[5, 0, 11]} scale={0.85} color="#5fa838" />
+      <FairwayMound position={[-6, 0, 13]} scale={1.0} />
+
+      {/* Parked golf cart on the cart path, between holes 1 and 2 */}
+      <GolfCart position={[5, 0, -4]} rotation={Math.PI * 0.1} />
     </group>
   );
 }
 
-// Golf ball, animated during the hole-in-one easter egg.
+// Golf ball, animated during the putt easter egg.
 // Phases (gt = golf.t in [0,1]):
-//   gt < 0.35  : ball at the tee
-//   0.35..0.55 : flight from tee to hole along a parabolic arc
+//   gt < 0.35  : ball at the tee (on the green near the cup)
+//   0.35..0.55 : ball rolls along the green from tee to cup (no arc)
 //   0.55..0.95 : ball sitting in the cup
 //   >= 0.95    : hidden again
 function GolfBall({
@@ -2182,14 +2439,18 @@ function GolfBall({
     const gt = g.t;
     if (gt < 0.35) {
       ref.current.visible = true;
-      ref.current.position.set(GOLF_TEE.x, 0.08, GOLF_TEE.z);
+      ref.current.position.set(GOLF_BALL_START.x, 0.08, GOLF_BALL_START.z);
     } else if (gt < 0.55) {
+      // Ease-out roll: ball decelerates as it nears the cup like a
+      // putt losing speed on the green.
       const p = (gt - 0.35) / 0.2;
+      const eased = 1 - Math.pow(1 - p, 2);
       ref.current.visible = true;
-      ref.current.position.x = GOLF_TEE.x + (GOLF_HOLE.x - GOLF_TEE.x) * p;
-      ref.current.position.z = GOLF_TEE.z + (GOLF_HOLE.z - GOLF_TEE.z) * p;
-      // Parabolic arc, peaks at ~2.2 units high
-      ref.current.position.y = Math.sin(p * Math.PI) * 2.2 + 0.08;
+      ref.current.position.x =
+        GOLF_BALL_START.x + (GOLF_HOLE.x - GOLF_BALL_START.x) * eased;
+      ref.current.position.z =
+        GOLF_BALL_START.z + (GOLF_HOLE.z - GOLF_BALL_START.z) * eased;
+      ref.current.position.y = 0.08; // rolls along the ground
     } else if (gt < 0.95) {
       ref.current.visible = true;
       ref.current.position.set(GOLF_HOLE.x, 0.02, GOLF_HOLE.z);
@@ -2200,7 +2461,12 @@ function GolfBall({
   return (
     <mesh ref={ref} visible={false} castShadow>
       <sphereGeometry args={[0.08, 12, 8]} />
-      <meshStandardMaterial color="#f8f6e8" roughness={0.6} />
+      <meshStandardMaterial
+        color="#ffffff"
+        emissive="#fff8e0"
+        emissiveIntensity={0.4}
+        roughness={0.55}
+      />
     </mesh>
   );
 }
@@ -2682,8 +2948,10 @@ function Bird({
     if (!root.current) return;
     if (!startedRef.current) {
       root.current.position.x = initialX;
-      // Bird faces direction of motion: rotate around Y based on sign of speed
-      root.current.rotation.y = speed > 0 ? -Math.PI / 2 : Math.PI / 2;
+      // The body geometry is elongated along local +X, so the bird
+      // naturally "faces" +X. Flip 180° for birds moving the other
+      // way so the head stays at the leading edge.
+      root.current.rotation.y = speed > 0 ? 0 : Math.PI;
       startedRef.current = true;
     }
     root.current.position.x += speed * dt;
@@ -2693,10 +2961,13 @@ function Bird({
     // A little vertical bob
     root.current.position.y =
       y + Math.sin(state.clock.elapsedTime * 1.8 + flapPhase) * 0.18;
-    // Wings flap
-    const flap = Math.sin(state.clock.elapsedTime * 9 + flapPhase) * 0.7;
-    if (leftWing.current) leftWing.current.rotation.z = flap;
-    if (rightWing.current) rightWing.current.rotation.z = -flap;
+    // Wings flap — rotate around the BODY's long axis (local X) so
+    // the wing tips trace an up/down arc. Rotating around Z (the
+    // wing's length axis) was the previous bug, which just spun the
+    // wings around their own length without ever flapping them.
+    const flap = Math.sin(state.clock.elapsedTime * 9 + flapPhase) * 0.9;
+    if (leftWing.current) leftWing.current.rotation.x = flap;
+    if (rightWing.current) rightWing.current.rotation.x = -flap;
   });
   return (
     <group ref={root} position={[initialX, y, z]}>
@@ -3757,30 +4028,30 @@ function Character({
 
     if (c.mode === "golfing") {
       const gt = golfRef.current.t;
-      // Right-handed golf swing as an ACROSS-THE-BODY motion (rotation.z
-      // around the spine axis). Positive z swings the arm to the RIGHT
-      // (over the trail shoulder, i.e. backswing); negative z swings it
-      // LEFT toward the target (follow-through). Impact passes through 0.
-      //   address  (0..0.18): hands together slightly toward target (-0.3)
-      //   backswing(0.18..0.32): swing up over trail shoulder (+2.5)
-      //   downswing(0.32..0.36): whip down through impact (0) to follow-through (-2.5)
-      //   follow   (0.36..0.55): hold over lead shoulder
-      //   celebrate(0.55..0.88): arms thrown up with a "yes!" wave
+      // PUTT (not a full swing): small, controlled back-and-forth
+      // around the spine axis. rotation.z positive = backswing (small
+      // tap back); negative = forward stroke through impact. The
+      // celebration phase still throws the arms way up.
+      //   address  (0..0.18): hands centred over the ball (0)
+      //   backswing(0.18..0.30): small tap back (+0.55)
+      //   stroke   (0.30..0.36): forward putt to follow-through (-0.45)
+      //   follow   (0.36..0.55): hold the follow-through
+      //   celebrate(0.55..0.88): arms thrown up — ball dropped
       //   relax    (0.88..1.00): drop arms back to sides
       let swingZ = 0;
       if (gt < 0.18) {
-        swingZ = -0.3; // address — hands just left of body center
-      } else if (gt < 0.32) {
-        const p = (gt - 0.18) / 0.14;
-        swingZ = -0.3 + p * 2.8; // up to top of backswing (+2.5)
+        swingZ = 0; // address — hands centred over the ball
+      } else if (gt < 0.30) {
+        const p = (gt - 0.18) / 0.12;
+        swingZ = p * 0.55; // small back-tap
       } else if (gt < 0.36) {
-        const p = (gt - 0.32) / 0.04;
-        // Downswing: whip from +2.5 through impact (~0 at p≈0.5) to
-        // follow-through (-2.5). Ball-flight starts at gt=0.35 (p=0.75)
-        // which is just past impact — perfect.
-        swingZ = 2.5 - p * 5.0;
+        const p = (gt - 0.30) / 0.06;
+        // Forward stroke: from +0.55 through impact (0 at p≈0.55)
+        // to -0.45 follow-through. Ball roll starts at gt=0.35
+        // (p≈0.83) which is just past impact.
+        swingZ = 0.55 - p * 1.0;
       } else if (gt < 0.55) {
-        swingZ = -2.5; // follow-through hold over lead shoulder
+        swingZ = -0.45; // hold follow-through
       } else if (gt < 0.88) {
         const wave = Math.sin(t * 9) * 0.25;
         swingZ = -Math.PI * 0.8 + wave; // celebrate
@@ -3788,12 +4059,8 @@ function Character({
         const p = (gt - 0.88) / 0.12;
         swingZ = -Math.PI * 0.8 + p * Math.PI * 0.8; // ease back to 0
       }
-      // Two-handed grip: tilt each shoulder INWARD by a fixed amount
-      // ON TOP of the swing rotation, so both hands meet near the body's
-      // centerline where the club is held. At neutral swing the hands
-      // sit ≈±0.07 units from center (effectively together); at swing
-      // extremes the trail arm folds more and the lead arm stays more
-      // extended — which incidentally mimics a real golfer's arm spread.
+      // Two-handed grip (same as before) — hands stay near the
+      // centreline of the body while putting.
       const INWARD = 0.42;
       if (leftShoulderRef.current) {
         leftShoulderRef.current.rotation.x = 0;
@@ -3809,11 +4076,11 @@ function Character({
       }
       if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
       if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
-      // Slight forward bend at the hips while addressing/swinging — a
-      // golfer hinges forward over the ball.
+      // Deeper forward bend over the ball — putters hunch over more
+      // than a full-swing golfer.
       if (bodyRef.current) {
-        if (gt < 0.4) bodyRef.current.rotation.x = 0.25;
-        else if (gt < 0.55) bodyRef.current.rotation.x = 0.1;
+        if (gt < 0.4) bodyRef.current.rotation.x = 0.45;
+        else if (gt < 0.55) bodyRef.current.rotation.x = 0.35;
         else bodyRef.current.rotation.x = 0;
         bodyRef.current.position.y = 0;
       }
@@ -3951,15 +4218,15 @@ function Character({
               <cylinderGeometry args={[0.018, 0.014, 0.06, 8]} />
               <meshStandardMaterial color="#9aa0a4" metalness={0.7} roughness={0.35} />
             </mesh>
-            {/* Club head (iron) — wide flat face addressing the ball */}
-            <group position={[0.02, -1.04, 0.06]}>
+            {/* Putter head — long, low blade with a flat face. */}
+            <group position={[0.02, -1.05, 0.04]}>
               <mesh castShadow>
-                <boxGeometry args={[0.18, 0.09, 0.06]} />
+                <boxGeometry args={[0.22, 0.04, 0.08]} />
                 <meshStandardMaterial color="#9aa0a4" metalness={0.7} roughness={0.35} />
               </mesh>
-              {/* Sole */}
-              <mesh position={[0, -0.05, 0.005]}>
-                <boxGeometry args={[0.18, 0.014, 0.07]} />
+              {/* Sole — thin darker strip along the bottom */}
+              <mesh position={[0, -0.025, 0]}>
+                <boxGeometry args={[0.22, 0.01, 0.09]} />
                 <meshStandardMaterial color="#6a6f72" metalness={0.6} roughness={0.4} />
               </mesh>
             </group>
@@ -4001,9 +4268,11 @@ const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
 // Midpoint between tee and hole — the focal point during the golf swing so
 // both the character (right of frame) and the cup (left of frame) are visible
 // while the ball flies between them.
+// Midpoint of the BALL's roll (not the character's stance) — the
+// camera target follows this so the ball stays in frame as it rolls.
 const GOLF_MIDPOINT = {
-  x: (GOLF_TEE.x + GOLF_HOLE.x) / 2,
-  z: (GOLF_TEE.z + GOLF_HOLE.z) / 2,
+  x: (GOLF_BALL_START.x + GOLF_HOLE.x) / 2,
+  z: (GOLF_BALL_START.z + GOLF_HOLE.z) / 2,
 };
 
 function CameraRig({
@@ -4067,15 +4336,16 @@ function CameraRig({
     let wantCam: { x: number; y: number; z: number } | null = null;
     let camLerpSpeed = 2.0;
     if (c.mode === "golfing") {
-      // Down-the-line shot from behind-and-trail-side of the character —
-      // similar to a golf TV camera. The character faces west toward the
-      // hole, so "behind" = east, and a right-handed golfer's trail side
-      // is south (+Z). Offset south so we see his profile + the club
-      // (otherwise his body blocks the swing entirely).
+      // Side-on TV-style camera looking north at the putt. The
+      // camera sits south of the ball's roll line so the character
+      // (slightly east of the ball) appears to the right of frame,
+      // the ball rolls left-to-right through the centre of frame,
+      // and the cup is on the left edge — character never crosses
+      // in front of the ball.
       wantCam = {
-        x: GOLF_TEE.x + 4.5,
-        y: 3,
-        z: GOLF_TEE.z + 3.5,
+        x: GOLF_MIDPOINT.x + 0.5,
+        y: 2.5,
+        z: GOLF_MIDPOINT.z + 3.2,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
