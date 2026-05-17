@@ -2,7 +2,7 @@
 
 import { forwardRef, Suspense, useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Billboard, OrbitControls, Text, useTexture } from "@react-three/drei";
+import { OrbitControls, Text, useTexture } from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
 import * as THREE from "three";
 import {
@@ -2394,10 +2394,16 @@ const FOOT = "#1a1a1a";
 const EYE = "#1a1a1a";
 
 // FaceBillboard — a textured plane displaying Sonny's actual face photo.
-// Lives inside a <Billboard> so it rotates to always face the camera,
-// regardless of which way the character is turned. The face also rocks
-// side-to-side in sync with the walking step phase, like a comically
-// loose bobblehead.
+//
+// Two rotation modes, switched per frame based on c.mode:
+//   * default: BILLBOARD — the plane is rotated so its front (+Z) faces
+//     the camera, no matter which way the body is turned. Walking adds a
+//     side-to-side bobblehead tilt synced to the step cycle.
+//   * riding:  LOCKED — the local rotation is cleared so the face plane
+//     inherits the body's rotation. Since the body's angle on the
+//     coaster matches the cart's tangent direction, the face ends up
+//     pointing in the direction the cart is moving (instead of staring
+//     at the camera through the back of the cart's seat).
 function FaceBillboard({
   charRef,
 }: {
@@ -2405,26 +2411,44 @@ function FaceBillboard({
 }) {
   const tex = useTexture("/face.png");
   const meshRef = useRef<THREE.Mesh>(null);
+  // Scratch vectors so we don't allocate every frame.
+  const meshWorld = useMemo(() => new THREE.Vector3(), []);
+  const lookTarget = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame(() => {
-    if (!meshRef.current) return;
+  useFrame((state) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
     const c = charRef.current;
+
+    if (c.mode === "riding") {
+      // Locked to body rotation — clear local rotation so the face
+      // inherits whatever direction the body is facing (= cart tangent).
+      mesh.rotation.set(0, 0, 0);
+      return;
+    }
+
+    // Billboard behavior: aim the plane's local -Z away from the camera
+    // so its +Z (the textured front face) ends up pointing at the camera.
+    mesh.getWorldPosition(meshWorld);
+    lookTarget.copy(meshWorld).multiplyScalar(2).sub(state.camera.position);
+    mesh.lookAt(lookTarget);
+
+    // Bobblehead rock — side-to-side tilt synced to the step cycle.
+    // Layered on top of the billboard rotation as a local Z roll.
     if (c.walking) {
-      // Bobblehead rock — side-to-side tilt synced to the step cycle.
-      // 0.22 rad ≈ 12.5°, enough to read as a wobble without looking
-      // like the head is falling off.
-      meshRef.current.rotation.z =
-        Math.sin(c.stepPhase * Math.PI * 2) * 0.22;
-    } else {
-      // Ease back upright when not walking.
-      meshRef.current.rotation.z *= 0.85;
+      mesh.rotation.z += Math.sin(c.stepPhase * Math.PI * 2) * 0.22;
     }
   });
 
   return (
     <mesh ref={meshRef}>
       <planeGeometry args={[0.85, 0.9]} />
-      <meshBasicMaterial map={tex} transparent toneMapped={false} />
+      <meshBasicMaterial
+        map={tex}
+        transparent
+        toneMapped={false}
+        side={THREE.DoubleSide}
+      />
     </mesh>
   );
 }
@@ -2605,13 +2629,14 @@ function Character({
           <meshStandardMaterial color={BELT} />
         </mesh>
 
-        {/* Face — Sonny's actual photo on a billboard plane that always
-            faces the camera. Replaces the original bald head + beard +
-            mustache + eyes; the body stays cartoon for comedic effect.
-            Sized to match the rough head proportions of the old sphere. */}
-        <Billboard position={[0, 1.45, 0]}>
+        {/* Face — Sonny's actual photo on a plane positioned where the
+            old bald head was. FaceBillboard manages its own rotation
+            internally: billboards to the camera most of the time, but
+            locks to body rotation while riding the coaster so the face
+            points down the track. */}
+        <group position={[0, 1.45, 0]}>
           <FaceBillboard charRef={charRef} />
-        </Billboard>
+        </group>
 
         {/* Neck tattoo */}
         <mesh position={[0, 1.28, 0.14]}>
