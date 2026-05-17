@@ -19,7 +19,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding" | "golfing";
+type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning";
 
 type CharState = {
   x: number;
@@ -56,6 +56,19 @@ type GolfState = {
   t: number; // 0..1 progress of the golf easter-egg animation
 };
 
+type BalloonState = {
+  active: boolean;
+  // Multi-phase: rising (balloon takes off w/ Sonny inside) → scared
+  // (brief panic at altitude) → jumping (Sonny leaps out, parabolic
+  // fall) → rolling (forward roll on the ground to break the fall).
+  // After rolling, char.mode flips back to idle and walks to startX/Z.
+  phase: "rising" | "scared" | "jumping" | "rolling";
+  t: number; // 0..1 phase-local progress
+  height: number; // current Y of the balloon group (lifts during rising)
+  startX: number; // plaza spot to return to once the roll finishes
+  startZ: number;
+};
+
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
   target: React.MutableRefObject<{
@@ -76,6 +89,8 @@ type SharedRefs = {
   family: React.MutableRefObject<FamilyState>;
   golf: React.MutableRefObject<GolfState>;
   approachingGolf: React.MutableRefObject<boolean>;
+  balloon: React.MutableRefObject<BalloonState>;
+  approachingBalloon: React.MutableRefObject<boolean>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
@@ -100,6 +115,18 @@ const GOLF_POSITION = { x: -11.5, z: 9 };
 const GOLF_TEE = { x: -6.5, z: 9 };
 const GOLF_HOLE = { x: -15, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
+
+// Hot-air balloon easter egg (SE quadrant — south of the gator, right
+// of the golf course, away from the building cluster).
+const BALLOON_POSITION = { x: 10, z: 6 };
+// Walk to this spot to board (slight south offset from the balloon so
+// the character isn't trying to stand inside the basket geometry).
+const BALLOON_ENTRY = { x: 10, z: 7.5 };
+const BALLOON_RISE_HEIGHT = 6; // how high the balloon lifts off the ground
+const BALLOON_RISE_DURATION = 3.5; // seconds of ascent
+const BALLOON_SCARE_DURATION = 0.45; // "uh-oh I'm too high" beat
+const BALLOON_JUMP_DURATION = 0.55; // seconds airborne from the basket to the ground
+const BALLOON_ROLL_DURATION = 0.9; // seconds of forward roll to break the fall
 
 // Amusement park
 const PARK = { x: -13, z: -9 };
@@ -307,6 +334,15 @@ export default function GameWorld() {
   const familyRef = useRef<FamilyState>({ active: false, t: 0 });
   const golfRef = useRef<GolfState>({ active: false, t: 0 });
   const approachingGolfRef = useRef(false);
+  const balloonRef = useRef<BalloonState>({
+    active: false,
+    phase: "rising",
+    t: 0,
+    height: 0,
+    startX: 0,
+    startZ: 0,
+  });
+  const approachingBalloonRef = useRef(false);
 
   const pathname = usePathname();
   const router = useRouter();
@@ -340,6 +376,10 @@ export default function GameWorld() {
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
+      balloonRef.current.active = false;
+      balloonRef.current.t = 0;
+      balloonRef.current.height = 0;
+      approachingBalloonRef.current = false;
     } else {
       targetRef.current = null;
       pathQueueRef.current = [];
@@ -349,6 +389,10 @@ export default function GameWorld() {
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
+      balloonRef.current.active = false;
+      balloonRef.current.t = 0;
+      balloonRef.current.height = 0;
+      approachingBalloonRef.current = false;
     }
   }, [pathname]);
 
@@ -366,6 +410,8 @@ export default function GameWorld() {
       family: familyRef,
       golf: golfRef,
       approachingGolf: approachingGolfRef,
+      balloon: balloonRef,
+      approachingBalloon: approachingBalloonRef,
     }),
     []
   );
@@ -410,6 +456,81 @@ function Scene({
     const target = refs.target.current;
     const gator = refs.gator.current;
     const coaster = refs.coaster.current;
+
+    // ── 0aa. Hot-air balloon ride (with chicken-out + roll) ──
+    if (char.mode === "ballooning") {
+      const b = refs.balloon.current;
+      const phaseDur =
+        b.phase === "rising"
+          ? BALLOON_RISE_DURATION
+          : b.phase === "scared"
+          ? BALLOON_SCARE_DURATION
+          : b.phase === "jumping"
+          ? BALLOON_JUMP_DURATION
+          : BALLOON_ROLL_DURATION;
+      b.t += clampedDt / phaseDur;
+
+      if (b.phase === "rising") {
+        // Balloon lifts off; character rides along on top of the basket.
+        b.height = b.t * BALLOON_RISE_HEIGHT;
+        char.x = BALLOON_POSITION.x;
+        char.z = BALLOON_POSITION.z;
+        char.y = b.height + 0.55; // sit on basket lip
+        char.angle = 0;
+        if (b.t >= 1) {
+          b.phase = "scared";
+          b.t = 0;
+        }
+      } else if (b.phase === "scared") {
+        // Brief beat at altitude — "uh oh".
+        char.x = BALLOON_POSITION.x;
+        char.z = BALLOON_POSITION.z;
+        char.y = b.height + 0.55;
+        char.angle = 0;
+        if (b.t >= 1) {
+          b.phase = "jumping";
+          b.t = 0;
+        }
+      } else if (b.phase === "jumping") {
+        // Parabolic-ish fall from the basket to the ground; nudges
+        // forward (south, toward the camera) so he lands clear.
+        const startY = b.height + 0.55;
+        char.x = BALLOON_POSITION.x;
+        char.z = BALLOON_POSITION.z + b.t * 1.5;
+        char.y = Math.max(0, startY * (1 - b.t * b.t));
+        char.angle = 0;
+        if (b.t >= 1) {
+          b.phase = "rolling";
+          b.t = 0;
+          char.y = 0;
+        }
+      } else if (b.phase === "rolling") {
+        // Forward roll to absorb the impact — keeps moving forward
+        // (south) along the ground. Visual roll is done by the
+        // Character component reading b.phase + b.t.
+        char.x = BALLOON_POSITION.x;
+        char.z = BALLOON_POSITION.z + 1.5 + b.t * 2.5;
+        char.y = 0;
+        char.angle = 0;
+        if (b.t >= 1) {
+          // Done! End ballooning mode and walk back to the start spot.
+          b.active = false;
+          b.t = 0;
+          b.phase = "rising";
+          char.mode = "idle";
+          char.y = 0;
+          const path = routeTo(char.x, char.z, b.startX, b.startZ);
+          const first = path[0];
+          refs.target.current = {
+            x: first.x,
+            z: first.z,
+            sectionId: null,
+          };
+          refs.pathQueue.current = path.slice(1);
+          char.walking = true;
+        }
+      }
+    }
 
     // ── 0a. Golf hole-in-one ──
     if (char.mode === "golfing") {
@@ -554,6 +675,16 @@ function Scene({
             char.angle = 0;
             refs.golf.current.active = true;
             refs.golf.current.t = 0;
+          } else if (refs.approachingBalloon.current) {
+            // Climb in! Balloon starts its ascent.
+            refs.approachingBalloon.current = false;
+            char.mode = "ballooning";
+            char.walking = false;
+            char.angle = 0;
+            refs.balloon.current.active = true;
+            refs.balloon.current.phase = "rising";
+            refs.balloon.current.t = 0;
+            refs.balloon.current.height = 0;
           } else {
             // Plain arrival with no section / approach flag — this is the
             // walk-back to the plaza after an activity ends. Face the
@@ -588,6 +719,7 @@ function Scene({
       !gator.chasing &&
       !coaster.riding &&
       !refs.golf.current.active &&
+      !refs.balloon.current.active &&
       !refs.family.current.active &&
       !refs.pendingNav.current
     ) {
@@ -682,10 +814,12 @@ function Scene({
       refs.char.current.mode === "flee" ||
       refs.char.current.mode === "riding" ||
       refs.char.current.mode === "golfing" ||
+      refs.char.current.mode === "ballooning" ||
       refs.gator.current.chasing ||
       refs.coaster.current.riding ||
       refs.family.current.active ||
-      refs.golf.current.active
+      refs.golf.current.active ||
+      refs.balloon.current.active
     );
   }
 
@@ -734,6 +868,17 @@ function Scene({
     refs.approachingGolf.current = true;
   }
 
+  function handleBalloonClick() {
+    if (!isOnHome || isBusy()) return;
+    // Remember where the character was standing so he can run back to
+    // the same spot after rolling out of the failed balloon ride.
+    const c = refs.char.current;
+    refs.balloon.current.startX = c.x;
+    refs.balloon.current.startZ = c.z;
+    walkTo(BALLOON_ENTRY.x, BALLOON_ENTRY.z, null);
+    refs.approachingBalloon.current = true;
+  }
+
 
   return (
     <>
@@ -749,6 +894,8 @@ function Scene({
         onParkClick={handleParkClick}
         golfRef={refs.golf}
         onGolfClick={handleGolfClick}
+        balloonRef={refs.balloon}
+        onBalloonClick={handleBalloonClick}
       />
       {SECTIONS.map((s) => (
         <Building
@@ -759,7 +906,11 @@ function Scene({
         />
       ))}
       <Suspense fallback={null}>
-        <Character charRef={refs.char} golfRef={refs.golf} />
+        <Character
+          charRef={refs.char}
+          golfRef={refs.golf}
+          balloonRef={refs.balloon}
+        />
       </Suspense>
       <Family familyRef={refs.family} />
       <CameraRig charRef={refs.char} gatorRef={refs.gator} pathname={pathname} />
@@ -840,6 +991,8 @@ function Environment({
   onParkClick,
   golfRef,
   onGolfClick,
+  balloonRef,
+  onBalloonClick,
 }: {
   gatorRef: React.MutableRefObject<GatorState>;
   onGatorClick: () => void;
@@ -847,6 +1000,8 @@ function Environment({
   onParkClick: () => void;
   golfRef: React.MutableRefObject<GolfState>;
   onGolfClick: () => void;
+  balloonRef: React.MutableRefObject<BalloonState>;
+  onBalloonClick: () => void;
 }) {
   return (
     <>
@@ -861,6 +1016,9 @@ function Environment({
       {/* Golf course to the southwest */}
       <GolfCourse position={[-11.5, 0, 9]} onSelect={onGolfClick} />
       <GolfBall golfRef={golfRef} />
+
+      {/* Hot-air balloon to the south-east (clickable easter egg) */}
+      <Balloon balloonRef={balloonRef} onSelect={onBalloonClick} />
 
       {/* Amusement park to the northwest (opposite the golf course) */}
       <AmusementPark onSelect={onParkClick} />
@@ -1410,6 +1568,100 @@ function GolfBall({
       <sphereGeometry args={[0.08, 12, 8]} />
       <meshStandardMaterial color="#f8f6e8" roughness={0.6} />
     </mesh>
+  );
+}
+
+// Hot-air balloon — envelope (sphere) + basket (box) + suspension ropes
+// + a tiny burner. Clickable; rises off the ground during the easter egg
+// driven by balloonRef.height.
+function Balloon({
+  balloonRef,
+  onSelect,
+}: {
+  balloonRef: React.MutableRefObject<BalloonState>;
+  onSelect: () => void;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!groupRef.current) return;
+    const b = balloonRef.current;
+    // Active: track the rise height. Inactive: smoothly settle to ground.
+    if (b.active) {
+      groupRef.current.position.y = b.height;
+    } else if (groupRef.current.position.y > 0.001) {
+      groupRef.current.position.y *= 0.92;
+    } else {
+      groupRef.current.position.y = 0;
+    }
+  });
+  // Geometry: envelope center sits ~2.5 units above the basket.
+  const ENV_R = 1.1;
+  const ENV_Y = 2.7;
+  const BASKET_Y = 0.45;
+  return (
+    <group ref={groupRef} position={[BALLOON_POSITION.x, 0, BALLOON_POSITION.z]}>
+      {/* Envelope — slightly elongated red/yellow striped sphere. The
+          whole envelope is clickable so a click anywhere on the balloon
+          sends the character over. */}
+      <mesh
+        position={[0, ENV_Y, 0]}
+        scale={[1, 1.25, 1]}
+        castShadow
+        onClick={(e) => {
+          onSelect();
+          e.stopPropagation();
+        }}
+        onPointerOver={(e) => {
+          document.body.style.cursor = "pointer";
+          e.stopPropagation();
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = "auto";
+        }}
+      >
+        <sphereGeometry args={[ENV_R, 20, 16]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Yellow accent stripe around the envelope's equator */}
+      <mesh position={[0, ENV_Y, 0]} scale={[1.01, 1.25, 1.01]}>
+        <sphereGeometry
+          args={[ENV_R * 0.998, 20, 4, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.16]}
+        />
+        <meshStandardMaterial color="#ffd83a" />
+      </mesh>
+      {/* Suspension ropes — four thin cylinders from envelope to basket
+          corners */}
+      {[
+        [-0.3, -0.3],
+        [-0.3, 0.3],
+        [0.3, -0.3],
+        [0.3, 0.3],
+      ].map(([x, z], i) => (
+        <mesh
+          key={i}
+          position={[x * 0.95, (ENV_Y + BASKET_Y) / 2 - 0.4, z * 0.95]}
+          rotation={[0, 0, 0]}
+        >
+          <cylinderGeometry args={[0.012, 0.012, ENV_Y - BASKET_Y - 0.6, 6]} />
+          <meshStandardMaterial color="#3a2a18" />
+        </mesh>
+      ))}
+      {/* Burner — small grey cylinder between basket and envelope */}
+      <mesh position={[0, BASKET_Y + 0.55, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.18, 8]} />
+        <meshStandardMaterial color="#5a5a5a" metalness={0.5} roughness={0.4} />
+      </mesh>
+      {/* Basket — wicker box */}
+      <mesh position={[0, BASKET_Y, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.8, 0.55, 0.8]} />
+        <meshStandardMaterial color="#8b6a3f" roughness={1} />
+      </mesh>
+      {/* Basket rim (darker) */}
+      <mesh position={[0, BASKET_Y + 0.3, 0]}>
+        <boxGeometry args={[0.85, 0.05, 0.85]} />
+        <meshStandardMaterial color="#5b4423" roughness={1} />
+      </mesh>
+    </group>
   );
 }
 
@@ -2456,9 +2708,11 @@ function FaceBillboard({
 function Character({
   charRef,
   golfRef,
+  balloonRef,
 }: {
   charRef: React.MutableRefObject<CharState>;
   golfRef: React.MutableRefObject<GolfState>;
+  balloonRef: React.MutableRefObject<BalloonState>;
 }) {
   const rootRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Group>(null);
@@ -2482,23 +2736,39 @@ function Character({
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
-      // y is driven by the game tick for ride (track height) and golf
-      // (celebration jumps); zero on foot otherwise.
-      // While riding, lower the character so the hips (at body-local y=0.66)
-      // sit on the cart's top surface (cart-local y=0.36). Otherwise the
-      // character would stand on top of the cart instead of sitting in it.
+      // y is driven by the game tick for ride (track height), golf
+      // (celebration jumps), and ballooning (rising / falling); zero on
+      // foot otherwise. While riding, lower the character so the hips
+      // (at body-local y=0.66) sit on the cart's top surface
+      // (cart-local y=0.36) rather than standing on top of it.
       rootRef.current.position.y =
-        c.mode === "riding" ? c.y - 0.30 : c.mode === "golfing" ? c.y : 0;
-      // Smoothly rotate to face direction. Snap during ride / golf so we
-      // always match the expected heading.
+        c.mode === "riding"
+          ? c.y - 0.30
+          : c.mode === "golfing" || c.mode === "ballooning"
+          ? c.y
+          : 0;
+      // Smoothly rotate to face direction. Snap during ride / golf /
+      // ballooning so we always match the expected heading.
       const cur = rootRef.current.rotation.y;
       let diff = c.angle - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       rootRef.current.rotation.y =
-        c.mode === "riding" || c.mode === "golfing"
+        c.mode === "riding" ||
+        c.mode === "golfing" ||
+        c.mode === "ballooning"
           ? c.angle
           : cur + diff * 0.2;
+      // Forward roll: during the rolling phase of the balloon easter
+      // egg, tumble the entire character around its local X axis
+      // (head-over-heels in the direction of motion). Otherwise clear
+      // any leftover rotation.x.
+      const b = balloonRef.current;
+      if (c.mode === "ballooning" && b.phase === "rolling") {
+        rootRef.current.rotation.x = b.t * Math.PI * 2; // one full rev
+      } else {
+        rootRef.current.rotation.x = 0;
+      }
     }
 
     if (c.mode === "riding") {
@@ -2516,6 +2786,39 @@ function Character({
         // Subtle vertical bounce as the cart goes over track joints
         bodyRef.current.position.y = Math.abs(Math.sin(t * 9)) * 0.03;
       }
+      return;
+    }
+
+    if (c.mode === "ballooning") {
+      const b = balloonRef.current;
+      // Arms react to the phase: gripping the basket while rising,
+      // flailing during the scared/jump beats, straight-out during
+      // the forward roll. Legs reset to standing.
+      let armX = 0;
+      if (b.phase === "rising") {
+        // Light grip on the basket — arms slightly forward & down.
+        armX = -0.35;
+      } else if (b.phase === "scared") {
+        // Both hands fly UP — "uh oh I'm too high".
+        armX = -Math.PI * 0.7;
+      } else if (b.phase === "jumping") {
+        // Mid-air flail — arms out for balance.
+        armX = -Math.PI * 0.5;
+      } else if (b.phase === "rolling") {
+        // Tucked in for the roll.
+        armX = -1.1;
+      }
+      if (leftShoulderRef.current) {
+        leftShoulderRef.current.rotation.x = armX;
+        leftShoulderRef.current.rotation.z = 0;
+      }
+      if (rightShoulderRef.current) {
+        rightShoulderRef.current.rotation.x = armX;
+        rightShoulderRef.current.rotation.z = 0;
+      }
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      if (bodyRef.current) bodyRef.current.position.y = 0;
       return;
     }
 
@@ -2552,13 +2855,20 @@ function Character({
         const p = (gt - 0.88) / 0.12;
         swingZ = -Math.PI * 0.8 + p * Math.PI * 0.8; // ease back to 0
       }
+      // Two-handed grip: tilt each shoulder INWARD by a fixed amount
+      // ON TOP of the swing rotation, so both hands meet near the body's
+      // centerline where the club is held. At neutral swing the hands
+      // sit ≈±0.07 units from center (effectively together); at swing
+      // extremes the trail arm folds more and the lead arm stays more
+      // extended — which incidentally mimics a real golfer's arm spread.
+      const INWARD = 0.42;
       if (leftShoulderRef.current) {
         leftShoulderRef.current.rotation.x = 0;
-        leftShoulderRef.current.rotation.z = swingZ;
+        leftShoulderRef.current.rotation.z = swingZ + INWARD;
       }
       if (rightShoulderRef.current) {
         rightShoulderRef.current.rotation.x = 0;
-        rightShoulderRef.current.rotation.z = swingZ;
+        rightShoulderRef.current.rotation.z = swingZ - INWARD;
       }
       if (clubHolderRef.current) {
         clubHolderRef.current.rotation.x = 0;
@@ -2797,7 +3107,8 @@ function CameraRig({
     } else if (
       c.walking ||
       c.mode === "riding" ||
-      c.mode === "flee"
+      c.mode === "flee" ||
+      c.mode === "ballooning"
     ) {
       wantTX = c.x;
       wantTZ = c.z;
@@ -2828,6 +3139,18 @@ function CameraRig({
     } else if (c.mode === "riding") {
       // Cinematic chase-cam following the cart from behind-and-above.
       wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
+      camHijackedRef.current = true;
+    } else if (c.mode === "ballooning") {
+      // Stationary vantage south of the balloon launch pad — keeps
+      // the rising balloon, the panicked jump, and the forward roll
+      // all in the same frame. Stays at a fixed height so the camera
+      // doesn't track UP with the balloon (we want to see the gap
+      // between Sonny and the ground as it grows).
+      wantCam = {
+        x: BALLOON_POSITION.x + 2,
+        y: 4,
+        z: BALLOON_POSITION.z + 8,
+      };
       camHijackedRef.current = true;
     } else if (c.mode === "flee") {
       // Chase-cam IN FRONT of the runner — but specifically on the side
