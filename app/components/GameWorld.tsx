@@ -2395,16 +2395,35 @@ const EYE = "#1a1a1a";
 
 // FaceBillboard — a textured plane displaying Sonny's actual face photo.
 // Lives inside a <Billboard> so it rotates to always face the camera,
-// regardless of which way the character is turned. Comedic mismatch: a
-// real human face perched on a low-poly cartoon body.
-function FaceBillboard() {
+// regardless of which way the character is turned. The face also rocks
+// side-to-side in sync with the walking step phase, like a comically
+// loose bobblehead.
+function FaceBillboard({
+  charRef,
+}: {
+  charRef: React.MutableRefObject<CharState>;
+}) {
   const tex = useTexture("/face.png");
-  // Photo is roughly portrait (~470×510). Plane sized so the face reads
-  // about the same as the old bald-head sphere from default viewing
-  // distance.
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    if (!meshRef.current) return;
+    const c = charRef.current;
+    if (c.walking) {
+      // Bobblehead rock — side-to-side tilt synced to the step cycle.
+      // 0.22 rad ≈ 12.5°, enough to read as a wobble without looking
+      // like the head is falling off.
+      meshRef.current.rotation.z =
+        Math.sin(c.stepPhase * Math.PI * 2) * 0.22;
+    } else {
+      // Ease back upright when not walking.
+      meshRef.current.rotation.z *= 0.85;
+    }
+  });
+
   return (
-    <mesh>
-      <planeGeometry args={[0.65, 0.7]} />
+    <mesh ref={meshRef}>
+      <planeGeometry args={[0.85, 0.9]} />
       <meshBasicMaterial map={tex} transparent toneMapped={false} />
     </mesh>
   );
@@ -2591,7 +2610,7 @@ function Character({
             mustache + eyes; the body stays cartoon for comedic effect.
             Sized to match the rough head proportions of the old sphere. */}
         <Billboard position={[0, 1.45, 0]}>
-          <FaceBillboard />
+          <FaceBillboard charRef={charRef} />
         </Billboard>
 
         {/* Neck tattoo */}
