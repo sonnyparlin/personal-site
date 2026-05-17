@@ -1349,10 +1349,13 @@ function GolfCourse({
         <sphereGeometry args={[0.05, 8, 6]} />
         <meshStandardMaterial color="#d4a04a" metalness={0.6} roughness={0.3} />
       </mesh>
-      {/* Sand bunker next to the green */}
+      {/* Sand bunker — sits SE of the green, "guarding" the approach
+          from the tee. Positioned so its ellipse does not overlap the
+          green (centers far enough apart that the bunker's reach in
+          the green's direction + green radius < distance). */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-1.8, 0.013, 1.5]}
+        position={[-0.8, 0.013, 2.0]}
         scale={[1.6, 1, 1]}
         receiveShadow
       >
