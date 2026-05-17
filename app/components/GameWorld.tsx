@@ -1203,6 +1203,61 @@ function Environment({
       <HayBale x={-7} z={54} rotation={-0.2} />
       <HayBale x={-11} z={52} />
 
+      {/* Red tractor parked east of the barn */}
+      <Tractor x={-4} z={56} rotation={-Math.PI * 0.15} />
+
+      {/* Fenced animal pen east of the barn — three cows, a goat, a
+          pig. Fence runs around the south + east edges. */}
+      <Cow x={1} z={48} rotation={-Math.PI * 0.6} />
+      <Cow x={4} z={50} rotation={Math.PI * 0.2} />
+      <Cow x={2} z={52} rotation={Math.PI * 0.9} />
+      <Goat x={6} z={48} rotation={Math.PI * 0.4} />
+      <Goat x={7} z={52} rotation={-Math.PI * 0.3} />
+      <Pig x={-1} z={50} rotation={Math.PI * 1.2} />
+      {/* Pen fences — south side then east side */}
+      <FenceSection x={2} z={54.5} length={6} />
+      <FenceSection x={5} z={54.5} length={6} />
+      <FenceSection x={8.3} z={51} rotation={Math.PI / 2} length={6} />
+      <FenceSection x={8.3} z={47} rotation={Math.PI / 2} length={4} />
+
+      {/* Chickens scattered near the farmhouse / barn */}
+      <Chicken x={-17} z={56} rotation={Math.PI * 0.4} />
+      <Chicken x={-15} z={55} rotation={Math.PI * 1.1} color="#3a2a1a" />
+      <Chicken x={-19} z={54} rotation={-Math.PI * 0.5} color="#c8a878" />
+      <Chicken x={-16} z={58} rotation={Math.PI * 0.8} />
+      <Chicken x={-13} z={56} rotation={Math.PI * 1.5} color="#3a2a1a" />
+
+      {/* Two turkeys near the chickens — bigger and fancier */}
+      <Turkey x={-18} z={57} rotation={Math.PI * 0.6} />
+      <Turkey x={-15} z={59} rotation={-Math.PI * 0.4} />
+
+      {/* Tall corn stalks scattered across the green cornfield at
+          (3, 47). Adds vertical texture so the field reads as
+          actual corn rather than just a green patch. */}
+      <CornStalk x={-1} z={43} scale={1.0} />
+      <CornStalk x={1} z={44} scale={1.05} />
+      <CornStalk x={3} z={43} scale={0.95} />
+      <CornStalk x={5} z={44} scale={1.0} />
+      <CornStalk x={7} z={43} scale={1.05} />
+      <CornStalk x={-1} z={46} scale={1.0} />
+      <CornStalk x={1} z={47} scale={1.1} />
+      <CornStalk x={3} z={46} scale={1.0} />
+      <CornStalk x={5} z={47} scale={1.05} />
+      <CornStalk x={7} z={46} scale={0.95} />
+      <CornStalk x={-1} z={49} scale={1.0} />
+      <CornStalk x={1} z={50} scale={1.05} />
+      <CornStalk x={3} z={49} scale={1.0} />
+      <CornStalk x={5} z={50} scale={1.05} />
+      <CornStalk x={7} z={49} scale={1.0} />
+
+      {/* Scarecrow in the middle of the cornfield */}
+      <Scarecrow x={3} z={47} rotation={Math.PI * 0.1} />
+
+      {/* Windmill — tall well-pump style with rotating blades. Sits
+          on the empty grass east of the farm, between the farm and
+          the lake/play area. */}
+      <Windmill x={11} z={55} />
+
       {/* Distant farm backdrop — additional buildings, fields, hills,
           and pines south of the main farm so the world doesn't end at
           a grass edge when the camera looks south. */}
@@ -1656,28 +1711,73 @@ function Cityscape() {
 // underlying grass without z-fighting.
 const ROAD_CENTER_X = -30;
 const ROAD_WIDTH = 5;
-const ROAD_LENGTH = 130;
+const ROAD_LENGTH = 180; // extended to span the full ground (z=-95..85)
+const ROAD_CENTER_Z = -5; // shifted south to match the ground's centre
+const ROAD_DASH_COUNT = Math.floor(ROAD_LENGTH / 6);
 const NB_LANE_X = ROAD_CENTER_X + 1.0; // northbound (+z) cars
 const SB_LANE_X = ROAD_CENTER_X - 1.0; // southbound (-z) cars
 const PARK_LANE_X = ROAD_CENTER_X + 2.0; // parked cars on the east shoulder
 
+// Wall of mist that hides where the road runs off the edge of the
+// map. Several stacked semi-transparent planes give a layered
+// "fade into the distance" look from any reasonable viewing angle.
+// `direction = +1` for the south end (mist stacks toward +z),
+// `-1` for the north end.
+function RoadMist({
+  z,
+  direction = 1,
+}: {
+  z: number;
+  direction?: number;
+}) {
+  return (
+    <group position={[ROAD_CENTER_X, 0, z]}>
+      {[
+        { dz: 0, op: 0.25 },
+        { dz: 0.8, op: 0.45 },
+        { dz: 1.6, op: 0.65 },
+        { dz: 2.4, op: 0.85 },
+      ].map(({ dz, op }, i) => (
+        <mesh key={i} position={[0, 4.5, dz * direction]}>
+          <planeGeometry args={[ROAD_WIDTH + 6, 11]} />
+          <meshBasicMaterial
+            color="#c8d8e8"
+            transparent
+            opacity={op}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function Road() {
+  // Edge-of-map positions for the mist walls (just inside the road's
+  // ends so the densest planes line up with the ground edge).
+  const SOUTH_END = ROAD_CENTER_Z + ROAD_LENGTH / 2 - 4;
+  const NORTH_END = ROAD_CENTER_Z - ROAD_LENGTH / 2 + 4;
   return (
     <group>
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[ROAD_CENTER_X, 0.012, 0]}
+        position={[ROAD_CENTER_X, 0.012, ROAD_CENTER_Z]}
         receiveShadow
       >
         <planeGeometry args={[ROAD_WIDTH, ROAD_LENGTH]} />
         <meshStandardMaterial color="#2e2e30" roughness={1} />
       </mesh>
       {/* Dashed yellow centre line */}
-      {Array.from({ length: 22 }).map((_, i) => (
+      {Array.from({ length: ROAD_DASH_COUNT }).map((_, i) => (
         <mesh
           key={`cl${i}`}
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[ROAD_CENTER_X, 0.014, -60 + i * 6]}
+          position={[
+            ROAD_CENTER_X,
+            0.014,
+            ROAD_CENTER_Z - ROAD_LENGTH / 2 + 3 + i * 6,
+          ]}
         >
           <planeGeometry args={[0.15, 3]} />
           <meshStandardMaterial color="#e8c84a" />
@@ -1686,18 +1786,22 @@ function Road() {
       {/* Solid white edge lines */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[ROAD_CENTER_X + ROAD_WIDTH / 2 - 0.15, 0.014, 0]}
+        position={[ROAD_CENTER_X + ROAD_WIDTH / 2 - 0.15, 0.014, ROAD_CENTER_Z]}
       >
         <planeGeometry args={[0.12, ROAD_LENGTH]} />
         <meshStandardMaterial color="#dde0e3" />
       </mesh>
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[ROAD_CENTER_X - ROAD_WIDTH / 2 + 0.15, 0.014, 0]}
+        position={[ROAD_CENTER_X - ROAD_WIDTH / 2 + 0.15, 0.014, ROAD_CENTER_Z]}
       >
         <planeGeometry args={[0.12, ROAD_LENGTH]} />
         <meshStandardMaterial color="#dde0e3" />
       </mesh>
+      {/* Mist walls at both road ends — hide where the road runs
+          off the edge of the map. */}
+      <RoadMist z={SOUTH_END} direction={1} />
+      <RoadMist z={NORTH_END} direction={-1} />
     </group>
   );
 }
@@ -1833,10 +1937,12 @@ function DrivingCar({
   useFrame((_, dt) => {
     if (!ref.current) return;
     ref.current.position.z += speed * dt;
-    if (speed > 0 && ref.current.position.z > 68) {
-      ref.current.position.z = -68;
-    } else if (speed < 0 && ref.current.position.z < -68) {
-      ref.current.position.z = 68;
+    // Wrap just before the mist wall hides the road ends, so cars
+    // disappear visually inside the mist rather than at a hard pop.
+    if (speed > 0 && ref.current.position.z > 80) {
+      ref.current.position.z = -90;
+    } else if (speed < 0 && ref.current.position.z < -90) {
+      ref.current.position.z = 80;
     }
   });
   return (
@@ -2849,6 +2955,681 @@ function HayBale({
       <cylinderGeometry args={[0.42, 0.42, 0.8, 12]} />
       <meshStandardMaterial color="#d4b878" />
     </mesh>
+  );
+}
+
+// Classic red farm tractor — boxy body, big rear wheels, smaller
+// front wheels, exhaust pipe, sloped hood. Faces +x by default;
+// rotate via `rotation` prop.
+function Tractor({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Hood / engine — sloped front, narrow */}
+      <mesh position={[0.5, 0.55, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.7, 0.45, 0.7]} />
+        <meshStandardMaterial color="#b8302a" />
+      </mesh>
+      {/* Cab / seat area — taller boxy section behind hood */}
+      <mesh position={[-0.15, 0.75, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.6, 0.6, 0.8]} />
+        <meshStandardMaterial color="#b8302a" />
+      </mesh>
+      {/* Roll cage roof — small rectangle on top */}
+      <mesh position={[-0.15, 1.15, 0]} castShadow>
+        <boxGeometry args={[0.65, 0.08, 0.85]} />
+        <meshStandardMaterial color="#2a2a2a" />
+      </mesh>
+      {/* Steering wheel — small ring up front of the cab */}
+      <mesh position={[0.15, 0.95, 0]} rotation={[Math.PI / 2 - 0.3, 0, 0]}>
+        <torusGeometry args={[0.08, 0.012, 6, 12]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Exhaust pipe — vertical chimney on the hood */}
+      <mesh position={[0.55, 1.05, 0.15]} castShadow>
+        <cylinderGeometry args={[0.04, 0.04, 0.5, 8]} />
+        <meshStandardMaterial color="#3a3a3a" metalness={0.5} />
+      </mesh>
+      {/* Big rear wheels */}
+      {[-0.45, 0.45].map((zoff, i) => (
+        <mesh
+          key={`rw${i}`}
+          position={[-0.35, 0.4, zoff]}
+          rotation={[0, 0, Math.PI / 2]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.4, 0.4, 0.16, 14]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+      ))}
+      {/* Smaller front wheels */}
+      {[-0.4, 0.4].map((zoff, i) => (
+        <mesh
+          key={`fw${i}`}
+          position={[0.55, 0.25, zoff]}
+          rotation={[0, 0, Math.PI / 2]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.22, 0.22, 0.12, 12]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+      ))}
+      {/* Headlights — small yellow blocks on the front */}
+      <mesh position={[0.86, 0.6, -0.22]}>
+        <boxGeometry args={[0.04, 0.08, 0.08]} />
+        <meshStandardMaterial color="#fff4c0" emissive="#fff4c0" emissiveIntensity={0.4} />
+      </mesh>
+      <mesh position={[0.86, 0.6, 0.22]}>
+        <boxGeometry args={[0.04, 0.08, 0.08]} />
+        <meshStandardMaterial color="#fff4c0" emissive="#fff4c0" emissiveIntensity={0.4} />
+      </mesh>
+    </group>
+  );
+}
+
+// Cow — boxy white body with black patches, head with small horns,
+// four short legs, tail.
+function Cow({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.55, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.95, 0.55, 0.45]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Black patches — two darker boxes overlaid on the body */}
+      <mesh position={[0.15, 0.6, 0.226]}>
+        <boxGeometry args={[0.28, 0.30, 0.01]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[-0.3, 0.5, -0.226]}>
+        <boxGeometry args={[0.32, 0.32, 0.01]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0.55, 0.65, 0]} castShadow>
+        <boxGeometry args={[0.3, 0.32, 0.35]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Snout — slightly pink */}
+      <mesh position={[0.72, 0.6, 0]}>
+        <boxGeometry args={[0.06, 0.18, 0.22]} />
+        <meshStandardMaterial color="#e8b8b0" />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[0.71, 0.74, 0.11]}>
+        <sphereGeometry args={[0.03, 6, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.71, 0.74, -0.11]}>
+        <sphereGeometry args={[0.03, 6, 6]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Ears */}
+      <mesh position={[0.55, 0.85, 0.18]} rotation={[0.3, 0, 0]}>
+        <boxGeometry args={[0.08, 0.08, 0.04]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      <mesh position={[0.55, 0.85, -0.18]} rotation={[-0.3, 0, 0]}>
+        <boxGeometry args={[0.08, 0.08, 0.04]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Horns — small white nubs */}
+      <mesh position={[0.5, 0.92, 0.10]}>
+        <coneGeometry args={[0.025, 0.10, 5]} />
+        <meshStandardMaterial color="#dcd0a8" />
+      </mesh>
+      <mesh position={[0.5, 0.92, -0.10]}>
+        <coneGeometry args={[0.025, 0.10, 5]} />
+        <meshStandardMaterial color="#dcd0a8" />
+      </mesh>
+      {/* Four legs */}
+      {[
+        [-0.35, 0.18],
+        [-0.35, -0.18],
+        [0.30, 0.18],
+        [0.30, -0.18],
+      ].map(([lx, lz], i) => (
+        <mesh key={i} position={[lx, 0.15, lz]} castShadow>
+          <boxGeometry args={[0.12, 0.30, 0.12]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+      ))}
+      {/* Tail */}
+      <mesh position={[-0.5, 0.55, 0]} rotation={[0, 0, -0.3]}>
+        <boxGeometry args={[0.05, 0.32, 0.05]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      <mesh position={[-0.58, 0.38, 0]}>
+        <sphereGeometry args={[0.04, 6, 6]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+    </group>
+  );
+}
+
+// Chicken — small body, red comb, beak, two legs.
+function Chicken({
+  x,
+  z,
+  rotation = 0,
+  color = "#f4f1de",
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+  color?: string;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.22, 0]} castShadow>
+        <sphereGeometry args={[0.16, 10, 8]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Tail feathers */}
+      <mesh position={[-0.15, 0.28, 0]} rotation={[0, 0, 0.5]}>
+        <coneGeometry args={[0.08, 0.16, 6]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0.13, 0.35, 0]} castShadow>
+        <sphereGeometry args={[0.09, 8, 6]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Comb — red ridges on top */}
+      <mesh position={[0.13, 0.44, 0]}>
+        <boxGeometry args={[0.06, 0.05, 0.03]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Beak */}
+      <mesh position={[0.21, 0.34, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <coneGeometry args={[0.022, 0.06, 6]} />
+        <meshStandardMaterial color="#e8a050" />
+      </mesh>
+      {/* Wattle — small red dangle under beak */}
+      <mesh position={[0.20, 0.27, 0]}>
+        <sphereGeometry args={[0.025, 6, 6]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Eye */}
+      <mesh position={[0.16, 0.38, 0.07]}>
+        <sphereGeometry args={[0.012, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.16, 0.38, -0.07]}>
+        <sphereGeometry args={[0.012, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Legs */}
+      <mesh position={[0.02, 0.06, 0.05]}>
+        <cylinderGeometry args={[0.015, 0.015, 0.12, 5]} />
+        <meshStandardMaterial color="#e8a050" />
+      </mesh>
+      <mesh position={[0.02, 0.06, -0.05]}>
+        <cylinderGeometry args={[0.015, 0.015, 0.12, 5]} />
+        <meshStandardMaterial color="#e8a050" />
+      </mesh>
+    </group>
+  );
+}
+
+// Turkey — bigger than chicken, with a tan body and a fanned tail
+// of darker brown feathers.
+function Turkey({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.3, 0]} castShadow>
+        <sphereGeometry args={[0.22, 10, 8]} />
+        <meshStandardMaterial color="#7a4a2a" />
+      </mesh>
+      {/* Fanned tail — large flat fan behind the body */}
+      <mesh position={[-0.2, 0.4, 0]} rotation={[0, 0, 0.3]}>
+        <cylinderGeometry args={[0.32, 0.32, 0.04, 14, 1, false, -Math.PI / 2, Math.PI]} />
+        <meshStandardMaterial color="#5a3a18" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Tail feather ribs — lighter colour stripes */}
+      {[-0.5, -0.2, 0.1, 0.4, 0.7].map((a, i) => (
+        <mesh
+          key={i}
+          position={[-0.2 + Math.cos(Math.PI + a) * 0.18, 0.4 + Math.sin(Math.PI + a) * 0.18, 0]}
+          rotation={[0, 0, Math.PI + a]}
+        >
+          <boxGeometry args={[0.18, 0.02, 0.03]} />
+          <meshStandardMaterial color="#a8783a" />
+        </mesh>
+      ))}
+      {/* Neck */}
+      <mesh position={[0.15, 0.42, 0]} rotation={[0, 0, -0.4]}>
+        <cylinderGeometry args={[0.05, 0.07, 0.18, 8]} />
+        <meshStandardMaterial color="#7a4a2a" />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0.27, 0.50, 0]} castShadow>
+        <sphereGeometry args={[0.08, 8, 6]} />
+        <meshStandardMaterial color="#9a5a3a" />
+      </mesh>
+      {/* Beak */}
+      <mesh position={[0.36, 0.49, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <coneGeometry args={[0.022, 0.06, 6]} />
+        <meshStandardMaterial color="#e8c050" />
+      </mesh>
+      {/* Snood — red dangle on the head */}
+      <mesh position={[0.34, 0.44, 0]}>
+        <sphereGeometry args={[0.025, 6, 6]} />
+        <meshStandardMaterial color="#d83a3a" />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[0.30, 0.53, 0.06]}>
+        <sphereGeometry args={[0.012, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.30, 0.53, -0.06]}>
+        <sphereGeometry args={[0.012, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Legs */}
+      <mesh position={[0, 0.07, 0.06]}>
+        <cylinderGeometry args={[0.02, 0.02, 0.14, 5]} />
+        <meshStandardMaterial color="#e8a050" />
+      </mesh>
+      <mesh position={[0, 0.07, -0.06]}>
+        <cylinderGeometry args={[0.02, 0.02, 0.14, 5]} />
+        <meshStandardMaterial color="#e8a050" />
+      </mesh>
+    </group>
+  );
+}
+
+// Goat — smaller than cow, light-grey body, horns, beard.
+function Goat({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.42, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.6, 0.36, 0.3]} />
+        <meshStandardMaterial color="#c8c0b0" />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0.35, 0.55, 0]} castShadow>
+        <boxGeometry args={[0.22, 0.24, 0.22]} />
+        <meshStandardMaterial color="#c8c0b0" />
+      </mesh>
+      {/* Snout */}
+      <mesh position={[0.48, 0.5, 0]}>
+        <boxGeometry args={[0.06, 0.10, 0.14]} />
+        <meshStandardMaterial color="#a8a090" />
+      </mesh>
+      {/* Beard — small dangle below chin */}
+      <mesh position={[0.48, 0.41, 0]}>
+        <boxGeometry args={[0.03, 0.08, 0.04]} />
+        <meshStandardMaterial color="#f4f1de" />
+      </mesh>
+      {/* Horns — curved back */}
+      <mesh position={[0.32, 0.72, 0.08]} rotation={[0, 0, -0.5]}>
+        <coneGeometry args={[0.025, 0.16, 6]} />
+        <meshStandardMaterial color="#3a2a18" />
+      </mesh>
+      <mesh position={[0.32, 0.72, -0.08]} rotation={[0, 0, -0.5]}>
+        <coneGeometry args={[0.025, 0.16, 6]} />
+        <meshStandardMaterial color="#3a2a18" />
+      </mesh>
+      {/* Ears */}
+      <mesh position={[0.30, 0.68, 0.14]} rotation={[0, 0, 0.2]}>
+        <boxGeometry args={[0.04, 0.08, 0.03]} />
+        <meshStandardMaterial color="#c8c0b0" />
+      </mesh>
+      <mesh position={[0.30, 0.68, -0.14]} rotation={[0, 0, 0.2]}>
+        <boxGeometry args={[0.04, 0.08, 0.03]} />
+        <meshStandardMaterial color="#c8c0b0" />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[0.42, 0.59, 0.075]}>
+        <sphereGeometry args={[0.018, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.42, 0.59, -0.075]}>
+        <sphereGeometry args={[0.018, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Four legs */}
+      {[
+        [-0.20, 0.12],
+        [-0.20, -0.12],
+        [0.20, 0.12],
+        [0.20, -0.12],
+      ].map(([lx, lz], i) => (
+        <mesh key={i} position={[lx, 0.12, lz]} castShadow>
+          <boxGeometry args={[0.07, 0.24, 0.07]} />
+          <meshStandardMaterial color="#3a2a18" />
+        </mesh>
+      ))}
+      {/* Short tail */}
+      <mesh position={[-0.34, 0.46, 0]} rotation={[0, 0, 0.3]}>
+        <boxGeometry args={[0.05, 0.08, 0.05]} />
+        <meshStandardMaterial color="#c8c0b0" />
+      </mesh>
+    </group>
+  );
+}
+
+// Pig — pink body, four short legs, curly tail, big snout.
+function Pig({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.32, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.7, 0.4, 0.4]} />
+        <meshStandardMaterial color="#e8a090" />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0.40, 0.36, 0]} castShadow>
+        <boxGeometry args={[0.22, 0.30, 0.32]} />
+        <meshStandardMaterial color="#e8a090" />
+      </mesh>
+      {/* Snout — flat pink disc */}
+      <mesh position={[0.52, 0.32, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.09, 0.08, 0.05, 10]} />
+        <meshStandardMaterial color="#d88078" />
+      </mesh>
+      {/* Snout nostrils — two small dark dots */}
+      <mesh position={[0.555, 0.33, 0.04]}>
+        <sphereGeometry args={[0.013, 5, 5]} />
+        <meshBasicMaterial color="#5a3030" />
+      </mesh>
+      <mesh position={[0.555, 0.33, -0.04]}>
+        <sphereGeometry args={[0.013, 5, 5]} />
+        <meshBasicMaterial color="#5a3030" />
+      </mesh>
+      {/* Ears */}
+      <mesh position={[0.36, 0.52, 0.14]} rotation={[0, 0, 0.3]}>
+        <boxGeometry args={[0.04, 0.10, 0.05]} />
+        <meshStandardMaterial color="#d88078" />
+      </mesh>
+      <mesh position={[0.36, 0.52, -0.14]} rotation={[0, 0, 0.3]}>
+        <boxGeometry args={[0.04, 0.10, 0.05]} />
+        <meshStandardMaterial color="#d88078" />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[0.48, 0.42, 0.08]}>
+        <sphereGeometry args={[0.018, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.48, 0.42, -0.08]}>
+        <sphereGeometry args={[0.018, 5, 5]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Four short legs */}
+      {[
+        [-0.22, 0.14],
+        [-0.22, -0.14],
+        [0.20, 0.14],
+        [0.20, -0.14],
+      ].map(([lx, lz], i) => (
+        <mesh key={i} position={[lx, 0.08, lz]} castShadow>
+          <boxGeometry args={[0.08, 0.16, 0.08]} />
+          <meshStandardMaterial color="#d88078" />
+        </mesh>
+      ))}
+      {/* Curly tail */}
+      <mesh position={[-0.38, 0.42, 0]} rotation={[0, 0, 1.2]}>
+        <torusGeometry args={[0.05, 0.018, 5, 10]} />
+        <meshStandardMaterial color="#d88078" />
+      </mesh>
+    </group>
+  );
+}
+
+// Scarecrow — cross-shaped wooden post with straw-stuffed clothes
+// and a wide hat. Belongs in the cornfield.
+function Scarecrow({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Vertical post */}
+      <mesh position={[0, 0.9, 0]} castShadow>
+        <boxGeometry args={[0.06, 1.8, 0.06]} />
+        <meshStandardMaterial color="#6b4a2a" />
+      </mesh>
+      {/* Horizontal cross-arm */}
+      <mesh position={[0, 1.2, 0]} castShadow>
+        <boxGeometry args={[1.0, 0.05, 0.05]} />
+        <meshStandardMaterial color="#6b4a2a" />
+      </mesh>
+      {/* Shirt — plaid (use a dull red) */}
+      <mesh position={[0, 1.15, 0]} castShadow>
+        <boxGeometry args={[0.9, 0.45, 0.18]} />
+        <meshStandardMaterial color="#a83a3a" />
+      </mesh>
+      {/* Pants */}
+      <mesh position={[0, 0.78, 0]} castShadow>
+        <boxGeometry args={[0.35, 0.45, 0.18]} />
+        <meshStandardMaterial color="#5a4a2a" />
+      </mesh>
+      {/* Straw hands poking out the ends of the cross-arm */}
+      <mesh position={[-0.5, 1.20, 0]}>
+        <sphereGeometry args={[0.07, 8, 6]} />
+        <meshStandardMaterial color="#d4b878" />
+      </mesh>
+      <mesh position={[0.5, 1.20, 0]}>
+        <sphereGeometry args={[0.07, 8, 6]} />
+        <meshStandardMaterial color="#d4b878" />
+      </mesh>
+      {/* Head — burlap sack */}
+      <mesh position={[0, 1.55, 0]} castShadow>
+        <sphereGeometry args={[0.16, 10, 8]} />
+        <meshStandardMaterial color="#d4b878" />
+      </mesh>
+      {/* Face — two button eyes + stitched mouth */}
+      <mesh position={[-0.05, 1.58, 0.14]}>
+        <boxGeometry args={[0.025, 0.025, 0.01]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0.05, 1.58, 0.14]}>
+        <boxGeometry args={[0.025, 0.025, 0.01]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      <mesh position={[0, 1.48, 0.14]}>
+        <boxGeometry args={[0.06, 0.012, 0.01]} />
+        <meshBasicMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Hat — wide brim + crown (straw colour) */}
+      <mesh position={[0, 1.75, 0]} castShadow>
+        <cylinderGeometry args={[0.30, 0.30, 0.025, 12]} />
+        <meshStandardMaterial color="#b89060" />
+      </mesh>
+      <mesh position={[0, 1.83, 0]} castShadow>
+        <cylinderGeometry args={[0.13, 0.16, 0.14, 12]} />
+        <meshStandardMaterial color="#b89060" />
+      </mesh>
+      {/* Hat band */}
+      <mesh position={[0, 1.78, 0]}>
+        <cylinderGeometry args={[0.165, 0.165, 0.025, 12]} />
+        <meshStandardMaterial color="#3a2a18" />
+      </mesh>
+    </group>
+  );
+}
+
+// Corn stalk — vertical stick with leaves and a yellow cob.
+// Cheap to draw, used many times in the corn field.
+function CornStalk({
+  x,
+  z,
+  scale = 1,
+}: {
+  x: number;
+  z: number;
+  scale?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} scale={scale}>
+      {/* Stalk */}
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <cylinderGeometry args={[0.03, 0.035, 1.1, 5]} />
+        <meshStandardMaterial color="#5fa838" />
+      </mesh>
+      {/* Two leaves */}
+      <mesh position={[0.10, 0.7, 0]} rotation={[0, 0, -0.5]}>
+        <boxGeometry args={[0.22, 0.05, 0.03]} />
+        <meshStandardMaterial color="#5fa838" />
+      </mesh>
+      <mesh position={[-0.10, 0.5, 0.05]} rotation={[0.3, 0, 0.6]}>
+        <boxGeometry args={[0.20, 0.04, 0.03]} />
+        <meshStandardMaterial color="#5fa838" />
+      </mesh>
+      {/* Corn cob — bright yellow at the top */}
+      <mesh position={[0.06, 0.85, 0]} rotation={[0, 0, -0.3]}>
+        <cylinderGeometry args={[0.04, 0.05, 0.16, 6]} />
+        <meshStandardMaterial color="#f4d83a" />
+      </mesh>
+      {/* Tassel — small spike on top */}
+      <mesh position={[0, 1.14, 0]} castShadow>
+        <coneGeometry args={[0.03, 0.12, 5]} />
+        <meshStandardMaterial color="#c8b878" />
+      </mesh>
+    </group>
+  );
+}
+
+// Small windmill (well-pump style) — tall tower + rotating blades.
+function Windmill({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  const bladesRef = useRef<THREE.Group>(null);
+  useFrame((_, dt) => {
+    if (bladesRef.current) bladesRef.current.rotation.z += dt * 0.6;
+  });
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Tower — four-legged steel frame, drawn as a tapered cone */}
+      <mesh position={[0, 1.6, 0]} castShadow>
+        <cylinderGeometry args={[0.05, 0.32, 3.2, 4]} />
+        <meshStandardMaterial color="#6e6a5e" wireframe />
+      </mesh>
+      {/* Solid centre pole for the rotor to mount on */}
+      <mesh position={[0, 1.6, 0]} castShadow>
+        <cylinderGeometry args={[0.04, 0.04, 3.2, 6]} />
+        <meshStandardMaterial color="#6e6a5e" />
+      </mesh>
+      {/* Hub — the rotor body at the top */}
+      <mesh position={[0, 3.3, 0]} castShadow>
+        <cylinderGeometry args={[0.08, 0.08, 0.2, 12]} />
+        <meshStandardMaterial color="#3e3a30" />
+      </mesh>
+      {/* Tail vane — points to wind direction */}
+      <mesh position={[-0.4, 3.3, 0]}>
+        <boxGeometry args={[0.45, 0.25, 0.02]} />
+        <meshStandardMaterial color="#a83a3a" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Rotating blade assembly */}
+      <group ref={bladesRef} position={[0, 3.3, 0.12]}>
+        {Array.from({ length: 8 }).map((_, i) => {
+          const a = (i / 8) * Math.PI * 2;
+          return (
+            <mesh
+              key={i}
+              position={[Math.cos(a) * 0.24, Math.sin(a) * 0.24, 0]}
+              rotation={[0, 0, a + Math.PI / 2]}
+              castShadow
+            >
+              <boxGeometry args={[0.10, 0.42, 0.02]} />
+              <meshStandardMaterial color="#dcd0a8" />
+            </mesh>
+          );
+        })}
+      </group>
+    </group>
+  );
+}
+
+// Single rail-fence section — two horizontal rails on two posts.
+// Length is along x; rotate via prop to lay it east-west, etc.
+function FenceSection({
+  x,
+  z,
+  rotation = 0,
+  length = 2,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+  length?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Two posts at the ends */}
+      <mesh position={[-length / 2, 0.36, 0]} castShadow>
+        <boxGeometry args={[0.07, 0.72, 0.07]} />
+        <meshStandardMaterial color="#6b4a2a" />
+      </mesh>
+      <mesh position={[length / 2, 0.36, 0]} castShadow>
+        <boxGeometry args={[0.07, 0.72, 0.07]} />
+        <meshStandardMaterial color="#6b4a2a" />
+      </mesh>
+      {/* Two rails between them */}
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <boxGeometry args={[length, 0.05, 0.04]} />
+        <meshStandardMaterial color="#8a6a3a" />
+      </mesh>
+      <mesh position={[0, 0.28, 0]} castShadow>
+        <boxGeometry args={[length, 0.05, 0.04]} />
+        <meshStandardMaterial color="#8a6a3a" />
+      </mesh>
+    </group>
   );
 }
 
@@ -4160,15 +4941,62 @@ function Character({
           <boxGeometry args={[0.55, 0.55, 0.32]} />
           <meshStandardMaterial color={GI} />
         </mesh>
-        {/* Lapel V */}
-        <mesh position={[0, 1.05, 0.165]}>
-          <planeGeometry args={[0.18, 0.4]} />
+
+        {/* Chest V — visible skin in the kimono's neckline opening,
+            framed by the two crossed lapels below. */}
+        <mesh position={[0, 1.18, 0.162]}>
+          <planeGeometry args={[0.14, 0.20]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+
+        {/* Left lapel — angled from upper-left collar down toward
+            the centre of the waist (where the right lapel meets it,
+            forming the kimono's classic V). Slightly darker than
+            the gi body + raised forward so the lapel reads as a
+            separate piece of fabric. */}
+        <mesh position={[-0.11, 1.04, 0.169]} rotation={[0, 0, 0.4]}>
+          <boxGeometry args={[0.11, 0.46, 0.025]} />
           <meshStandardMaterial color={GI_SHADE} />
+        </mesh>
+        {/* Right lapel — mirrored, slightly more forward in z so it
+            visibly overlaps the left lapel at the bottom (kimono's
+            "left over right" close at the waist). */}
+        <mesh position={[0.11, 1.04, 0.172]} rotation={[0, 0, -0.4]}>
+          <boxGeometry args={[0.11, 0.46, 0.025]} />
+          <meshStandardMaterial color={GI_SHADE} />
+        </mesh>
+
+        {/* Dark piping along the inner edge of each lapel — reads as
+            stitched lapel trim, helps separate the lapels from the
+            gi body. */}
+        <mesh position={[-0.06, 1.06, 0.185]} rotation={[0, 0, 0.4]}>
+          <boxGeometry args={[0.018, 0.46, 0.005]} />
+          <meshStandardMaterial color="#9c9580" />
+        </mesh>
+        <mesh position={[0.06, 1.06, 0.187]} rotation={[0, 0, -0.4]}>
+          <boxGeometry args={[0.018, 0.46, 0.005]} />
+          <meshStandardMaterial color="#9c9580" />
         </mesh>
 
         {/* Belt */}
         <mesh position={[0, 0.71, 0]} castShadow>
-          <boxGeometry args={[0.58, 0.1, 0.34]} />
+          <boxGeometry args={[0.58, 0.10, 0.34]} />
+          <meshStandardMaterial color={BELT} />
+        </mesh>
+        {/* Belt knot — slightly raised square at the front centre */}
+        <mesh position={[0, 0.71, 0.18]} castShadow>
+          <boxGeometry args={[0.10, 0.13, 0.05]} />
+          <meshStandardMaterial color={BELT} />
+        </mesh>
+        {/* Belt ends — two short strips hanging from the knot, one
+            angled so it doesn't sit perfectly straight (looks tied
+            rather than glued on). */}
+        <mesh position={[-0.025, 0.55, 0.195]} rotation={[0, 0, 0.08]}>
+          <boxGeometry args={[0.045, 0.20, 0.02]} />
+          <meshStandardMaterial color={BELT} />
+        </mesh>
+        <mesh position={[0.04, 0.56, 0.195]} rotation={[0, 0, -0.15]}>
+          <boxGeometry args={[0.045, 0.18, 0.02]} />
           <meshStandardMaterial color={BELT} />
         </mesh>
 
@@ -4298,6 +5126,31 @@ function Character({
 // "glide back" after a cinematic mode lands exactly where the user expects.
 const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
 
+// ── Drone tour ─────────────────────────────────────────────────────
+// When the user is idle for a moment, the camera flies between named
+// "waypoints" around the world, dwelling on each long enough for a
+// slow rotation before quickly transitioning to the next. Each
+// waypoint has a `target` (what the camera looks at) and a
+// `camOffset` (initial position relative to target — the rotation
+// during dwell sweeps this offset around the target's Y axis).
+const DRONE_TRANSITION_S = 2.5;
+const DRONE_DWELL_S = 7.0;
+const DRONE_DWELL_ROT_SPEED = 0.18; // radians per second
+const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector3 }[] = [
+  // Plaza overview — buildings + character on the central plaza
+  { name: "plaza", target: new THREE.Vector3(0, 2, 0), camOffset: new THREE.Vector3(0, 12, 16) },
+  // Amusement park — coaster + carousel + ferris wheel
+  { name: "park", target: new THREE.Vector3(-17, 5, -19), camOffset: new THREE.Vector3(13, 10, 12) },
+  // Lake & alligator
+  { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
+  // Hot-air balloon
+  { name: "balloon", target: new THREE.Vector3(10, 4, 6), camOffset: new THREE.Vector3(7, 5, 8) },
+  // Farm — animals + corn + tractor
+  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(10, 9, 12) },
+  // Golf course
+  { name: "golf", target: new THREE.Vector3(-14, 2, 17), camOffset: new THREE.Vector3(10, 8, 12) },
+];
+
 // Midpoint between tee and hole — the focal point during the golf swing so
 // both the character (right of frame) and the cup (left of frame) are visible
 // while the ball flies between them.
@@ -4324,6 +5177,14 @@ function CameraRig({
   // to CAM_DEFAULT. Used so the post-ride walk-back gets a camera return.
   const camHijackedRef = useRef(false);
 
+  // Drone tour state (idle waypoint-by-waypoint world tour).
+  const droneActiveRef = useRef(false);
+  const droneStateRef = useRef<"transitioning" | "dwelling">("transitioning");
+  const droneIdxRef = useRef(0);
+  const dronePhaseStartRef = useRef(0);
+  const dronePrevPosRef = useRef(new THREE.Vector3());
+  const dronePrevTargetRef = useRef(new THREE.Vector3());
+
   useFrame((state, dt) => {
     const c = charRef.current;
 
@@ -4332,6 +5193,8 @@ function CameraRig({
     // moving or locked in a special mode. For golfing we instead focus on
     // the midpoint between the tee and the hole so the ball flight stays
     // framed. Otherwise the target glides back to the plaza.
+    const isIdleForTarget =
+      c.mode === "idle" && !c.walking && !camHijackedRef.current;
     let wantTX = 0;
     let wantTZ = 0;
     let wantTY = 1;
@@ -4358,6 +5221,11 @@ function CameraRig({
       // modes where the character barely leaves the ground).
       wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
     }
+    // Note: when idle, the drone-tour state machine below
+    // overrides controls.target directly, so wantT* defaults to
+    // origin here are fine — they don't end up affecting the
+    // camera during the tour.
+    void isIdleForTarget;
     targetVec.x += (wantTX - targetVec.x) * Math.min(1, dt * 2.5);
     targetVec.y += (wantTY - targetVec.y) * Math.min(1, dt * 2.5);
     targetVec.z += (wantTZ - targetVec.z) * Math.min(1, dt * 2.5);
@@ -4451,30 +5319,74 @@ function CameraRig({
 
     if (controlsRef.current) {
       controlsRef.current.target.copy(targetVec);
-      // Drone tour: when the user is idle — character standing on
-      // the plaza, not walking, not in a cinematic mode, not
-      // actively dragging the camera (OrbitControls pauses
-      // autoRotate during a drag internally) — slowly orbit the
-      // world AND oscillate the polar angle so the camera sweeps
-      // from near-overhead to near-horizontal and back. Gives the
-      // user a drone-like fly-around tour if they don't touch
-      // anything for a few seconds.
       const isIdle =
         c.mode === "idle" && !c.walking && !camHijackedRef.current;
-      controlsRef.current.autoRotate = isIdle;
+      controlsRef.current.autoRotate = false;
       if (isIdle) {
-        // Sinusoidal polar — sweeps between mostly-overhead and
-        // mostly-horizontal. Stays inside the OrbitControls polar
-        // limits (0.12π .. 0.48π). Period ~250s; autoRotate
-        // azimuth period at speed=0.4 is ~150s, so the drone's
-        // elevation barely changes within a single orbit.
-        const elevTime = state.clock.elapsedTime * 0.025;
-        const minPolar = Math.PI * 0.15;
-        const maxPolar = Math.PI * 0.45;
-        const polar =
-          minPolar +
-          (maxPolar - minPolar) * (0.5 + 0.5 * Math.sin(elevTime));
-        controlsRef.current.setPolarAngle(polar);
+        // ── Drone tour: fly between waypoints around the world ──
+        // State machine alternates between two phases:
+        //   transitioning: quickly lerp camera + target from the
+        //                  previous waypoint vantage to the next.
+        //   dwelling:      slowly rotate the camera around the
+        //                  current waypoint's target, holding the
+        //                  target steady.
+        // On first idle frame after a non-idle period (e.g. after
+        // a cinematic ended), seed the "previous" position from
+        // wherever the camera was so the transition eases in.
+        if (!droneActiveRef.current) {
+          droneActiveRef.current = true;
+          droneStateRef.current = "transitioning";
+          dronePhaseStartRef.current = state.clock.elapsedTime;
+          dronePrevPosRef.current.copy(state.camera.position);
+          dronePrevTargetRef.current.copy(controlsRef.current.target);
+        }
+        const now = state.clock.elapsedTime;
+        const elapsed = now - dronePhaseStartRef.current;
+        const wp = DRONE_TOUR[droneIdxRef.current];
+        if (droneStateRef.current === "transitioning") {
+          const progress = Math.min(1, elapsed / DRONE_TRANSITION_S);
+          // Cubic smoothstep — fast in the middle, soft at the ends.
+          const eased = progress * progress * (3 - 2 * progress);
+          const targetCamPos = wp.target.clone().add(wp.camOffset);
+          state.camera.position
+            .copy(dronePrevPosRef.current)
+            .lerp(targetCamPos, eased);
+          controlsRef.current.target
+            .copy(dronePrevTargetRef.current)
+            .lerp(wp.target, eased);
+          if (progress >= 1) {
+            droneStateRef.current = "dwelling";
+            dronePhaseStartRef.current = now;
+          }
+        } else {
+          // Dwelling — slowly rotate the camera offset around the
+          // target's Y axis. Keeps target steady so the section
+          // stays centred in frame.
+          const angle = elapsed * DRONE_DWELL_ROT_SPEED;
+          const ox = wp.camOffset.x;
+          const oy = wp.camOffset.y;
+          const oz = wp.camOffset.z;
+          const rotX = ox * Math.cos(angle) - oz * Math.sin(angle);
+          const rotZ = ox * Math.sin(angle) + oz * Math.cos(angle);
+          state.camera.position.set(
+            wp.target.x + rotX,
+            wp.target.y + oy,
+            wp.target.z + rotZ
+          );
+          controlsRef.current.target.copy(wp.target);
+          if (elapsed > DRONE_DWELL_S) {
+            // End of dwell — seed prev for the next transition and
+            // advance to the next waypoint (wrap around the loop).
+            dronePrevPosRef.current.copy(state.camera.position);
+            dronePrevTargetRef.current.copy(wp.target);
+            droneIdxRef.current =
+              (droneIdxRef.current + 1) % DRONE_TOUR.length;
+            droneStateRef.current = "transitioning";
+            dronePhaseStartRef.current = now;
+          }
+        }
+      } else {
+        droneActiveRef.current = false;
       }
       controlsRef.current.update();
     }
@@ -4489,7 +5401,7 @@ function CameraRig({
       enableDamping
       dampingFactor={0.08}
       minDistance={4}
-      maxDistance={45}
+      maxDistance={70}
       minPolarAngle={Math.PI * 0.12}
       maxPolarAngle={Math.PI * 0.48}
       target={[0, 1, 0]}
