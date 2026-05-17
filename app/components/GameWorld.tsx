@@ -974,16 +974,17 @@ function Sky() {
 function Ground() {
   // Extended west (x to ~-65) so the cityscape silhouette opposite
   // the beach has grass outskirts behind it rather than sitting flush
-  // against the world's edge. Also extended north/south (z=±65) so
-  // the full-length city + beach both sit on grass rather than
-  // floating over void at their far ends.
+  // against the world's edge. Also extended south (z=65) so the
+  // full-length beach sits on grass, and extended north (z=-85) so
+  // the mountain ridge bases stay on grass rather than floating over
+  // the void.
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[-10, 0, 0]}
+      position={[-10, 0, -10]}
       receiveShadow
     >
-      <planeGeometry args={[110, 130]} />
+      <planeGeometry args={[110, 150]} />
       <meshStandardMaterial color="#5a8a3a" />
     </mesh>
   );
@@ -1070,6 +1071,32 @@ function Environment({
       <Hill position={[0, 0, 32]} scale={1.4} color="#446e2a" />
       <Hill position={[-12, 0, -34]} scale={1.3} color="#4a7a30" />
       <Hill position={[10, 0, 30]} scale={1.3} color="#3d6824" />
+
+      {/* Northern mountain ridge — two broad snow-capped peaks
+          positioned with the smaller front peak overlapping the
+          larger back peak so the silhouette reads as layered depth.
+          Back peak is taller, wider, and further north; front peak
+          partially occludes its lower-right slope. Both peaks are
+          kept west of x≈14 so neither base spills onto the beach
+          (which starts at x=18). */}
+      <Mountain x={-5} z={-68} height={28} baseRadius={15} snow color="#42523f" />
+      <Mountain x={4} z={-58} height={20} baseRadius={10} snow color="#4a5a48" />
+
+      {/* Pine forest in the valley between the hills and the
+          mountain ridge — softens the transition from the play area
+          to the towering peaks. */}
+      <PineTree position={[-35, 0, -38]} scale={1.4} />
+      <PineTree position={[-25, 0, -42]} scale={1.6} />
+      <PineTree position={[-18, 0, -45]} scale={1.5} />
+      <PineTree position={[-10, 0, -40]} scale={1.3} />
+      <PineTree position={[-3, 0, -43]} scale={1.55} />
+      <PineTree position={[5, 0, -38]} scale={1.7} />
+      <PineTree position={[10, 0, -42]} scale={1.4} />
+      <PineTree position={[16, 0, -39]} scale={1.3} />
+      <PineTree position={[-30, 0, -48]} scale={1.5} />
+      <PineTree position={[-15, 0, -48]} scale={1.65} />
+      <PineTree position={[0, 0, -47]} scale={1.45} />
+      <PineTree position={[13, 0, -47]} scale={1.5} />
 
       {/* Mix of regular oaks and pine trees */}
       <Tree position={[15, 0, 1]} scale={1.1} />
@@ -2200,6 +2227,47 @@ function Hill({
       />
       <meshStandardMaterial color={color} flatShading />
     </mesh>
+  );
+}
+
+// Single low-poly mountain — a flat-shaded cone with an optional
+// snow cap. The snow cap covers the top ~35% of the peak and
+// slightly bulges past the cone's slope so it reads as a layer of
+// snow sitting on the rock rather than the cone narrowing to a
+// white tip. Bigger / wider than `Hill`; used to form the northern
+// ridge.
+function Mountain({
+  x,
+  z,
+  height,
+  baseRadius,
+  color = "#4a5a48",
+  snow = false,
+  segments = 8,
+}: {
+  x: number;
+  z: number;
+  height: number;
+  baseRadius: number;
+  color?: string;
+  snow?: boolean;
+  segments?: number;
+}) {
+  return (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+        <coneGeometry args={[baseRadius, height, segments]} />
+        <meshStandardMaterial color={color} flatShading />
+      </mesh>
+      {snow && (
+        <mesh position={[0, height * 0.825, 0]} castShadow>
+          <coneGeometry
+            args={[baseRadius * 0.4, height * 0.35, segments]}
+          />
+          <meshStandardMaterial color="#f4f6f8" flatShading />
+        </mesh>
+      )}
+    </group>
   );
 }
 
