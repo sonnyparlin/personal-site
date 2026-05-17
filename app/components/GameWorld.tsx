@@ -422,7 +422,7 @@ export default function GameWorld() {
     <div className="w-full h-full">
       <Canvas
         shadows
-        camera={{ position: [0, 11, 14], fov: 45, near: 0.1, far: 250 }}
+        camera={{ position: [0, 20, 25], fov: 45, near: 0.1, far: 250 }}
         gl={{ antialias: true }}
       >
 
@@ -1598,8 +1598,8 @@ function Balloon({
   });
   // Geometry: envelope sits far enough above the basket that the
   // rider's head fits in the gap (basket top → envelope bottom).
-  const ENV_R = 1.1;
-  const ENV_Y = 3.4; // raised — was 2.7; gives ~1.3 units of head-room
+  const ENV_R = 1.75;
+  const ENV_Y = 4.9; // raised to keep head-room as the envelope grew
   const BASKET_Y = 0.45;
   // Derived: basket top and envelope bottom (used to size the ropes
   // exactly between them).
@@ -3100,7 +3100,7 @@ function Character({
 
 // Default plaza vantage — matches the Canvas's initial camera position so the
 // "glide back" after a cinematic mode lands exactly where the user expects.
-const CAM_DEFAULT = { x: 0, y: 11, z: 14 };
+const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
 
 // Midpoint between tee and hole — the focal point during the golf swing so
 // both the character (right of frame) and the cup (left of frame) are visible
