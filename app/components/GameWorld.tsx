@@ -972,13 +972,18 @@ function Sky() {
 }
 
 function Ground() {
+  // Extended west (x to ~-65) so the cityscape silhouette opposite
+  // the beach has grass outskirts behind it rather than sitting flush
+  // against the world's edge. Also extended north/south (z=±65) so
+  // the full-length city + beach both sit on grass rather than
+  // floating over void at their far ends.
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[0, 0, 0]}
+      position={[-10, 0, 0]}
       receiveShadow
     >
-      <planeGeometry args={[90, 90]} />
+      <planeGeometry args={[110, 130]} />
       <meshStandardMaterial color="#5a8a3a" />
     </mesh>
   );
@@ -1010,6 +1015,26 @@ function Environment({
       {/* Ocean + beach along the entire eastern edge of the world. */}
       <Ocean />
       <Beach />
+
+      {/* Distant downtown skyline along the western horizon, plus
+          a two-lane road in front of it with parked + driving cars. */}
+      <Cityscape />
+      <Road />
+
+      {/* Driving cars — two each direction, varied speeds + colors */}
+      <DrivingCar x={NB_LANE_X} initialZ={-40} speed={5.2} color="#c44a4a" />
+      <DrivingCar x={NB_LANE_X} initialZ={15} speed={6.0} color="#3a6ab0" />
+      <DrivingCar x={SB_LANE_X} initialZ={-10} speed={-4.8} color="#e8c84a" roofColor="#33301a" />
+      <DrivingCar x={SB_LANE_X} initialZ={42} speed={-5.6} color="#4a8a4a" />
+
+      {/* Parked cars on the east shoulder, mixed orientations */}
+      <ParkedCar z={-50} color="#7a3a6a" />
+      <ParkedCar z={-32} color="#3a3a3a" flipped />
+      <ParkedCar z={-18} color="#a8b0b8" />
+      <ParkedCar z={0} color="#704a30" flipped />
+      <ParkedCar z={18} color="#c8a070" />
+      <ParkedCar z={36} color="#506478" flipped />
+      <ParkedCar z={52} color="#9a4040" />
       {/* Palms scattered along the beach for that coastal feel. */}
       <PalmTree position={[19.5, 0, -28]} scale={1.1} />
       <PalmTree position={[20.2, 0, -14]} scale={1.0} />
@@ -1036,15 +1061,15 @@ function Environment({
       <AmusementPark onSelect={onParkClick} />
       <CoasterCart coasterRef={coasterRef} />
 
-      {/* Distant rolling hills at the far edges of the world. The
-          eastern hills were removed when the ocean replaced that side
-          of the perimeter — only inland-facing hills remain. */}
-      <Hill position={[-28, 0, -26]} scale={1.4} color="#4a7a30" />
-      <Hill position={[-26, 0, 26]} scale={1.5} color="#3d6824" />
+      {/* Distant rolling hills at the far edges of the world. East
+          is ocean, west is cityscape — only north and south hills
+          remain so each cardinal direction has its own backdrop. */}
+      <Hill position={[-22, 0, -28]} scale={1.4} color="#4a7a30" />
+      <Hill position={[-22, 0, 28]} scale={1.5} color="#3d6824" />
       <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
-      <Hill position={[-32, 0, 0]} scale={1.5} color="#3d6824" />
-      <Hill position={[-22, 0, -34]} scale={1.3} color="#4a7a30" />
-      <Hill position={[-30, 0, 14]} scale={1.4} color="#446e2a" />
+      <Hill position={[0, 0, 32]} scale={1.4} color="#446e2a" />
+      <Hill position={[-12, 0, -34]} scale={1.3} color="#4a7a30" />
+      <Hill position={[10, 0, 30]} scale={1.3} color="#3d6824" />
 
       {/* Mix of regular oaks and pine trees */}
       <Tree position={[15, 0, 1]} scale={1.1} />
@@ -1299,6 +1324,353 @@ function Beach() {
         <sphereGeometry args={[0.2, 8, 6]} />
         <meshStandardMaterial color="#9a9a96" roughness={1} />
       </mesh>
+    </group>
+  );
+}
+
+// One downtown building. In its local frame the front-facing wall is
+// the -z face — optional warm-yellow window strips on that face make
+// the skyline read as inhabited rather than blank boxes. `rotation`
+// rotates the whole building around Y so the same data can be reused
+// for cities on any side of the world (the windows' material is
+// DoubleSide so they stay visible after rotation).
+function SkylineBox({
+  x,
+  z,
+  w,
+  d,
+  h,
+  color,
+  lit = false,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  color: string;
+  lit?: boolean;
+  rotation?: number;
+}) {
+  const floors = Math.max(0, Math.floor((h - 1.0) / 1.5));
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, h, d]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {lit &&
+        Array.from({ length: floors }).map((_, i) => {
+          const wy = 1.0 + i * 1.5;
+          return (
+            <mesh
+              key={i}
+              position={[0, wy, -d / 2 - 0.005]}
+            >
+              <planeGeometry args={[w * 0.7, 0.22]} />
+              <meshStandardMaterial
+                color="#f4d97a"
+                emissive="#f4d97a"
+                emissiveIntensity={0.35}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+          );
+        })}
+    </group>
+  );
+}
+
+// Downtown silhouette running along the entire western edge of the
+// world (z=-65..65), opposite the beach. Three rows of buildings
+// stacked away from the play area (front at x≈-33, mid at x≈-38,
+// back at x≈-43) so the camera orbiting west sees layered depth
+// instead of a flat wall. Each box is rotated -π/2 around Y so its
+// window-strip face ends up pointing east toward the plaza.
+//
+// Buildings are generated deterministically at import time from a
+// seeded PRNG, so the layout is stable across reloads but doesn't
+// require hand-placing ~75 boxes.
+type CityBuilding = {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  color: string;
+  lit: boolean;
+};
+
+const CITY_BUILDINGS: CityBuilding[] = (() => {
+  let seed = 1234;
+  const r = () => {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  };
+  const colors = [
+    "#3a4048",
+    "#4a505a",
+    "#5e6470",
+    "#6e7480",
+    "#7a8090",
+    "#3e4a5a",
+    "#5a4a3e",
+    "#2e3540",
+  ];
+  // baseX values keep the closest row well west of the road's west
+  // edge (x=-32.5) so the buildings don't sit on the asphalt — the
+  // gap between road and front row reads as a grass setback /
+  // sidewalk strip.
+  const rows = [
+    { baseX: -36, baseH: 4.5, hVar: 2.5, litChance: 0.6 }, // closest, shortest
+    { baseX: -41, baseH: 7, hVar: 3, litChance: 0.65 }, // mid
+    { baseX: -46, baseH: 10, hVar: 4.5, litChance: 0.55 }, // back, tallest
+  ];
+  const buildings: CityBuilding[] = [];
+  for (const row of rows) {
+    let z = -64;
+    while (z < 65) {
+      const xJ = (r() - 0.5) * 1.6;
+      const zJ = (r() - 0.5) * 0.5;
+      const w = 2.4 + r() * 1.4;
+      const d = 2.2 + r() * 0.8;
+      const h = row.baseH + r() * row.hVar;
+      const color = colors[Math.floor(r() * colors.length)];
+      const lit = r() < row.litChance;
+      buildings.push({ x: row.baseX + xJ, z: z + zJ, w, d, h, color, lit });
+      z += 3.6 + r() * 1.3;
+    }
+  }
+  return buildings;
+})();
+
+// Pick the five tallest back-row buildings for antennae so the
+// horizon has a few clear spikes.
+const CITY_ANTENNAE = CITY_BUILDINGS.filter((b) => b.x < -43)
+  .sort((a, b) => b.h - a.h)
+  .slice(0, 5)
+  .map((b) => ({ x: b.x, y: b.h, z: b.z }));
+
+function Cityscape() {
+  const R = -Math.PI / 2;
+  return (
+    <group>
+      {CITY_BUILDINGS.map((b, i) => (
+        <SkylineBox
+          key={i}
+          x={b.x}
+          z={b.z}
+          w={b.w}
+          d={b.d}
+          h={b.h}
+          color={b.color}
+          lit={b.lit}
+          rotation={R}
+        />
+      ))}
+      {CITY_ANTENNAE.map((a, i) => (
+        <mesh key={i} position={[a.x, a.y + 0.6, a.z]} castShadow>
+          <cylinderGeometry args={[0.04, 0.04, 1.2, 6]} />
+          <meshStandardMaterial color="#2a2e35" />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// Two-lane road running in front of the cityscape (x≈-30) for the
+// full N-S length. Asphalt plane + dashed yellow centre line +
+// continuous white side lines. Sits at y=0.012 so it covers the
+// underlying grass without z-fighting.
+const ROAD_CENTER_X = -30;
+const ROAD_WIDTH = 5;
+const ROAD_LENGTH = 130;
+const NB_LANE_X = ROAD_CENTER_X + 1.0; // northbound (+z) cars
+const SB_LANE_X = ROAD_CENTER_X - 1.0; // southbound (-z) cars
+const PARK_LANE_X = ROAD_CENTER_X + 2.0; // parked cars on the east shoulder
+
+function Road() {
+  return (
+    <group>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[ROAD_CENTER_X, 0.012, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[ROAD_WIDTH, ROAD_LENGTH]} />
+        <meshStandardMaterial color="#2e2e30" roughness={1} />
+      </mesh>
+      {/* Dashed yellow centre line */}
+      {Array.from({ length: 22 }).map((_, i) => (
+        <mesh
+          key={`cl${i}`}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[ROAD_CENTER_X, 0.014, -60 + i * 6]}
+        >
+          <planeGeometry args={[0.15, 3]} />
+          <meshStandardMaterial color="#e8c84a" />
+        </mesh>
+      ))}
+      {/* Solid white edge lines */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[ROAD_CENTER_X + ROAD_WIDTH / 2 - 0.15, 0.014, 0]}
+      >
+        <planeGeometry args={[0.12, ROAD_LENGTH]} />
+        <meshStandardMaterial color="#dde0e3" />
+      </mesh>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[ROAD_CENTER_X - ROAD_WIDTH / 2 + 0.15, 0.014, 0]}
+      >
+        <planeGeometry args={[0.12, ROAD_LENGTH]} />
+        <meshStandardMaterial color="#dde0e3" />
+      </mesh>
+    </group>
+  );
+}
+
+// Single car. Geometry-only — the car points +z by default, set
+// `flipped` to rotate it 180° so it points -z. Wrapped by ParkedCar
+// (static position) or DrivingCar (animated along z).
+function Car({
+  color,
+  roofColor = "#1d1d20",
+  flipped = false,
+}: {
+  color: string;
+  roofColor?: string;
+  flipped?: boolean;
+}) {
+  return (
+    <group rotation={[0, flipped ? Math.PI : 0, 0]}>
+      {/* Body */}
+      <mesh position={[0, 0.3, 0]} castShadow>
+        <boxGeometry args={[0.78, 0.36, 1.55]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Roof / cabin */}
+      <mesh position={[0, 0.58, -0.05]} castShadow>
+        <boxGeometry args={[0.68, 0.3, 0.85]} />
+        <meshStandardMaterial color={roofColor} />
+      </mesh>
+      {/* Windshield front (tinted blue-grey) */}
+      <mesh position={[0, 0.55, 0.4]} rotation={[Math.PI * 0.12, 0, 0]}>
+        <planeGeometry args={[0.58, 0.3]} />
+        <meshStandardMaterial color="#5a6a78" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Rear windshield */}
+      <mesh position={[0, 0.55, -0.5]} rotation={[-Math.PI * 0.12, 0, 0]}>
+        <planeGeometry args={[0.58, 0.28]} />
+        <meshStandardMaterial color="#5a6a78" side={THREE.DoubleSide} />
+      </mesh>
+      {/* Four wheels — cylinder axis rotated to X */}
+      {(
+        [
+          [-0.42, 0.55],
+          [0.42, 0.55],
+          [-0.42, -0.55],
+          [0.42, -0.55],
+        ] as [number, number][]
+      ).map(([wx, wz], i) => (
+        <mesh
+          key={i}
+          position={[wx, 0.15, wz]}
+          rotation={[0, 0, Math.PI / 2]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.15, 0.15, 0.1, 10]} />
+          <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+      ))}
+      {/* Headlights (front) */}
+      <mesh position={[-0.24, 0.32, 0.78]}>
+        <sphereGeometry args={[0.07, 8, 6]} />
+        <meshStandardMaterial
+          color="#fff4c0"
+          emissive="#fff4c0"
+          emissiveIntensity={0.5}
+        />
+      </mesh>
+      <mesh position={[0.24, 0.32, 0.78]}>
+        <sphereGeometry args={[0.07, 8, 6]} />
+        <meshStandardMaterial
+          color="#fff4c0"
+          emissive="#fff4c0"
+          emissiveIntensity={0.5}
+        />
+      </mesh>
+      {/* Taillights (back) */}
+      <mesh position={[-0.24, 0.32, -0.78]}>
+        <sphereGeometry args={[0.06, 8, 6]} />
+        <meshStandardMaterial
+          color="#cc2020"
+          emissive="#cc2020"
+          emissiveIntensity={0.4}
+        />
+      </mesh>
+      <mesh position={[0.24, 0.32, -0.78]}>
+        <sphereGeometry args={[0.06, 8, 6]} />
+        <meshStandardMaterial
+          color="#cc2020"
+          emissive="#cc2020"
+          emissiveIntensity={0.4}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+// Static car parked on the east shoulder of the road.
+function ParkedCar({
+  z,
+  color,
+  roofColor,
+  flipped,
+}: {
+  z: number;
+  color: string;
+  roofColor?: string;
+  flipped?: boolean;
+}) {
+  return (
+    <group position={[PARK_LANE_X, 0, z]}>
+      <Car color={color} roofColor={roofColor} flipped={flipped} />
+    </group>
+  );
+}
+
+// Animated car cruising the road. Speed sign determines direction:
+// positive = northbound (+z), negative = southbound (-z). When the
+// car reaches ±68 it wraps to the opposite end so the road never
+// looks empty.
+function DrivingCar({
+  x,
+  initialZ,
+  speed,
+  color,
+  roofColor,
+}: {
+  x: number;
+  initialZ: number;
+  speed: number;
+  color: string;
+  roofColor?: string;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((_, dt) => {
+    if (!ref.current) return;
+    ref.current.position.z += speed * dt;
+    if (speed > 0 && ref.current.position.z > 68) {
+      ref.current.position.z = -68;
+    } else if (speed < 0 && ref.current.position.z < -68) {
+      ref.current.position.z = 68;
+    }
+  });
+  return (
+    <group ref={ref} position={[x, 0, initialZ]}>
+      <Car color={color} roofColor={roofColor} flipped={speed < 0} />
     </group>
   );
 }
