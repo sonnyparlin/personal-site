@@ -1082,6 +1082,20 @@ function Environment({
       <Mountain x={-5} z={-68} height={28} baseRadius={15} snow color="#42523f" />
       <Mountain x={4} z={-58} height={20} baseRadius={10} snow color="#4a5a48" />
 
+      {/* Farmland to the south — crop fields, a barn + silo +
+          farmhouse, plus a few hay bales. Sits behind the south
+          hills so the visual progression is plaza → hills → fields
+          → farm buildings when looking south. */}
+      <CropField x={-12} z={45} w={11} d={9} color="#c8a64a" rowColor="#a8862a" />
+      <CropField x={3} z={47} w={11} d={11} color="#7aa84a" rowColor="#5a8838" />
+      <CropField x={12} z={38} w={5} d={4} color="#6e4830" />
+      <Farmhouse x={-22} z={60} rotation={-Math.PI * 0.05} />
+      <Barn x={-12} z={59} />
+      <Silo x={-5} z={58} />
+      <HayBale x={-9} z={53} rotation={0.4} />
+      <HayBale x={-7} z={54} rotation={-0.2} />
+      <HayBale x={-11} z={52} />
+
       {/* Pine forest in the valley between the hills and the
           mountain ridge — softens the transition from the play area
           to the towering peaks. */}
@@ -2226,6 +2240,224 @@ function Hill({
         args={[3.5, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2]}
       />
       <meshStandardMaterial color={color} flatShading />
+    </mesh>
+  );
+}
+
+// Classic red barn — boxy body with a gabled roof, white door,
+// hay-loft window, and white eave trim. Roof slopes use rotated
+// box slabs (rotation = ±atan(rise/run) around z so the slab's
+// normal aligns with the slope).
+function Barn({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  // Body: 4 wide × 3 tall × 5 deep. Roof rises 1.5 above the walls
+  // to a ridge running along the z axis.
+  const RISE = 1.5;
+  const RUN = 2;
+  const SLOPE_LEN = Math.sqrt(RISE * RISE + RUN * RUN); // 2.5
+  const SLOPE_ANGLE = Math.atan(RISE / RUN); // ~36.87°
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      {/* Main wall body */}
+      <mesh position={[0, 1.5, 0]} castShadow receiveShadow>
+        <boxGeometry args={[4, 3, 5]} />
+        <meshStandardMaterial color="#a73a2a" />
+      </mesh>
+      {/* Roof — gabled, made of two rotated slabs meeting at the ridge */}
+      <mesh
+        position={[1, 3 + RISE / 2, 0]}
+        rotation={[0, 0, -SLOPE_ANGLE]}
+        castShadow
+      >
+        <boxGeometry args={[SLOPE_LEN, 0.15, 5.2]} />
+        <meshStandardMaterial color="#5a2a20" />
+      </mesh>
+      <mesh
+        position={[-1, 3 + RISE / 2, 0]}
+        rotation={[0, 0, SLOPE_ANGLE]}
+        castShadow
+      >
+        <boxGeometry args={[SLOPE_LEN, 0.15, 5.2]} />
+        <meshStandardMaterial color="#5a2a20" />
+      </mesh>
+      {/* Gable triangle fills (the triangular wall at each end under the
+          roof). Just two flat-shaded triangles via plane geometry won't
+          be triangular — use a coneGeometry with 3 segments would also
+          be wrong. Instead use a small triangular `Shape`? Simpler:
+          stack two thin angled boxes that emulate a triangle. For the
+          first pass, leave the gable ends open — at this distance the
+          eye reads the barn shape from the roof + body alone. */}
+      {/* White door (sliding-barn style) */}
+      <mesh position={[0, 0.95, 2.51]}>
+        <boxGeometry args={[1.4, 1.9, 0.04]} />
+        <meshStandardMaterial color="#e8e0d0" />
+      </mesh>
+      {/* Door X-cross trim — two thin diagonals */}
+      <mesh
+        position={[0, 0.95, 2.53]}
+        rotation={[0, 0, Math.atan2(1.9, 1.4)]}
+      >
+        <boxGeometry args={[Math.hypot(1.4, 1.9), 0.06, 0.01]} />
+        <meshStandardMaterial color="#5a4030" />
+      </mesh>
+      <mesh
+        position={[0, 0.95, 2.53]}
+        rotation={[0, 0, -Math.atan2(1.9, 1.4)]}
+      >
+        <boxGeometry args={[Math.hypot(1.4, 1.9), 0.06, 0.01]} />
+        <meshStandardMaterial color="#5a4030" />
+      </mesh>
+      {/* Hay-loft window above the door */}
+      <mesh position={[0, 2.55, 2.51]}>
+        <boxGeometry args={[0.7, 0.55, 0.04]} />
+        <meshStandardMaterial color="#e8e0d0" />
+      </mesh>
+      {/* White eave trim along the front and back */}
+      <mesh position={[0, 3, 2.55]}>
+        <boxGeometry args={[4.05, 0.18, 0.05]} />
+        <meshStandardMaterial color="#e8e0d0" />
+      </mesh>
+      <mesh position={[0, 3, -2.55]}>
+        <boxGeometry args={[4.05, 0.18, 0.05]} />
+        <meshStandardMaterial color="#e8e0d0" />
+      </mesh>
+    </group>
+  );
+}
+
+// Tall grain silo — light-grey cylinder with a darker conical cap.
+function Silo({ x, z, scale = 1 }: { x: number; z: number; scale?: number }) {
+  return (
+    <group position={[x, 0, z]} scale={scale}>
+      <mesh position={[0, 2.5, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[1.2, 1.2, 5, 14]} />
+        <meshStandardMaterial color="#b8b6a8" />
+      </mesh>
+      {/* Cap */}
+      <mesh position={[0, 5.4, 0]} castShadow>
+        <coneGeometry args={[1.25, 0.9, 14]} />
+        <meshStandardMaterial color="#6a6458" />
+      </mesh>
+      {/* Horizontal band partway up — gives the silo some detail */}
+      <mesh position={[0, 3.6, 0]}>
+        <cylinderGeometry args={[1.22, 1.22, 0.12, 14]} />
+        <meshStandardMaterial color="#7a7468" />
+      </mesh>
+    </group>
+  );
+}
+
+// Small cream farmhouse with a red pyramid roof and a dark door.
+function Farmhouse({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      <mesh position={[0, 1.25, 0]} castShadow receiveShadow>
+        <boxGeometry args={[3, 2.5, 3]} />
+        <meshStandardMaterial color="#eee0c8" />
+      </mesh>
+      <mesh position={[0, 3.0, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+        <coneGeometry args={[2.3, 1.5, 4]} />
+        <meshStandardMaterial color="#a64b3a" />
+      </mesh>
+      <mesh position={[0, 0.75, 1.51]}>
+        <boxGeometry args={[0.55, 1.1, 0.04]} />
+        <meshStandardMaterial color="#4a3220" />
+      </mesh>
+      {/* Two tiny windows flanking the door */}
+      <mesh position={[-0.95, 1.3, 1.51]}>
+        <boxGeometry args={[0.45, 0.45, 0.04]} />
+        <meshStandardMaterial color="#9ab4c8" />
+      </mesh>
+      <mesh position={[0.95, 1.3, 1.51]}>
+        <boxGeometry args={[0.45, 0.45, 0.04]} />
+        <meshStandardMaterial color="#9ab4c8" />
+      </mesh>
+    </group>
+  );
+}
+
+// Crop field — a flat colored plane laid over the grass. Row stripes
+// add a hint of tilled rows without modeling individual plants.
+function CropField({
+  x,
+  z,
+  w,
+  d,
+  color,
+  rowColor,
+}: {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  color: string;
+  rowColor?: string;
+}) {
+  return (
+    <group>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[x, 0.013, z]}
+        receiveShadow
+      >
+        <planeGeometry args={[w, d]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Row stripes running along z — thin slightly-darker strips */}
+      {rowColor &&
+        Array.from({ length: Math.floor(w / 0.8) }).map((_, i) => (
+          <mesh
+            key={i}
+            rotation={[-Math.PI / 2, 0, 0]}
+            position={[
+              x - w / 2 + 0.4 + i * 0.8,
+              0.014,
+              z,
+            ]}
+          >
+            <planeGeometry args={[0.08, d * 0.95]} />
+            <meshStandardMaterial color={rowColor} />
+          </mesh>
+        ))}
+    </group>
+  );
+}
+
+// Round hay bale lying on its side — short cylinder rotated so its
+// axis runs horizontally.
+function HayBale({
+  x,
+  z,
+  rotation = 0,
+}: {
+  x: number;
+  z: number;
+  rotation?: number;
+}) {
+  return (
+    <mesh
+      position={[x, 0.4, z]}
+      rotation={[Math.PI / 2, 0, rotation]}
+      castShadow
+      receiveShadow
+    >
+      <cylinderGeometry args={[0.42, 0.42, 0.8, 12]} />
+      <meshStandardMaterial color="#d4b878" />
     </mesh>
   );
 }
