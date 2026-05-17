@@ -2620,6 +2620,7 @@ function Balloon({
   balloonRef: React.MutableRefObject<BalloonState>;
   onSelect: () => void;
 }) {
+  const huggyTex = useTexture("/huggy.png");
   const groupRef = useRef<THREE.Group>(null);
   useFrame(() => {
     if (!groupRef.current) return;
@@ -2678,6 +2679,41 @@ function Balloon({
         />
         <meshStandardMaterial color="#ffd83a" />
       </mesh>
+      {/* Huggy patch — "sewn on" to the front-facing side of the envelope.
+          Positioned at the envelope's surface along the camera direction
+          during the balloon cinematic (~SE of the balloon), rotated to
+          face that camera so the bear reads straight-on during the ride.
+          Pushed 0.04 units along the surface normal to clear z-fighting
+          with the envelope sphere. Sized to fit inside the yellow
+          stripe — the stripe height in local units is
+          `2 * R * 1.25 * cos(π*0.42) ≈ 1.613`, but the bear extends
+          a hair past that, so HUGGY_SIZE is dialed slightly under and
+          the center is bumped up by HUGGY_Y_BIAS to keep the cap on
+          the top edge and pull the paws inside the bottom edge. */}
+      {(() => {
+        const HUGGY_DIR_X = 0.196;
+        const HUGGY_DIR_Z = 0.98;
+        const HUGGY_R = ENV_R + 0.04;
+        const HUGGY_SIZE = 1.6;
+        const HUGGY_Y_BIAS = 0.042;
+        const px = HUGGY_DIR_X * HUGGY_R;
+        const pz = HUGGY_DIR_Z * HUGGY_R;
+        const ry = Math.atan2(HUGGY_DIR_X, HUGGY_DIR_Z);
+        return (
+          <mesh
+            position={[px, ENV_Y + HUGGY_Y_BIAS, pz]}
+            rotation={[0, ry, 0]}
+          >
+            <planeGeometry args={[HUGGY_SIZE, HUGGY_SIZE]} />
+            <meshBasicMaterial
+              map={huggyTex}
+              transparent
+              toneMapped={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        );
+      })()}
       {/* Suspension ropes — four thin cylinders running exactly from
           the basket top to the envelope bottom. */}
       {[
