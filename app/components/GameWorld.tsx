@@ -129,36 +129,97 @@ const BALLOON_JUMP_DURATION = 0.55; // seconds airborne from the basket to the g
 const BALLOON_ROLL_DURATION = 0.9; // seconds of forward roll to break the fall
 
 // Amusement park
-const PARK = { x: -13, z: -9 };
-const COASTER_RX = 3.6;
-const COASTER_RZ = 2.7;
-const COASTER_Y_BASE = 0.9;
-const COASTER_AMP = 1.1;
+const PARK = { x: -17, z: -19 };
+// Visual scale applied to the entire AmusementPark group + the
+// CoasterCart so the character (~2 units tall) reads as a normal
+// rider rather than dwarfing the cart and rides. Local geometry
+// stays the same; everything that needs to talk to world space
+// (coaster curve sampling, character walk targets, park entry
+// offset) multiplies through PARK_SCALE. Park width is constrained
+// horizontally by the road (x≈-27.5) on the west and JIU JITSU
+// (x≈-7.1) on the east, so growth happens mostly in the z direction.
+const PARK_SCALE = 2.5;
+const COASTER_RX = 3.5;
+const COASTER_RZ = 4;
+const COASTER_Y_BASE = 1.5;
+const COASTER_AMP = 3.5;
 const COASTER_HILLS = 2;
-const RIDE_LAPS = 2;
+const RIDE_LAPS = 1;
 const RIDE_LAP_SECONDS = 4.0; // per lap
-const PARK_ENTRY_OFFSET = COASTER_RZ + 0.9; // walk to here to board
+// Walk-to-board target: south of the park's centre, just outside
+// the ride boundary in local park units (then multiplied by scale
+// at the world-coord callsites).
+const PARK_ENTRY_OFFSET = COASTER_RZ + 0.9; // walk to here to board (local units)
+const PARK_ENTRY_WORLD = PARK_ENTRY_OFFSET * PARK_SCALE; // same thing, scaled
 // Park ground patch dimensions (covers all rides)
-const PARK_GROUND_W = 10;
-const PARK_GROUND_D = 10;
+const PARK_GROUND_W = 8;
+const PARK_GROUND_D = 12;
 
 // Closed roller-coaster curve, defined in park-local XYZ. Starts at the south
 // (low) point so boarding lines up with the ticket-booth entrance. Two hills
 // per lap with valleys between.
+// Smooth oval coaster curve with multiple hills + one vertical
+// loop spliced in. The track never crosses itself in the XZ plane
+// (no 90° angles like the previous figure-8); instead the loop
+// rises out of the oval, twists through 360° in the YZ plane, and
+// rejoins the oval where it left off.
+//
+// Loop math: between t=LOOP_T0 and t=LOOP_T1 the cart departs from
+// the regular ellipse, runs vertically around a circle in the YZ
+// plane centred above the anchor point, and returns to the same
+// XZ position. The anchor point is the ellipse's location at the
+// midpoint of the loop window so the entry and exit positions
+// coincide — that way there's no jump in the cart's XZ.
+const LOOP_T0 = 0.42;
+const LOOP_T1 = 0.58;
+const LOOP_RADIUS = 2.4;
+
 const COASTER_CURVE = (() => {
-  const N = 32;
+  const N = 128;
   const pts: THREE.Vector3[] = [];
+
+  const ellipseAngle = (t: number) => Math.PI / 2 + t * 2 * Math.PI;
+  const ellipseY = (t: number) =>
+    COASTER_Y_BASE +
+    COASTER_AMP * (1 - Math.cos(t * 2 * Math.PI * COASTER_HILLS)) / 2;
+  const ellipsePos = (t: number) => {
+    const a = ellipseAngle(t);
+    return new THREE.Vector3(
+      Math.cos(a) * COASTER_RX,
+      ellipseY(t),
+      Math.sin(a) * COASTER_RZ
+    );
+  };
+
+  // Anchor: ellipse position at the midpoint of the loop window —
+  // the loop enters and exits at this point.
+  const tMid = (LOOP_T0 + LOOP_T1) / 2;
+  const anchor = ellipsePos(tMid);
+
   for (let i = 0; i < N; i++) {
     const t = i / N;
-    const angle = Math.PI / 2 + t * 2 * Math.PI;
-    const heightFactor = (1 - Math.cos(t * 2 * Math.PI * COASTER_HILLS)) / 2;
-    pts.push(
-      new THREE.Vector3(
-        Math.cos(angle) * COASTER_RX,
-        COASTER_Y_BASE + COASTER_AMP * heightFactor,
-        Math.sin(angle) * COASTER_RZ
-      )
-    );
+    if (t >= LOOP_T0 && t <= LOOP_T1) {
+      // 360° vertical loop in the YZ plane centred above the anchor.
+      // Loop opens and closes at the anchor's XZ; lifts to y =
+      // anchor.y + 2*LOOP_RADIUS at the top, then back down.
+      const tLoop = (t - LOOP_T0) / (LOOP_T1 - LOOP_T0);
+      const loopA = 2 * Math.PI * tLoop;
+      // Standard "vertical loop entering from bottom" parametric:
+      //   z = z_anchor + R * sin(angle)
+      //   y = y_anchor + R - R * cos(angle)
+      // At loopA=0: position = anchor (bottom of loop, entering).
+      // At loopA=π: position = (anchor.x, anchor.y + 2R, anchor.z) (top, upside-down).
+      // At loopA=2π: position = anchor (bottom again, exiting).
+      pts.push(
+        new THREE.Vector3(
+          anchor.x,
+          anchor.y + LOOP_RADIUS * (1 - Math.cos(loopA)),
+          anchor.z + LOOP_RADIUS * Math.sin(loopA)
+        )
+      );
+    } else {
+      pts.push(ellipsePos(t));
+    }
   }
   return new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
 })();
@@ -171,10 +232,13 @@ function coasterWorldAt(t: number): {
 } {
   const p = COASTER_CURVE.getPointAt(t);
   const tan = COASTER_CURVE.getTangentAt(t);
+  // The visual AmusementPark group applies PARK_SCALE to its
+  // children, so multiply the local curve sample through to get
+  // the cart's actual world position.
   return {
-    x: PARK.x + p.x,
-    y: p.y,
-    z: PARK.z + p.z,
+    x: PARK.x + p.x * PARK_SCALE,
+    y: p.y * PARK_SCALE,
+    z: PARK.z + p.z * PARK_SCALE,
     // Direction of motion projected on the ground plane. The cart's "front"
     // is along +Z in local; we want that to face the tangent's XZ direction.
     angle: Math.atan2(tan.x, tan.z),
@@ -477,7 +541,7 @@ function Scene({
         b.height = b.t * BALLOON_RISE_HEIGHT;
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z;
-        char.y = b.height + 0.18; // feet at basket-floor level
+        char.y = b.height + 0.28; // feet at basket-floor level
         char.angle = 0;
         if (b.t >= 1) {
           b.phase = "scared";
@@ -487,7 +551,7 @@ function Scene({
         // Brief beat at altitude — "uh oh".
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z;
-        char.y = b.height + 0.18;
+        char.y = b.height + 0.28;
         char.angle = 0;
         if (b.t >= 1) {
           b.phase = "jumping";
@@ -496,7 +560,7 @@ function Scene({
       } else if (b.phase === "jumping") {
         // Parabolic-ish fall from the basket to the ground; nudges
         // forward (south, toward the camera) so he lands clear.
-        const startY = b.height + 0.18;
+        const startY = b.height + 0.28;
         char.x = BALLOON_POSITION.x;
         char.z = BALLOON_POSITION.z + b.t * 1.5;
         char.y = Math.max(0, startY * (1 - b.t * b.t));
@@ -580,7 +644,7 @@ function Scene({
           char.mode = "idle";
           char.y = 0;
           char.x = PARK.x;
-          char.z = PARK.z + PARK_ENTRY_OFFSET;
+          char.z = PARK.z + PARK_ENTRY_WORLD;
           char.angle = Math.atan2(-char.x, -char.z); // face plaza
           // Walk back to the plaza — route via bypass waypoints so the
           // path doesn't clip the JIU JITSU building.
@@ -860,7 +924,7 @@ function Scene({
   function handleParkClick() {
     if (!isOnHome || isBusy()) return;
     // Walk to the park entrance (south of park, near the ticket booth)
-    walkTo(PARK.x, PARK.z + PARK_ENTRY_OFFSET, null);
+    walkTo(PARK.x, PARK.z + PARK_ENTRY_WORLD, null);
     refs.approachingPark.current = true;
   }
 
@@ -974,17 +1038,16 @@ function Sky() {
 function Ground() {
   // Extended west (x to ~-65) so the cityscape silhouette opposite
   // the beach has grass outskirts behind it rather than sitting flush
-  // against the world's edge. Also extended south (z=65) so the
-  // full-length beach sits on grass, and extended north (z=-85) so
-  // the mountain ridge bases stay on grass rather than floating over
-  // the void.
+  // against the world's edge. Also extended north (z=-95) so the
+  // mountain ridge bases stay on grass, and extended south (z=85) so
+  // there's room behind the farm for a distant horizon backdrop.
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[-10, 0, -10]}
+      position={[-10, 0, -5]}
       receiveShadow
     >
-      <planeGeometry args={[110, 150]} />
+      <planeGeometry args={[110, 180]} />
       <meshStandardMaterial color="#5a8a3a" />
     </mesh>
   );
@@ -1095,6 +1158,29 @@ function Environment({
       <HayBale x={-9} z={53} rotation={0.4} />
       <HayBale x={-7} z={54} rotation={-0.2} />
       <HayBale x={-11} z={52} />
+
+      {/* Distant farm backdrop — additional buildings, fields, hills,
+          and pines south of the main farm so the world doesn't end at
+          a grass edge when the camera looks south. */}
+      <Farmhouse x={-20} z={78} rotation={Math.PI * 0.1} />
+      <Barn x={-8} z={77} rotation={Math.PI} />
+      <Silo x={0} z={78} />
+      <Silo x={3} z={79} scale={0.85} />
+      <Barn x={10} z={76} rotation={Math.PI * 0.85} />
+      <CropField x={-12} z={68} w={14} d={6} color="#8aa83a" rowColor="#6a8a28" />
+      <CropField x={6} z={70} w={10} d={7} color="#c8a64a" rowColor="#a8862a" />
+      <CropField x={-15} z={75} w={6} d={3} color="#6e4830" />
+      <Hill position={[-22, 0, 72]} scale={1.4} color="#3d6824" />
+      <Hill position={[14, 0, 73]} scale={1.5} color="#446e2a" />
+      <Hill position={[-3, 0, 84]} scale={1.6} color="#4a7a30" />
+      <PineTree position={[-26, 0, 70]} scale={1.5} />
+      <PineTree position={[-18, 0, 73]} scale={1.6} />
+      <PineTree position={[-5, 0, 72]} scale={1.4} />
+      <PineTree position={[7, 0, 73]} scale={1.5} />
+      <PineTree position={[15, 0, 70]} scale={1.4} />
+      <PineTree position={[-20, 0, 82]} scale={1.5} />
+      <PineTree position={[-8, 0, 83]} scale={1.6} />
+      <PineTree position={[5, 0, 82]} scale={1.4} />
 
       {/* Pine forest in the valley between the hills and the
           mountain ridge — softens the transition from the play area
@@ -2144,13 +2230,18 @@ function Balloon({
   });
   // Geometry: envelope sits far enough above the basket that the
   // rider's head fits in the gap (basket top → envelope bottom).
-  const ENV_R = 1.75;
-  const ENV_Y = 4.9; // raised to keep head-room as the envelope grew
-  const BASKET_Y = 0.45;
+  // Sized so the character (body width ~0.78) fits cleanly inside
+  // the basket with shoulders + head poking out the top.
+  const BASKET_W = 1.5;
+  const BASKET_H = 0.9;
+  const BASKET_Y = 0.7;
+  const ENV_R = 2.6;
+  const ENV_Y = 5.9;
   // Derived: basket top and envelope bottom (used to size the ropes
   // exactly between them).
-  const BASKET_TOP = BASKET_Y + 0.275;
+  const BASKET_TOP = BASKET_Y + BASKET_H / 2;
   const ENV_BOTTOM = ENV_Y - ENV_R * 1.25; // sphere vertical scale = 1.25
+  const ROPE_OFFSET = BASKET_W / 2 - 0.15;
   return (
     <group ref={groupRef} position={[BALLOON_POSITION.x, 0, BALLOON_POSITION.z]}>
       {/* Envelope — slightly elongated red/yellow striped sphere. The
@@ -2185,34 +2276,34 @@ function Balloon({
       {/* Suspension ropes — four thin cylinders running exactly from
           the basket top to the envelope bottom. */}
       {[
-        [-0.3, -0.3],
-        [-0.3, 0.3],
-        [0.3, -0.3],
-        [0.3, 0.3],
+        [-ROPE_OFFSET, -ROPE_OFFSET],
+        [-ROPE_OFFSET, ROPE_OFFSET],
+        [ROPE_OFFSET, -ROPE_OFFSET],
+        [ROPE_OFFSET, ROPE_OFFSET],
       ].map(([x, z], i) => (
         <mesh
           key={i}
-          position={[x * 0.95, (BASKET_TOP + ENV_BOTTOM) / 2, z * 0.95]}
+          position={[x, (BASKET_TOP + ENV_BOTTOM) / 2, z]}
         >
           <cylinderGeometry
-            args={[0.012, 0.012, ENV_BOTTOM - BASKET_TOP, 6]}
+            args={[0.018, 0.018, ENV_BOTTOM - BASKET_TOP, 6]}
           />
           <meshStandardMaterial color="#3a2a18" />
         </mesh>
       ))}
-      {/* Burner — small grey cylinder between basket and envelope */}
-      <mesh position={[0, BASKET_Y + 0.55, 0]}>
-        <cylinderGeometry args={[0.1, 0.1, 0.18, 8]} />
+      {/* Burner — small grey cylinder just above the basket */}
+      <mesh position={[0, BASKET_TOP + 0.15, 0]}>
+        <cylinderGeometry args={[0.15, 0.15, 0.3, 8]} />
         <meshStandardMaterial color="#5a5a5a" metalness={0.5} roughness={0.4} />
       </mesh>
       {/* Basket — wicker box */}
       <mesh position={[0, BASKET_Y, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.8, 0.55, 0.8]} />
+        <boxGeometry args={[BASKET_W, BASKET_H, BASKET_W]} />
         <meshStandardMaterial color="#8b6a3f" roughness={1} />
       </mesh>
       {/* Basket rim (darker) */}
-      <mesh position={[0, BASKET_Y + 0.3, 0]}>
-        <boxGeometry args={[0.85, 0.05, 0.85]} />
+      <mesh position={[0, BASKET_TOP - 0.04, 0]}>
+        <boxGeometry args={[BASKET_W + 0.08, 0.08, BASKET_W + 0.08]} />
         <meshStandardMaterial color="#5b4423" roughness={1} />
       </mesh>
     </group>
@@ -2656,7 +2747,7 @@ function AmusementPark({ onSelect }: { onSelect: () => void }) {
   }, []);
 
   return (
-    <group position={[PARK.x, 0, PARK.z]}>
+    <group position={[PARK.x, 0, PARK.z]} scale={PARK_SCALE}>
       {/* Park ground patch — sandy/dirt, makes the area read as a fairground.
           The whole patch is clickable so the user can click anywhere on the
           park to send the character over (not just the ticket booth). */}
@@ -2817,7 +2908,7 @@ function CoasterCart({
     ref.current.rotation.y = pos.angle;
   });
   return (
-    <group ref={ref}>
+    <group ref={ref} scale={PARK_SCALE}>
       {/* Cart body */}
       <mesh position={[0, 0.18, 0]} castShadow>
         <boxGeometry args={[0.5, 0.36, 0.7]} />
@@ -3562,10 +3653,10 @@ function Character({
       // (celebration jumps), and ballooning (rising / falling); zero on
       // foot otherwise. While riding, lower the character so the hips
       // (at body-local y=0.66) sit on the cart's top surface
-      // (cart-local y=0.36) rather than standing on top of it.
+      // (cart-local y=0.36 × PARK_SCALE) rather than standing on top.
       rootRef.current.position.y =
         c.mode === "riding"
-          ? c.y - 0.30
+          ? c.y + 0.36 * PARK_SCALE - 0.66
           : c.mode === "golfing" || c.mode === "ballooning"
           ? c.y
           : 0;
@@ -3946,9 +4037,15 @@ function CameraRig({
       wantTX = GOLF_MIDPOINT.x;
       wantTZ = GOLF_MIDPOINT.z;
       wantTY = 1;
+    } else if (c.mode === "riding") {
+      // Lock the target to the park centre (slightly elevated to
+      // include the loop) so the fixed cinematic vantage frames the
+      // whole coaster instead of panning around with the cart.
+      wantTX = PARK.x;
+      wantTZ = PARK.z;
+      wantTY = 5;
     } else if (
       c.walking ||
-      c.mode === "riding" ||
       c.mode === "flee" ||
       c.mode === "ballooning"
     ) {
@@ -3982,8 +4079,15 @@ function CameraRig({
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
-      // Cinematic chase-cam following the cart from behind-and-above.
-      wantCam = { x: c.x + 4.5, y: c.y + 3.2, z: c.z + 4.5 };
+      // Fixed wide vantage south-east of the park, framing the
+      // entire coaster (including the vertical loop) so the viewer
+      // sees the whole ride rather than just the cart's immediate
+      // surroundings.
+      wantCam = {
+        x: PARK.x + 24,
+        y: 14,
+        z: PARK.z + 24,
+      };
       camHijackedRef.current = true;
     } else if (c.mode === "ballooning") {
       // Track the balloon's rise — camera y lifts 1:1 with the
