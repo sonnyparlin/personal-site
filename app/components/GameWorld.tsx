@@ -1,8 +1,8 @@
 "use client";
 
-import { forwardRef, useEffect, useMemo, useRef } from "react";
+import { forwardRef, Suspense, useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Text } from "@react-three/drei";
+import { Billboard, OrbitControls, Text, useTexture } from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
 import * as THREE from "three";
 import {
@@ -758,7 +758,9 @@ function Scene({
           onSelect={() => handleBuildingClick(s)}
         />
       ))}
-      <Character charRef={refs.char} golfRef={refs.golf} />
+      <Suspense fallback={null}>
+        <Character charRef={refs.char} golfRef={refs.golf} />
+      </Suspense>
       <Family familyRef={refs.family} />
       <CameraRig charRef={refs.char} pathname={pathname} />
     </>
@@ -2391,6 +2393,23 @@ const BELT = "#0a0a0a";
 const FOOT = "#1a1a1a";
 const EYE = "#1a1a1a";
 
+// FaceBillboard — a textured plane displaying Sonny's actual face photo.
+// Lives inside a <Billboard> so it rotates to always face the camera,
+// regardless of which way the character is turned. Comedic mismatch: a
+// real human face perched on a low-poly cartoon body.
+function FaceBillboard() {
+  const tex = useTexture("/face.png");
+  // Photo is roughly portrait (~470×510). Plane sized so the face reads
+  // about the same as the old bald-head sphere from default viewing
+  // distance.
+  return (
+    <mesh>
+      <planeGeometry args={[0.65, 0.7]} />
+      <meshBasicMaterial map={tex} transparent toneMapped={false} />
+    </mesh>
+  );
+}
+
 function Character({
   charRef,
   golfRef,
@@ -2567,51 +2586,13 @@ function Character({
           <meshStandardMaterial color={BELT} />
         </mesh>
 
-        {/* Head (bald, slightly egg-shaped) */}
-        <mesh position={[0, 1.5, 0]} castShadow>
-          <sphereGeometry args={[0.22, 16, 14]} />
-          <meshStandardMaterial color={SKIN} />
-        </mesh>
-
-        {/* Beard — full bushy beard on the FRONT and SIDES of the jaw only;
-            shifted forward and shallow in depth so the back of the mesh
-            tucks inside the head sphere (i.e. invisible from behind). A
-            second "goatee drop" extends below the jawline. */}
-        <mesh position={[0, 1.34, 0.09]} scale={[1.28, 1.0, 0.95]} castShadow>
-          <sphereGeometry args={[0.2, 16, 14]} />
-          <meshStandardMaterial color={BEARD} />
-        </mesh>
-        {/* Goatee drop — extends past the chin (front-only) */}
-        <mesh position={[0, 1.18, 0.07]} scale={[0.9, 1.2, 0.75]} castShadow>
-          <sphereGeometry args={[0.13, 14, 12]} />
-          <meshStandardMaterial color={BEARD} />
-        </mesh>
-        {/* Sideburn fill — bridges the beard up to the head on each side,
-            kept narrow in depth so it doesn't wrap behind the ears */}
-        <mesh position={[-0.18, 1.46, 0.04]} scale={[0.6, 0.9, 0.65]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
-          <meshStandardMaterial color={BEARD} />
-        </mesh>
-        <mesh position={[0.18, 1.46, 0.04]} scale={[0.6, 0.9, 0.65]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
-          <meshStandardMaterial color={BEARD} />
-        </mesh>
-        {/* Mustache — wider patch above the lip that visually merges into
-            the beard at the corners of the mouth */}
-        <mesh position={[0, 1.47, 0.19]} rotation={[0.15, 0, 0]}>
-          <boxGeometry args={[0.17, 0.05, 0.04]} />
-          <meshStandardMaterial color={BEARD} />
-        </mesh>
-
-        {/* Eyes */}
-        <mesh position={[-0.07, 1.52, 0.19]}>
-          <sphereGeometry args={[0.022, 8, 6]} />
-          <meshBasicMaterial color={EYE} />
-        </mesh>
-        <mesh position={[0.07, 1.52, 0.19]}>
-          <sphereGeometry args={[0.022, 8, 6]} />
-          <meshBasicMaterial color={EYE} />
-        </mesh>
+        {/* Face — Sonny's actual photo on a billboard plane that always
+            faces the camera. Replaces the original bald head + beard +
+            mustache + eyes; the body stays cartoon for comedic effect.
+            Sized to match the rough head proportions of the old sphere. */}
+        <Billboard position={[0, 1.45, 0]}>
+          <FaceBillboard />
+        </Billboard>
 
         {/* Neck tattoo */}
         <mesh position={[0, 1.28, 0.14]}>
