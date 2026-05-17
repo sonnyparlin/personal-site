@@ -1291,6 +1291,11 @@ function Environment({
       <PineTree position={[-8, 0, 83]} scale={1.6} />
       <PineTree position={[5, 0, 82]} scale={1.4} />
 
+      {/* Atmospheric haze wall at the southern ground edge so the
+          drone-tour farm vantage fades into a soft horizon instead of
+          showing the abrupt line where the grass plane ends. */}
+      <FarmMist z={85} />
+
       {/* Pine forest in the valley between the hills and the
           mountain ridge — softens the transition from the play area
           to the towering peaks. */}
@@ -1733,6 +1738,36 @@ const PARK_LANE_X = ROAD_CENTER_X + 2.0; // parked cars on the east shoulder
 // "fade into the distance" look from any reasonable viewing angle.
 // `direction = +1` for the south end (mist stacks toward +z),
 // `-1` for the north end.
+// Atmospheric mist wall standing at the southern ground edge so the
+// camera looking south at the farm waypoint sees a hazy fade-to-sky
+// horizon instead of the abrupt line where the grass plane ends.
+// Four stacked semi-transparent planes (sky horizon color) build up
+// a soft gradient — the near plane is sparse, the far one is nearly
+// opaque so anything past the edge is fully hidden.
+function FarmMist({ z }: { z: number }) {
+  return (
+    <group position={[-10, 0, z]}>
+      {[
+        { dz: 0, op: 0.25 },
+        { dz: 0.8, op: 0.45 },
+        { dz: 1.6, op: 0.65 },
+        { dz: 2.4, op: 0.85 },
+      ].map(({ dz, op }, i) => (
+        <mesh key={i} position={[0, 5, dz]}>
+          <planeGeometry args={[100, 12]} />
+          <meshBasicMaterial
+            color="#c8d8e8"
+            transparent
+            opacity={op}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function RoadMist({
   z,
   direction = 1,
