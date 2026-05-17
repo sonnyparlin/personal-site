@@ -444,11 +444,15 @@ export default function GameWorld() {
       const t = doorTarget(section);
       charRef.current.x = t.x;
       charRef.current.z = t.z;
-      // Face the building (away from origin)
-      charRef.current.angle = Math.atan2(
-        section.x - t.x,
-        section.z - t.z
-      );
+      // HOME is special — Sonny just waved with the family at the
+      // doorstep, so leave him facing south (+Z, toward the camera)
+      // to match the family. Other sections snap him to face the
+      // building (away from origin) since the overlay covers most
+      // of the scene and there's no family in the foreground.
+      charRef.current.angle =
+        section.id === "personal-life"
+          ? 0
+          : Math.atan2(section.x - t.x, section.z - t.z);
       charRef.current.walking = false;
       charRef.current.mode = "idle";
       targetRef.current = null;
@@ -894,6 +898,12 @@ function Scene({
           if (!refs.family.current.active) {
             refs.family.current.active = true;
             refs.family.current.t = 0;
+            // Sonny just arrived at the door facing north (-Z, into
+            // HOME). Spin him around to face south (+Z, toward the
+            // camera) so he matches the family who all face +Z. The
+            // Character's rotation lerps toward char.angle at 20%
+            // per frame, so this becomes a smooth U-turn over ~0.5s.
+            refs.char.current.angle = 0;
           } else {
             refs.family.current.t += clampedDt / HOME_FAMILY_DURATION;
             if (refs.family.current.t >= 1) {
@@ -5244,7 +5254,7 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   // Plaza overview — buildings + character on the central plaza
   { name: "plaza", target: new THREE.Vector3(0, 2, 0), camOffset: new THREE.Vector3(0, 12, 16) },
   // Amusement park — coaster + carousel + ferris wheel
-  { name: "park", target: new THREE.Vector3(-17, 5, -19), camOffset: new THREE.Vector3(13, 10, 12) },
+  { name: "park", target: new THREE.Vector3(-17, 5, -19), camOffset: new THREE.Vector3(22, 16, 20) },
   // Lake & alligator
   { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
   // Hot-air balloon
@@ -5254,7 +5264,7 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   // looking south at the farm: camera sits north + slightly west
   // of the farm, ~12 units up, peering down the long axis toward
   // the farmhouse cluster.
-  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(-3, 12, -18) },
+  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(-5, 20, -30) },
   // Golf course
   { name: "golf", target: new THREE.Vector3(-14, 2, 17), camOffset: new THREE.Vector3(10, 8, 12) },
 ];
