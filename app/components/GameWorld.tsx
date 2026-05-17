@@ -1007,6 +1007,16 @@ function Environment({
 }) {
   return (
     <>
+      {/* Ocean + beach along the entire eastern edge of the world. */}
+      <Ocean />
+      <Beach />
+      {/* Palms scattered along the beach for that coastal feel. */}
+      <PalmTree position={[19.5, 0, -28]} scale={1.1} />
+      <PalmTree position={[20.2, 0, -14]} scale={1.0} />
+      <PalmTree position={[19.8, 0, 0]} scale={1.2} />
+      <PalmTree position={[20.4, 0, 18]} scale={1.05} />
+      <PalmTree position={[19.6, 0, 32]} scale={1.15} />
+
       {/* Lake to the northeast, with gator and surrounding palm trees */}
       <Lake position={[11.5, 0, -8]} radius={2.8} />
       <Alligator gatorRef={gatorRef} onSelect={onGatorClick} />
@@ -1026,13 +1036,15 @@ function Environment({
       <AmusementPark onSelect={onParkClick} />
       <CoasterCart coasterRef={coasterRef} />
 
-      {/* Distant rolling hills at the far edges of the world */}
+      {/* Distant rolling hills at the far edges of the world. The
+          eastern hills were removed when the ocean replaced that side
+          of the perimeter — only inland-facing hills remain. */}
       <Hill position={[-28, 0, -26]} scale={1.4} color="#4a7a30" />
-      <Hill position={[26, 0, -28]} scale={1.6} color="#3d6824" />
-      <Hill position={[28, 0, 24]} scale={1.3} color="#4a7a30" />
       <Hill position={[-26, 0, 26]} scale={1.5} color="#3d6824" />
       <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
-      <Hill position={[32, 0, -8]} scale={1.2} color="#3d6824" />
+      <Hill position={[-32, 0, 0]} scale={1.5} color="#3d6824" />
+      <Hill position={[-22, 0, -34]} scale={1.3} color="#4a7a30" />
+      <Hill position={[-30, 0, 14]} scale={1.4} color="#446e2a" />
 
       {/* Mix of regular oaks and pine trees */}
       <Tree position={[15, 0, 1]} scale={1.1} />
@@ -1040,13 +1052,13 @@ function Environment({
       <Tree position={[9, 0, 13]} scale={1.2} />
       <Tree position={[-7, 0, 14]} />
       <Tree position={[2, 0, -16]} scale={1.05} />
-      <Tree position={[18, 0, -2]} scale={0.95} />
+      <Tree position={[16, 0, -2]} scale={0.95} />
       <Tree position={[-19, 0, 5]} />
       <Tree position={[-21, 0, -14]} scale={1.15} />
       <PineTree position={[-22, 0, -6]} scale={1.0} />
       <PineTree position={[-24, 0, 8]} scale={1.3} />
-      <PineTree position={[22, 0, 10]} scale={1.1} />
-      <PineTree position={[24, 0, -16]} scale={1.5} />
+      <PineTree position={[16, 0, 10]} scale={1.1} />
+      <PineTree position={[17, 0, -16]} scale={1.5} />
       <PineTree position={[12, 0, -19]} scale={1.0} />
       <PineTree position={[-12, 0, -20]} scale={1.2} />
       <PineTree position={[-3, 0, 20]} scale={1.1} />
@@ -1165,6 +1177,127 @@ function Lake({
           opacity={0.45}
           depthWrite={false}
         />
+      </mesh>
+    </group>
+  );
+}
+
+// Eastern shoreline + ocean. The beach is a sandy strip running roughly
+// N-S along x≈18-22; the ocean stretches east from x=22 toward the
+// horizon. Both planes sit just above the grass (y=0.01) to avoid
+// z-fighting with the underlying ground plane. The two animated foam
+// strips sweep inland with slightly different speeds for life.
+function Ocean() {
+  const foam1Ref = useRef<THREE.Mesh>(null);
+  const foam2Ref = useRef<THREE.Mesh>(null);
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
+    // Each foam strip oscillates back and forth across a ~1.5-unit band
+    // just east of the shoreline. Different periods so they don't move
+    // in lockstep.
+    if (foam1Ref.current) {
+      foam1Ref.current.position.x = 22.6 + Math.sin(t * 0.6) * 0.35;
+    }
+    if (foam2Ref.current) {
+      foam2Ref.current.position.x = 23.4 + Math.sin(t * 0.45 + 1.2) * 0.5;
+    }
+  });
+  return (
+    <group>
+      {/* Main water plane — wide and long so the ocean fills the
+          horizon when the camera is spun to face east. Extends past
+          the green ground plane on the N/S sides so the horizon line
+          between water and sky is continuous. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[64, 0.01, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[84, 160]} />
+        <meshStandardMaterial color="#3e7ba8" roughness={0.4} metalness={0.1} />
+      </mesh>
+      {/* Foam line right at the shore — a brighter strip that visually
+          separates beach from open water. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[22.3, 0.013, 0]}
+      >
+        <planeGeometry args={[0.6, 120]} />
+        <meshStandardMaterial
+          color="#dfe8ee"
+          transparent
+          opacity={0.75}
+          depthWrite={false}
+        />
+      </mesh>
+      {/* Two animated foam strips sweeping inland — gives the ocean
+          motion without the cost of a real wave shader. */}
+      <mesh
+        ref={foam1Ref}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[22.6, 0.014, 0]}
+      >
+        <planeGeometry args={[0.35, 110]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          transparent
+          opacity={0.35}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh
+        ref={foam2Ref}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[23.4, 0.014, 0]}
+      >
+        <planeGeometry args={[0.25, 100]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          transparent
+          opacity={0.25}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function Beach() {
+  return (
+    <group>
+      {/* Main sandy strip along the eastern shore. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[20, 0.011, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[4, 130]} />
+        <meshStandardMaterial color="#e8d4a0" roughness={1} />
+      </mesh>
+      {/* A few darker wet-sand patches near the waterline. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[21.5, 0.012, 0]}
+      >
+        <planeGeometry args={[1.1, 130]} />
+        <meshStandardMaterial color="#c8b078" roughness={1} />
+      </mesh>
+      {/* Small grey rocks dotting the sand. */}
+      <mesh position={[19.6, 0.12, -22]} castShadow>
+        <sphereGeometry args={[0.22, 8, 6]} />
+        <meshStandardMaterial color="#9a9a96" roughness={1} />
+      </mesh>
+      <mesh position={[20.4, 0.1, 4]} castShadow>
+        <sphereGeometry args={[0.18, 8, 6]} />
+        <meshStandardMaterial color="#8a8a86" roughness={1} />
+      </mesh>
+      <mesh position={[19.4, 0.14, 14]} castShadow>
+        <sphereGeometry args={[0.26, 8, 6]} />
+        <meshStandardMaterial color="#a5a5a0" roughness={1} />
+      </mesh>
+      <mesh position={[20.6, 0.12, 22]} castShadow>
+        <sphereGeometry args={[0.2, 8, 6]} />
+        <meshStandardMaterial color="#9a9a96" roughness={1} />
       </mesh>
     </group>
   );
