@@ -4652,8 +4652,39 @@ function FaceBillboard({
   charRef: React.MutableRefObject<CharState>;
   balloonRef: React.MutableRefObject<BalloonState>;
 }) {
-  const tex = useTexture("/face.png");
+  // Three face textures swapped per frame based on game state:
+  //   * front  — default
+  //   * back   — when walking away from the camera (camera mostly
+  //              behind the character; e.g., the follow cam during
+  //              a click-driven walk to a building)
+  //   * scared — full balloon-ride sequence + the gator chase
+  const [texFront, texBack, texScared] = useTexture([
+    "/face.png",
+    "/face-back.png",
+    "/face-scared.png",
+  ]);
+  // The back/scared photos came in less saturated than the
+  // photo-edited front face. Punch up contrast + saturation once
+  // via a canvas filter so all three textures read with similar
+  // vibrance on the billboard. Done as a load-time effect so we
+  // don't pay a per-frame cost.
+  useEffect(() => {
+    for (const tex of [texBack, texScared]) {
+      const img = tex.image as HTMLImageElement | undefined;
+      if (!img || !img.width || !img.height) continue;
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) continue;
+      ctx.filter = "saturate(1.2) contrast(1.18) brightness(1.04)";
+      ctx.drawImage(img, 0, 0);
+      tex.image = canvas;
+      tex.needsUpdate = true;
+    }
+  }, [texBack, texScared]);
   const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
   // Scratch vectors so we don't allocate every frame.
   const meshWorld = useMemo(() => new THREE.Vector3(), []);
   const lookTarget = useMemo(() => new THREE.Vector3(), []);
@@ -4662,6 +4693,35 @@ function FaceBillboard({
     const mesh = meshRef.current;
     if (!mesh) return;
     const c = charRef.current;
+
+    // Pick which face texture to show this frame.
+    let wantTex: THREE.Texture = texFront;
+    if (c.mode === "ballooning" || c.mode === "flee") {
+      // Scared face through the full balloon sequence (rising →
+      // scared → jumping → rolling) and the entire gator chase.
+      wantTex = texScared;
+    } else if (c.walking) {
+      // Back of head when the character is walking AWAY from the
+      // camera. "Away" = the character's facing direction has a
+      // strong positive component along the camera→character vector
+      // (i.e., the camera is roughly behind them). Threshold of
+      // 0.25 keeps the back-of-head only when clearly facing away,
+      // so mostly-sideways angles still show the front face.
+      const camToCharX = c.x - state.camera.position.x;
+      const camToCharZ = c.z - state.camera.position.z;
+      const ccLen = Math.hypot(camToCharX, camToCharZ);
+      if (ccLen > 0.001) {
+        const dot =
+          (Math.sin(c.angle) * camToCharX +
+            Math.cos(c.angle) * camToCharZ) /
+          ccLen;
+        if (dot > 0.25) wantTex = texBack;
+      }
+    }
+    if (matRef.current && matRef.current.map !== wantTex) {
+      matRef.current.map = wantTex;
+      matRef.current.needsUpdate = true;
+    }
 
     if (c.mode === "riding") {
       // Locked to body rotation — clear local rotation so the face
@@ -4694,7 +4754,8 @@ function FaceBillboard({
     <mesh ref={meshRef}>
       <planeGeometry args={[0.85, 0.9]} />
       <meshBasicMaterial
-        map={tex}
+        ref={matRef}
+        map={texFront}
         transparent
         toneMapped={false}
         side={THREE.DoubleSide}
@@ -5136,6 +5197,13 @@ const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
 const DRONE_TRANSITION_S = 2.5;
 const DRONE_DWELL_S = 7.0;
 const DRONE_DWELL_ROT_SPEED = 0.18; // radians per second
+// Any pointer/wheel/touch input pauses the drone for this long, so
+// the user can take over the camera and look around freely.
+const DRONE_INPUT_PAUSE_S = 10;
+// When the drone resumes (or enters a fresh dwell phase), the rotation
+// speed eases from 0 up to DRONE_DWELL_ROT_SPEED over this duration —
+// no sudden snap into motion after the pause.
+const DRONE_DWELL_RAMP_S = 1.5;
 const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector3 }[] = [
   // Plaza overview — buildings + character on the central plaza
   { name: "plaza", target: new THREE.Vector3(0, 2, 0), camOffset: new THREE.Vector3(0, 12, 16) },
@@ -5145,8 +5213,12 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
   // Hot-air balloon
   { name: "balloon", target: new THREE.Vector3(10, 4, 6), camOffset: new THREE.Vector3(7, 5, 8) },
-  // Farm — animals + corn + tractor
-  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(10, 9, 12) },
+  // Farm — animals + corn + tractor. Vantage matches the angle
+  // a rider on the coaster (north-west, elevated) would have when
+  // looking south at the farm: camera sits north + slightly west
+  // of the farm, ~12 units up, peering down the long axis toward
+  // the farmhouse cluster.
+  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(-3, 12, -18) },
   // Golf course
   { name: "golf", target: new THREE.Vector3(-14, 2, 17), camOffset: new THREE.Vector3(10, 8, 12) },
 ];
@@ -5184,6 +5256,30 @@ function CameraRig({
   const dronePhaseStartRef = useRef(0);
   const dronePrevPosRef = useRef(new THREE.Vector3());
   const dronePrevTargetRef = useRef(new THREE.Vector3());
+  // Accumulated dwell-rotation angle. Integrated from a speed that
+  // eases up from 0 to DRONE_DWELL_ROT_SPEED, so the rotation never
+  // snaps into full speed (especially noticeable when resuming after
+  // a user-input pause).
+  const dwellAngleRef = useRef(0);
+  // Wall-clock timestamp (seconds) of the last user input. The drone
+  // tour stays paused until DRONE_INPUT_PAUSE_S have elapsed since
+  // this — meaning any click, drag, or wheel hands control back to
+  // the user for at least 10s before the drone resumes.
+  const lastInputTimeRef = useRef(0);
+
+  useEffect(() => {
+    const bump = () => {
+      lastInputTimeRef.current = performance.now() / 1000;
+    };
+    window.addEventListener("pointerdown", bump);
+    window.addEventListener("wheel", bump, { passive: true });
+    window.addEventListener("touchstart", bump, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", bump);
+      window.removeEventListener("wheel", bump);
+      window.removeEventListener("touchstart", bump);
+    };
+  }, []);
 
   useFrame((state, dt) => {
     const c = charRef.current;
@@ -5295,6 +5391,23 @@ function CameraRig({
         z: c.z + uz * 5.5,
       };
       camHijackedRef.current = true;
+    } else if (c.walking) {
+      // Close-follow cam while the user walks to a clickable event
+      // (building, gator, park, golf, balloon). Camera sits a few
+      // units behind the character relative to their walking
+      // direction, slightly above so the viewer sees the approach
+      // up-close. When the character arrives, one of the cinematic
+      // branches above takes over (gator/park/golf/balloon) or
+      // wantCam goes null and the camera holds at the doorway
+      // (buildings). Intentionally does NOT set camHijackedRef —
+      // walking is its own gate, separate from the post-event
+      // glide-back.
+      wantCam = {
+        x: c.x - Math.sin(c.angle) * 5.5,
+        y: 4,
+        z: c.z - Math.cos(c.angle) * 5.5,
+      };
+      camLerpSpeed = 3.5;
     } else if (camHijackedRef.current) {
       // Special mode just ended — glide the camera back to the default
       // plaza vantage. Once close enough, stop overriding so the user can
@@ -5319,8 +5432,15 @@ function CameraRig({
 
     if (controlsRef.current) {
       controlsRef.current.target.copy(targetVec);
+      const nowSec = performance.now() / 1000;
+      const userIdle =
+        !lastInputTimeRef.current ||
+        nowSec - lastInputTimeRef.current > DRONE_INPUT_PAUSE_S;
       const isIdle =
-        c.mode === "idle" && !c.walking && !camHijackedRef.current;
+        c.mode === "idle" &&
+        !c.walking &&
+        !camHijackedRef.current &&
+        userIdle;
       controlsRef.current.autoRotate = false;
       if (isIdle) {
         // ── Drone tour: fly between waypoints around the world ──
@@ -5357,12 +5477,19 @@ function CameraRig({
           if (progress >= 1) {
             droneStateRef.current = "dwelling";
             dronePhaseStartRef.current = now;
+            dwellAngleRef.current = 0;
           }
         } else {
           // Dwelling — slowly rotate the camera offset around the
           // target's Y axis. Keeps target steady so the section
-          // stays centred in frame.
-          const angle = elapsed * DRONE_DWELL_ROT_SPEED;
+          // stays centred in frame. Rotation speed eases from 0
+          // up to DRONE_DWELL_ROT_SPEED over DRONE_DWELL_RAMP_S so
+          // the motion never snaps in (matters especially when the
+          // drone resumes after the user-input pause).
+          const rampT = Math.min(1, elapsed / DRONE_DWELL_RAMP_S);
+          const eased = rampT * rampT * (3 - 2 * rampT);
+          dwellAngleRef.current += DRONE_DWELL_ROT_SPEED * eased * dt;
+          const angle = dwellAngleRef.current;
           const ox = wp.camOffset.x;
           const oy = wp.camOffset.y;
           const oz = wp.camOffset.z;
