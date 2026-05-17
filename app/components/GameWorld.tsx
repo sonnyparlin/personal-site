@@ -5681,8 +5681,12 @@ function Family({
       root.visible = true;
       const pos = familyMemberPos(f.t, m);
       root.position.set(pos.x, pos.y, pos.z);
-      // Face south (+Z) toward the camera-default-facing area
-      root.rotation.y = Math.PI;
+      // Face south (+Z) toward the camera. Wife/Son/Dog meshes all
+      // default-face +Z (see e.g. Dog's "model faces +Z" comment), so
+      // a rotation of 0 already points them at the camera vantage at
+      // (0, 20, 25). A previous Math.PI here spun them around to face
+      // away from the viewer.
+      root.rotation.y = 0;
 
       // Person: wave the waving arm at a per-member frequency and phase
       if (m.kind !== "dog") {
