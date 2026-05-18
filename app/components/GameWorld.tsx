@@ -5594,6 +5594,30 @@ function CameraRig({
           }
         }
       } else {
+        // The drone just released the camera (user clicked, or a
+        // cinematic mode kicked in). Two cases:
+        //   1. A walk was kicked off (the click hit a clickable mesh)
+        //      → snap the camera to the follow-cam position so the
+        //      user sees the character immediately instead of waiting
+        //      ~1s for the lerp to drag the camera across the map.
+        //   2. No walk started (the click missed any clickable mesh,
+        //      which is easy to do from the drone's unusual vantage)
+        //      → trigger the existing camHijacked glide-back so the
+        //      camera returns to CAM_DEFAULT, giving the user the
+        //      familiar plaza overview they can click from reliably.
+        if (droneActiveRef.current) {
+          if (c.walking) {
+            state.camera.position.set(
+              c.x - Math.sin(c.angle) * 5.5,
+              4,
+              c.z - Math.cos(c.angle) * 5.5
+            );
+            targetVec.set(c.x, 1, c.z);
+            controlsRef.current.target.copy(targetVec);
+          } else {
+            camHijackedRef.current = true;
+          }
+        }
         droneActiveRef.current = false;
       }
       controlsRef.current.update();
