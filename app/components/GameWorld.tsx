@@ -554,11 +554,11 @@ export default function GameWorld() {
   //     reset-view button while inside the academy.
   const camDefault = useMemo(() => {
     if (pathname === "/jiu-jitsu") {
-      // Straight-on view from near the south wall, looking north
-      // down the length of the gym at the character + banner wall.
+      // Straight-on view from just inside the south wall, looking
+      // north across the wide mat at the character + banner wall.
       // Centred on the x axis so the framing is symmetrical, like
       // a TV broadcast vantage of the academy.
-      return { x: 0, y: 3.5, z: -13 };
+      return { x: 0, y: 3.5, z: -9 };
     }
     return isMobile
       ? { x: 0, y: 26, z: 32 }
@@ -5568,6 +5568,20 @@ function CameraRig({
   useFrame((state, dt) => {
     const c = charRef.current;
 
+    // Per-route field of view. Indoors (academy) the portrait
+    // viewport at 45° FOV crops the wide rectangular room to just
+    // the centre 3-banner cluster, so widen to 65° so the full
+    // banner wall + kick pad reads in one frame. Outdoors 45° is
+    // the long-tuned default. Setting fov is a no-op when the
+    // value doesn't change; we still call updateProjectionMatrix
+    // unconditionally because Three.js doesn't track the change.
+    const wantFov = pathname === "/jiu-jitsu" ? 65 : 45;
+    const camAsPersp = state.camera as THREE.PerspectiveCamera;
+    if (camAsPersp.fov !== wantFov) {
+      camAsPersp.fov = wantFov;
+      camAsPersp.updateProjectionMatrix();
+    }
+
     // Clear the manual-override sticky bit when the character begins
     // a fresh walk (false→true edge on c.walking). That's the
     // explicit "user clicked something that started an event" signal
@@ -6354,8 +6368,8 @@ function Dog({
 // (which assume origin-centred world space) still work without
 // transformation. The character spawns at the entrance on
 // /jiu-jitsu (see pathname useEffect in GameWorld).
-const ACADEMY_W = 18; // east-west width (x extent ±9)
-const ACADEMY_L = 30; // north-south length (z extent ±15)
+const ACADEMY_W = 26; // east-west width (x extent ±13)
+const ACADEMY_L = 20; // north-south length (z extent ±10)
 const ACADEMY_H = 6; // wall height (ceiling at y=6)
 const ACADEMY_MAT_INSET = 1.2; // distance from wall to mat edge
 
@@ -6488,7 +6502,10 @@ function Academy({ onExit }: { onExit: () => void }) {
       {[
         { color: "#9a2424", x: -4.0 }, // Gracie red
         { color: "#1a3a72", x: -2.0 }, // US blue field abstraction
-        { color: "#e8e2d6", x: 0.0 }, // Built on Respect (white)
+        { color: "#b8b1a5", x: 0.0 }, // Built on Respect (light grey; the
+        //                              real one is white text on white but
+        //                              we tone it down so it doesn't blend
+        //                              with the wall)
         { color: "#1a8a3a", x: 2.0 }, // Brazil green
         { color: "#101012", x: 4.0 }, // Never Give Up (black)
       ].map((b, i) => (
