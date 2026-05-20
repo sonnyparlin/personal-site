@@ -450,15 +450,14 @@ export default function GameWorld() {
       let t = doorTarget(section);
       let faceAngle = Math.atan2(section.x - t.x, section.z - t.z);
       if (section.id === "jiu-jitsu") {
-        // Spawn at the centre of the mat so the SE-corner camera
-        // frames both the character AND the banner wall behind him
-        // in one shot. (Door is at the south wall; placing him at
-        // origin instead of just inside the door keeps the
-        // banners visible.)
+        // Spawn at the centre of the mat so the straight-on south
+        // camera frames the character + banner wall together.
         t = { x: 0, z: 0 };
-        // angle = 0 faces +Z (toward the back banner wall), which
-        // is the natural orientation when "just walked in."
-        faceAngle = 0;
+        // angle = π faces -Z (toward the south/door side of the
+        // room, which is where the camera sits). The body's
+        // V-lapel and belt knot then point at the viewer so we
+        // see Sonny's FRONT, not his back.
+        faceAngle = Math.PI;
       }
       charRef.current.x = t.x;
       charRef.current.z = t.z;
@@ -555,10 +554,11 @@ export default function GameWorld() {
   //     reset-view button while inside the academy.
   const camDefault = useMemo(() => {
     if (pathname === "/jiu-jitsu") {
-      // SE corner inside the room, head-height. Looking at the
-      // character (who spawns at room origin) frames him centrally
-      // with the banner wall + kick pad visible in the background.
-      return { x: 5, y: 3.5, z: -8 };
+      // Straight-on view from near the south wall, looking north
+      // down the length of the gym at the character + banner wall.
+      // Centred on the x axis so the framing is symmetrical, like
+      // a TV broadcast vantage of the academy.
+      return { x: 0, y: 3.5, z: -13 };
     }
     return isMobile
       ? { x: 0, y: 26, z: 32 }
@@ -5869,8 +5869,8 @@ function CameraRig({
       ref={controlsRef}
       enableDamping
       dampingFactor={0.08}
-      minDistance={isAcademy ? 3 : 4}
-      maxDistance={isAcademy ? 14 : 70}
+      minDistance={isAcademy ? 4 : 4}
+      maxDistance={isAcademy ? 20 : 70}
       minPolarAngle={Math.PI * (isAcademy ? 0.2 : 0.12)}
       maxPolarAngle={Math.PI * (isAcademy ? 0.5 : 0.48)}
       target={[0, 1, 0]}
@@ -6354,8 +6354,8 @@ function Dog({
 // (which assume origin-centred world space) still work without
 // transformation. The character spawns at the entrance on
 // /jiu-jitsu (see pathname useEffect in GameWorld).
-const ACADEMY_W = 14; // east-west width (x extent ±7)
-const ACADEMY_L = 22; // north-south length (z extent ±11)
+const ACADEMY_W = 18; // east-west width (x extent ±9)
+const ACADEMY_L = 30; // north-south length (z extent ±15)
 const ACADEMY_H = 6; // wall height (ceiling at y=6)
 const ACADEMY_MAT_INSET = 1.2; // distance from wall to mat edge
 
