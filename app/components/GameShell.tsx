@@ -4,10 +4,10 @@ import { usePathname } from "next/navigation";
 import GameWorld from "./GameWorld";
 import { getSectionByPath } from "@/app/lib/sections";
 
-// Custom event name CameraRig listens for. Decoupling via
-// window.dispatchEvent avoids prop-drilling a ref/callback from
-// GameShell through GameWorld → Scene → CameraRig just for this one
-// button.
+// Custom event names CameraRig + the router listen for. Decoupling
+// via window.dispatchEvent avoids prop-drilling a ref/callback from
+// GameShell through GameWorld → Scene → CameraRig just for these
+// little overlay buttons.
 const RESET_CAMERA_EVENT = "reset-camera";
 
 function ResetViewButton() {
@@ -55,14 +55,66 @@ function ResetViewButton() {
   );
 }
 
+// Exit-the-academy button shown only on /jiu-jitsu. Navigates back
+// to the plaza via plain anchor-style routing (Next.js intercepts
+// it). The 3D scene flips back to the plaza on the route change.
+function AcademyExitButton() {
+  return (
+    <a
+      href="/"
+      aria-label="Exit the academy and return to the plaza"
+      className="
+        absolute top-4 left-4 z-10
+        h-12 px-4
+        flex items-center gap-2
+        bg-black/60 hover:bg-black/80 active:bg-black/90
+        text-white text-sm uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        transition-colors
+        cursor-pointer
+        select-none
+      "
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+      <span>Exit</span>
+    </a>
+  );
+}
+
 export default function GameShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const section = getSectionByPath(pathname ?? "/");
+  // The jiu-jitsu route renders its content as a full 3D scene
+  // INSIDE the canvas (the academy interior), not as a 2D overlay.
+  // Skip the overlay container for it so canvas clicks still pass
+  // through, and add an exit-academy button instead.
+  const isAcademy = pathname === "/jiu-jitsu";
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1a1a2e]">
       <GameWorld />
-      {section ? (
+      {isAcademy ? (
+        <>
+          <AcademyExitButton />
+          <ResetViewButton />
+          <div className="hidden">{children}</div>
+        </>
+      ) : section ? (
         <div className="absolute inset-0 z-10 pointer-events-auto">
           {children}
         </div>

@@ -441,7 +441,25 @@ export default function GameWorld() {
   useEffect(() => {
     const section = getSectionByPath(pathname ?? "/");
     if (section) {
-      const t = doorTarget(section);
+      // JIU JITSU is unique — the route enters a separate 3D scene
+      // (the academy interior), so snap the character to the room's
+      // entrance instead of the exterior building's doorstep. The
+      // academy interior is centred at the world origin so its
+      // local coords are the same as the global ones; entry is at
+      // (0, z=-9) facing north into the room.
+      let t = doorTarget(section);
+      let faceAngle = Math.atan2(section.x - t.x, section.z - t.z);
+      if (section.id === "jiu-jitsu") {
+        // Spawn at the centre of the mat so the SE-corner camera
+        // frames both the character AND the banner wall behind him
+        // in one shot. (Door is at the south wall; placing him at
+        // origin instead of just inside the door keeps the
+        // banners visible.)
+        t = { x: 0, z: 0 };
+        // angle = 0 faces +Z (toward the back banner wall), which
+        // is the natural orientation when "just walked in."
+        faceAngle = 0;
+      }
       charRef.current.x = t.x;
       charRef.current.z = t.z;
       // HOME is special — Sonny just waved with the family at the
@@ -452,6 +470,8 @@ export default function GameWorld() {
       charRef.current.angle =
         section.id === "personal-life"
           ? 0
+          : section.id === "jiu-jitsu"
+          ? faceAngle
           : Math.atan2(section.x - t.x, section.z - t.z);
       charRef.current.walking = false;
       charRef.current.mode = "idle";
@@ -525,12 +545,25 @@ export default function GameWorld() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  // Mobile pulls the default vantage back ~30% on all three axes so
-  // the world fits in a narrow portrait viewport without losing
-  // peripheral context. Desktop keeps the original framing.
-  const camDefault = isMobile
-    ? { x: 0, y: 26, z: 32 }
-    : { x: 0, y: 20, z: 25 };
+  // Default vantage. Selected per-pathname AND per-device:
+  //   * Plaza route (/): mobile pulls back ~30% so the world fits a
+  //     narrow portrait viewport, desktop keeps the original framing.
+  //   * Academy route (/jiu-jitsu): corner-inside vantage so the
+  //     whole room is in frame from a natural sparring-spectator
+  //     angle. The glide-back logic in CameraRig pulls the camera
+  //     to this point when the user enters the route or taps the
+  //     reset-view button while inside the academy.
+  const camDefault = useMemo(() => {
+    if (pathname === "/jiu-jitsu") {
+      // SE corner inside the room, head-height. Looking at the
+      // character (who spawns at room origin) frames him centrally
+      // with the banner wall + kick pad visible in the background.
+      return { x: 5, y: 3.5, z: -8 };
+    }
+    return isMobile
+      ? { x: 0, y: 26, z: 32 }
+      : { x: 0, y: 20, z: 25 };
+  }, [pathname, isMobile]);
 
   return (
     <div className="w-full h-full">
@@ -1037,31 +1070,45 @@ function Scene({
   }
 
 
+  // The jiu-jitsu section is rendered as a separate 3D scene
+  // (interior of the academy) instead of an overlay. When pathname
+  // matches we swap the entire scene graph — the plaza meshes
+  // unmount, the academy meshes mount, the Character + CameraRig
+  // are shared between them.
+  const isAcademy = pathname === "/jiu-jitsu";
+
   return (
     <>
-      <Lights />
-      <Sky />
-      <Clouds />
-      <Ground />
-      <Plaza />
-      <Environment
-        gatorRef={refs.gator}
-        onGatorClick={handleGatorClick}
-        coasterRef={refs.coaster}
-        onParkClick={handleParkClick}
-        golfRef={refs.golf}
-        onGolfClick={handleGolfClick}
-        balloonRef={refs.balloon}
-        onBalloonClick={handleBalloonClick}
-      />
-      {SECTIONS.map((s) => (
-        <Building
-          key={s.id}
-          section={s}
-          doorsRef={refs.doors}
-          onSelect={() => handleBuildingClick(s)}
-        />
-      ))}
+      {isAcademy ? (
+        <Academy onExit={() => router.push("/")} />
+      ) : (
+        <>
+          <Lights />
+          <Sky />
+          <Clouds />
+          <Ground />
+          <Plaza />
+          <Environment
+            gatorRef={refs.gator}
+            onGatorClick={handleGatorClick}
+            coasterRef={refs.coaster}
+            onParkClick={handleParkClick}
+            golfRef={refs.golf}
+            onGolfClick={handleGolfClick}
+            balloonRef={refs.balloon}
+            onBalloonClick={handleBalloonClick}
+          />
+          {SECTIONS.map((s) => (
+            <Building
+              key={s.id}
+              section={s}
+              doorsRef={refs.doors}
+              onSelect={() => handleBuildingClick(s)}
+            />
+          ))}
+          <Family familyRef={refs.family} />
+        </>
+      )}
       <Suspense fallback={null}>
         <Character
           charRef={refs.char}
@@ -1069,7 +1116,6 @@ function Scene({
           balloonRef={refs.balloon}
         />
       </Suspense>
-      <Family familyRef={refs.family} />
       <CameraRig
         charRef={refs.char}
         gatorRef={refs.gator}
@@ -5507,6 +5553,18 @@ function CameraRig({
     };
   }, []);
 
+  // Glide the camera to its (new) default whenever the route
+  // changes scene (camDefault changes). Without this, exiting the
+  // academy would leave the camera stranded at the inside-the-room
+  // pose while the plaza renders, and entering would leave it at
+  // the plaza overview while inside the academy walls.
+  useEffect(() => {
+    manualOverrideRef.current = false;
+    droneActiveRef.current = false;
+    camHijackedRef.current = true;
+    lastInputTimeRef.current = performance.now() / 1000;
+  }, [camDefault.x, camDefault.y, camDefault.z]);
+
   useFrame((state, dt) => {
     const c = charRef.current;
 
@@ -5526,9 +5584,14 @@ function CameraRig({
     // framed. Otherwise the target glides back to the plaza.
     const isIdleForTarget =
       c.mode === "idle" && !c.walking && !camHijackedRef.current;
-    let wantTX = 0;
-    let wantTZ = 0;
-    let wantTY = 1;
+    // Default look-at point. Outdoors looks at the plaza origin.
+    // Indoors (academy) target the character's chest height so he's
+    // centred in frame from the corner vantage; the wider FOV
+    // surrounding the character still pulls in the banners + back
+    // wall + ceiling.
+    let wantTX = pathname === "/jiu-jitsu" ? c.x : 0;
+    let wantTZ = pathname === "/jiu-jitsu" ? c.z : 0;
+    let wantTY = pathname === "/jiu-jitsu" ? 1.5 : 1;
     if (c.mode === "golfing") {
       wantTX = GOLF_MIDPOINT.x;
       wantTZ = GOLF_MIDPOINT.z;
@@ -5686,11 +5749,16 @@ function CameraRig({
       const userIdle =
         !lastInputTimeRef.current ||
         nowSec - lastInputTimeRef.current > DRONE_INPUT_PAUSE_S;
+      // Drone tour only flies the plaza waypoints — disable it on
+      // any other route (especially the academy interior, where the
+      // waypoints would point at coordinates in the wrong scene).
+      const isOnHomeRoute = pathname === "/";
       const isIdle =
         c.mode === "idle" &&
         !c.walking &&
         !camHijackedRef.current &&
-        userIdle;
+        userIdle &&
+        isOnHomeRoute;
       controlsRef.current.autoRotate = false;
       if (isIdle) {
         // ── Drone tour: fly between waypoints around the world ──
@@ -5791,17 +5859,20 @@ function CameraRig({
   });
 
   // Suppress unused warning for prop kept for potential future use
-  void pathname;
+  // Indoors (academy) we tighten orbit constraints so the user can't
+  // pull the camera outside the walls or zoom in past the character.
+  // Outdoors the existing wide range stays for the whole-world view.
+  const isAcademy = pathname === "/jiu-jitsu";
 
   return (
     <OrbitControls
       ref={controlsRef}
       enableDamping
       dampingFactor={0.08}
-      minDistance={4}
-      maxDistance={70}
-      minPolarAngle={Math.PI * 0.12}
-      maxPolarAngle={Math.PI * 0.48}
+      minDistance={isAcademy ? 3 : 4}
+      maxDistance={isAcademy ? 14 : 70}
+      minPolarAngle={Math.PI * (isAcademy ? 0.2 : 0.12)}
+      maxPolarAngle={Math.PI * (isAcademy ? 0.5 : 0.48)}
       target={[0, 1, 0]}
       autoRotateSpeed={0.4}
     />
@@ -6271,6 +6342,225 @@ function Dog({
         <mesh key={i} position={[x, 0.1, z]} castShadow>
           <boxGeometry args={[0.08, 0.2, 0.1]} />
           <meshStandardMaterial color={furColor} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// -------------------- jiu-jitsu academy interior --------------------
+
+// Room is centred at the origin so the existing Character coords
+// (which assume origin-centred world space) still work without
+// transformation. The character spawns at the entrance on
+// /jiu-jitsu (see pathname useEffect in GameWorld).
+const ACADEMY_W = 14; // east-west width (x extent ±7)
+const ACADEMY_L = 22; // north-south length (z extent ±11)
+const ACADEMY_H = 6; // wall height (ceiling at y=6)
+const ACADEMY_MAT_INSET = 1.2; // distance from wall to mat edge
+
+// Door is on the south wall (-z), slightly off-centre so the
+// exterior building's door alignment carries over. Character snaps
+// to just inside this door on route entry.
+const ACADEMY_DOOR_W = 1.6;
+const ACADEMY_DOOR_H = 2.2;
+const ACADEMY_DOOR_Z = -ACADEMY_L / 2; // south wall
+const ACADEMY_ENTRY = { x: 0, z: -ACADEMY_L / 2 + 2 };
+
+function Academy({ onExit }: { onExit: () => void }) {
+  // Colours pulled from the user's reference photo.
+  const MAT_BLACK = "#1f1f23";
+  const TILE_GRAY = "#9a9893";
+  const WALL_WHITE = "#e8e2d6";
+  const CEILING_PANEL = "#dcd6cc";
+  const CEILING_LIGHT = "#fffceb";
+  const KICKPAD_BLACK = "#15151a";
+  const DOOR_FRAME = "#33312c";
+  const DOOR_GLASS = "#5a7388";
+
+  // Wall planes face INWARD (visible from inside the room only).
+  return (
+    <group>
+      {/* ── Lighting ──────────────────────────────────────────── */}
+      {/* Bright fluorescent feel — flat ambient + a few overhead
+          point lights distributed along the room so the mat reads
+          evenly. No directional sun light because we're indoors. */}
+      <ambientLight intensity={1.05} color="#f4f0e6" />
+      {[
+        [0, ACADEMY_H - 0.2, -7],
+        [0, ACADEMY_H - 0.2, 0],
+        [0, ACADEMY_H - 0.2, 7],
+      ].map(([x, y, z], i) => (
+        <pointLight
+          key={i}
+          position={[x, y, z]}
+          intensity={0.55}
+          distance={20}
+          decay={1.6}
+          color="#fffaeb"
+        />
+      ))}
+
+      {/* ── Floor ─────────────────────────────────────────────── */}
+      {/* Tile border: full room footprint */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[ACADEMY_W, ACADEMY_L]} />
+        <meshStandardMaterial color={TILE_GRAY} roughness={0.9} />
+      </mesh>
+      {/* Black training mat — inset from the walls so a tile border
+          shows around the edge (matches the photo). Pushed up
+          0.005 to avoid z-fighting with the tile floor. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.005, 0]}
+        receiveShadow
+      >
+        <planeGeometry
+          args={[
+            ACADEMY_W - ACADEMY_MAT_INSET * 2,
+            ACADEMY_L - ACADEMY_MAT_INSET * 2,
+          ]}
+        />
+        <meshStandardMaterial color={MAT_BLACK} roughness={1} />
+      </mesh>
+
+      {/* ── Walls ─────────────────────────────────────────────── */}
+      {/* East wall (+x), facing -x (inward) */}
+      <mesh position={[ACADEMY_W / 2, ACADEMY_H / 2, 0]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[ACADEMY_L, ACADEMY_H]} />
+        <meshStandardMaterial color={WALL_WHITE} roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      {/* West wall (-x), facing +x (inward) */}
+      <mesh position={[-ACADEMY_W / 2, ACADEMY_H / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[ACADEMY_L, ACADEMY_H]} />
+        <meshStandardMaterial color={WALL_WHITE} roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      {/* North wall (+z), the banner wall — see banners below */}
+      <mesh position={[0, ACADEMY_H / 2, ACADEMY_L / 2]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[ACADEMY_W, ACADEMY_H]} />
+        <meshStandardMaterial color={WALL_WHITE} roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      {/* South wall (-z), with a door opening */}
+      <mesh position={[0, ACADEMY_H / 2, ACADEMY_DOOR_Z]} rotation={[0, 0, 0]}>
+        <planeGeometry args={[ACADEMY_W, ACADEMY_H]} />
+        <meshStandardMaterial color={WALL_WHITE} roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+
+      {/* ── Ceiling + light panels ────────────────────────────── */}
+      <mesh
+        rotation={[Math.PI / 2, 0, 0]}
+        position={[0, ACADEMY_H, 0]}
+      >
+        <planeGeometry args={[ACADEMY_W, ACADEMY_L]} />
+        <meshStandardMaterial color={CEILING_PANEL} roughness={1} />
+      </mesh>
+      {/* Recessed light panels — bright emissive rectangles on the
+          ceiling matching the photo's fluorescent grid. */}
+      {[-7, -3.5, 0, 3.5, 7].map((cz) =>
+        [-3, 3].map((cx) => (
+          <mesh
+            key={`${cx},${cz}`}
+            rotation={[Math.PI / 2, 0, 0]}
+            position={[cx, ACADEMY_H - 0.005, cz]}
+          >
+            <planeGeometry args={[1.6, 0.9]} />
+            <meshBasicMaterial color={CEILING_LIGHT} toneMapped={false} />
+          </mesh>
+        ))
+      )}
+
+      {/* ── Kick pad along the north wall base ────────────────── */}
+      {/* Wide black padded section matching the photo's wall pad. */}
+      <mesh position={[0, 0.95, ACADEMY_L / 2 - 0.06]}>
+        <boxGeometry args={[ACADEMY_W - 1.5, 1.9, 0.12]} />
+        <meshStandardMaterial color={KICKPAD_BLACK} roughness={1} />
+      </mesh>
+
+      {/* ── Banner wall above the kick pad ────────────────────── */}
+      {/* Five banners stripe across the upper north wall. From left
+          to right (looking at the wall from inside the room):
+          Gracie-style red/gold, US flag, "Built on Respect" white,
+          Brazil flag, "NEVER GIVE UP" black. */}
+      {[
+        { color: "#9a2424", x: -4.0 }, // Gracie red
+        { color: "#1a3a72", x: -2.0 }, // US blue field abstraction
+        { color: "#e8e2d6", x: 0.0 }, // Built on Respect (white)
+        { color: "#1a8a3a", x: 2.0 }, // Brazil green
+        { color: "#101012", x: 4.0 }, // Never Give Up (black)
+      ].map((b, i) => (
+        <mesh
+          key={i}
+          position={[b.x, 3.5, ACADEMY_L / 2 - 0.08]}
+        >
+          <planeGeometry args={[1.5, 1.6]} />
+          <meshStandardMaterial color={b.color} roughness={0.85} side={THREE.DoubleSide} />
+        </mesh>
+      ))}
+      {/* Subtle red horizontal stripe on the US "flag" so it reads
+          as a flag, not just a blue rectangle. */}
+      <mesh position={[-2.0, 3.2, ACADEMY_L / 2 - 0.07]}>
+        <planeGeometry args={[1.5, 0.18]} />
+        <meshBasicMaterial color="#b03030" toneMapped={false} />
+      </mesh>
+      {/* Yellow rhombus on the Brazil "flag" centre. */}
+      <mesh position={[2.0, 3.5, ACADEMY_L / 2 - 0.07]} rotation={[0, 0, Math.PI / 4]}>
+        <planeGeometry args={[0.9, 0.9]} />
+        <meshBasicMaterial color="#fbd34c" toneMapped={false} />
+      </mesh>
+
+      {/* ── Door on the south wall — clickable to exit ────────── */}
+      <group position={[0, 0, ACADEMY_DOOR_Z + 0.01]}>
+        {/* Frame */}
+        <mesh position={[0, ACADEMY_DOOR_H / 2, 0]}>
+          <boxGeometry args={[ACADEMY_DOOR_W + 0.18, ACADEMY_DOOR_H + 0.18, 0.06]} />
+          <meshStandardMaterial color={DOOR_FRAME} roughness={0.7} />
+        </mesh>
+        {/* Glass/door — clickable. Click anywhere on it triggers
+            navigation back to /. */}
+        <mesh
+          position={[0, ACADEMY_DOOR_H / 2, 0.04]}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExit();
+          }}
+          onPointerOver={(e) => {
+            document.body.style.cursor = "pointer";
+            e.stopPropagation();
+          }}
+          onPointerOut={() => {
+            document.body.style.cursor = "auto";
+          }}
+        >
+          <boxGeometry args={[ACADEMY_DOOR_W, ACADEMY_DOOR_H, 0.04]} />
+          <meshStandardMaterial
+            color={DOOR_GLASS}
+            roughness={0.25}
+            metalness={0.1}
+          />
+        </mesh>
+        {/* Door handle */}
+        <mesh position={[ACADEMY_DOOR_W / 2 - 0.18, ACADEMY_DOOR_H / 2 - 0.1, 0.08]}>
+          <sphereGeometry args={[0.06, 8, 6]} />
+          <meshStandardMaterial color="#c2b59a" metalness={0.6} roughness={0.4} />
+        </mesh>
+      </group>
+
+      {/* ── Sandals lined up at the mat edge ──────────────────── */}
+      {/* A signature jiu-jitsu detail — couple of pairs along the
+          south mat edge (the user's reference photo has flip-flops
+          right where students step off the mat). */}
+      {[-3.2, -2.7, -1.6, -1.1, 1.4, 1.9, 2.8, 3.3].map((sx, i) => (
+        <mesh
+          key={i}
+          position={[sx, 0.04, -ACADEMY_L / 2 + ACADEMY_MAT_INSET - 0.35]}
+          rotation={[0, ((i % 2) * Math.PI) / 18 - Math.PI / 36, 0]}
+        >
+          <boxGeometry args={[0.18, 0.05, 0.42]} />
+          <meshStandardMaterial color={i % 2 === 0 ? "#2a2a2e" : "#3a342a"} roughness={1} />
         </mesh>
       ))}
     </group>
