@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, Suspense, useEffect, useMemo, useRef } from "react";
+import { forwardRef, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text, useTexture } from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
@@ -510,17 +510,55 @@ export default function GameWorld() {
 
   const isOnHome = (pathname ?? "/") === "/";
 
+  // Mobile detection — coarse pointer is the cleanest "this is a
+  // touch device" check; matches phones and most tablets, doesn't
+  // misfire on touch-screen laptops with a mouse plugged in. SSR-safe
+  // because the initial render uses `false` and the effect upgrades
+  // to the real value once the window is available.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    setIsMobile(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // Mobile pulls the default vantage back ~30% on all three axes so
+  // the world fits in a narrow portrait viewport without losing
+  // peripheral context. Desktop keeps the original framing.
+  const camDefault = isMobile
+    ? { x: 0, y: 26, z: 32 }
+    : { x: 0, y: 20, z: 25 };
+
   return (
     <div className="w-full h-full">
       <Canvas
         shadows
-        camera={{ position: [0, 20, 25], fov: 45, near: 0.1, far: 250 }}
+        camera={{
+          position: [camDefault.x, camDefault.y, camDefault.z],
+          fov: 45,
+          near: 0.1,
+          far: 250,
+        }}
+        // Cap device pixel ratio on mobile — phones often report DPR=3,
+        // which triples the pixels GL has to fill for the same visual
+        // size. Clamping to 1.5 is invisible on small screens but
+        // doubles real framerate on weaker GPUs.
+        dpr={isMobile ? [1, 1.5] : [1, 2]}
         gl={{ antialias: true }}
       >
 
         <color attach="background" args={["#1a1a2e"]} />
         <fog attach="fog" args={["#7fa8c8", 45, 95]} />
-        <Scene refs={refs} router={router} isOnHome={isOnHome} pathname={pathname ?? "/"} />
+        <Scene
+          refs={refs}
+          router={router}
+          isOnHome={isOnHome}
+          pathname={pathname ?? "/"}
+          camDefault={camDefault}
+        />
       </Canvas>
     </div>
   );
@@ -535,11 +573,13 @@ function Scene({
   router,
   isOnHome,
   pathname,
+  camDefault,
 }: {
   refs: SharedRefs;
   router: RouterLike;
   isOnHome: boolean;
   pathname: string;
+  camDefault: { x: number; y: number; z: number };
 }) {
   // Game tick — runs every frame
   useFrame((_, dt) => {
@@ -1030,7 +1070,12 @@ function Scene({
         />
       </Suspense>
       <Family familyRef={refs.family} />
-      <CameraRig charRef={refs.char} gatorRef={refs.gator} pathname={pathname} />
+      <CameraRig
+        charRef={refs.char}
+        gatorRef={refs.gator}
+        pathname={pathname}
+        camDefault={camDefault}
+      />
     </>
   );
 }
@@ -5264,9 +5309,11 @@ function Character({
 
 // -------------------- camera --------------------
 
-// Default plaza vantage — matches the Canvas's initial camera position so the
-// "glide back" after a cinematic mode lands exactly where the user expects.
-const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
+// The default plaza vantage is no longer a module-level constant —
+// it's selected per device in GameWorld (desktop: 0,20,25; mobile:
+// 0,26,32) and threaded through Scene → CameraRig as the camDefault
+// prop. The glide-back after a cinematic mode uses that prop so it
+// lands exactly where the Canvas's initial camera position is set.
 
 // ── Drone tour ─────────────────────────────────────────────────────
 // When the user is idle for a moment, the camera flies between named
@@ -5275,16 +5322,23 @@ const CAM_DEFAULT = { x: 0, y: 20, z: 25 };
 // waypoint has a `target` (what the camera looks at) and a
 // `camOffset` (initial position relative to target — the rotation
 // during dwell sweeps this offset around the target's Y axis).
-const DRONE_TRANSITION_S = 2.5;
-const DRONE_DWELL_S = 7.0;
-const DRONE_DWELL_ROT_SPEED = 0.18; // radians per second
+// Two speed presets for the drone tour. First time through after a
+// page load the camera moves briskly — a ~25s "preview sweep" that
+// shows the visitor the whole world before settling. After the first
+// full lap the values drop to the SLOW set, turning the tour into
+// slow ambient wallpaper. CameraRig picks between them via
+// firstCycleDoneRef.
+const DRONE_TRANSITION_S_FAST = 0.6;
+const DRONE_DWELL_S_FAST = 1.2;
+const DRONE_DWELL_ROT_SPEED_FAST = 0.3; // radians per second
+const DRONE_DWELL_RAMP_S_FAST = 0.2;
+const DRONE_TRANSITION_S_SLOW = 3.0;
+const DRONE_DWELL_S_SLOW = 9.0;
+const DRONE_DWELL_ROT_SPEED_SLOW = 0.14;
+const DRONE_DWELL_RAMP_S_SLOW = 1.5;
 // Any pointer/wheel/touch input pauses the drone for this long, so
 // the user can take over the camera and look around freely.
 const DRONE_INPUT_PAUSE_S = 10;
-// When the drone resumes (or enters a fresh dwell phase), the rotation
-// speed eases from 0 up to DRONE_DWELL_ROT_SPEED over this duration —
-// no sudden snap into motion after the pause.
-const DRONE_DWELL_RAMP_S = 1.5;
 const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector3 }[] = [
   // Plaza overview — buildings + character on the central plaza
   { name: "plaza", target: new THREE.Vector3(0, 2, 0), camOffset: new THREE.Vector3(0, 12, 16) },
@@ -5318,10 +5372,12 @@ function CameraRig({
   charRef,
   gatorRef,
   pathname,
+  camDefault,
 }: {
   charRef: React.MutableRefObject<CharState>;
   gatorRef: React.MutableRefObject<GatorState>;
   pathname: string;
+  camDefault: { x: number; y: number; z: number };
 }) {
   const targetVec = useMemo(() => new THREE.Vector3(0, 1, 0), []);
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
@@ -5354,6 +5410,13 @@ function CameraRig({
   const dronePhaseStartRef = useRef(0);
   const dronePrevPosRef = useRef(new THREE.Vector3());
   const dronePrevTargetRef = useRef(new THREE.Vector3());
+  // Tracks whether the drone tour has completed at least one full
+  // lap. First lap uses the FAST preset (~25s total — a brisk
+  // preview sweep that shows the visitor the whole world). After
+  // that, the tour drops to the SLOW preset (~72s/lap) so it
+  // becomes ambient wallpaper instead of demanding attention.
+  // Persists for the session (only reset by a page reload).
+  const firstCycleDoneRef = useRef(false);
   // Accumulated dwell-rotation angle. Integrated from a speed that
   // eases up from 0 to DRONE_DWELL_ROT_SPEED, so the rotation never
   // snaps into full speed (especially noticeable when resuming after
@@ -5420,10 +5483,23 @@ function CameraRig({
       controls.addEventListener("start", onDragStart);
       controls.addEventListener("end", onDragEnd);
     }
+
+    // Reset-view button (rendered by GameShell) dispatches this
+    // custom event when clicked. We listen on window to keep
+    // CameraRig decoupled from GameShell's component tree.
+    const onResetCamera = () => {
+      manualOverrideRef.current = false;
+      droneActiveRef.current = false;
+      camHijackedRef.current = true; // triggers glide-back to camDefault
+      lastInputTimeRef.current = performance.now() / 1000;
+    };
+    window.addEventListener("reset-camera", onResetCamera);
+
     return () => {
       window.removeEventListener("pointerdown", bump);
       window.removeEventListener("wheel", bump);
       window.removeEventListener("touchstart", bump);
+      window.removeEventListener("reset-camera", onResetCamera);
       if (controls) {
         controls.removeEventListener("start", onDragStart);
         controls.removeEventListener("end", onDragEnd);
@@ -5570,13 +5646,14 @@ function CameraRig({
     } else if (camHijackedRef.current) {
       // Special mode just ended — glide the camera back to the default
       // plaza vantage. Once close enough, stop overriding so the user can
-      // freely orbit again.
-      wantCam = CAM_DEFAULT;
+      // freely orbit again. (camDefault swaps between desktop and mobile
+      // framings — see GameWorld isMobile detect.)
+      wantCam = camDefault;
       camLerpSpeed = 1.4;
       const cam = state.camera;
-      const dx = cam.position.x - CAM_DEFAULT.x;
-      const dy = cam.position.y - CAM_DEFAULT.y;
-      const dz = cam.position.z - CAM_DEFAULT.z;
+      const dx = cam.position.x - camDefault.x;
+      const dy = cam.position.y - camDefault.y;
+      const dz = cam.position.z - camDefault.z;
       if (Math.hypot(dx, dy, dz) < 0.5) {
         camHijackedRef.current = false;
       }
@@ -5636,8 +5713,21 @@ function CameraRig({
         const now = state.clock.elapsedTime;
         const elapsed = now - dronePhaseStartRef.current;
         const wp = DRONE_TOUR[droneIdxRef.current];
+        // Pick speed preset based on whether we've finished a lap.
+        const transitionS = firstCycleDoneRef.current
+          ? DRONE_TRANSITION_S_SLOW
+          : DRONE_TRANSITION_S_FAST;
+        const dwellS = firstCycleDoneRef.current
+          ? DRONE_DWELL_S_SLOW
+          : DRONE_DWELL_S_FAST;
+        const dwellRotSpeed = firstCycleDoneRef.current
+          ? DRONE_DWELL_ROT_SPEED_SLOW
+          : DRONE_DWELL_ROT_SPEED_FAST;
+        const dwellRampS = firstCycleDoneRef.current
+          ? DRONE_DWELL_RAMP_S_SLOW
+          : DRONE_DWELL_RAMP_S_FAST;
         if (droneStateRef.current === "transitioning") {
-          const progress = Math.min(1, elapsed / DRONE_TRANSITION_S);
+          const progress = Math.min(1, elapsed / transitionS);
           // Cubic smoothstep — fast in the middle, soft at the ends.
           const eased = progress * progress * (3 - 2 * progress);
           const targetCamPos = wp.target.clone().add(wp.camOffset);
@@ -5656,12 +5746,12 @@ function CameraRig({
           // Dwelling — slowly rotate the camera offset around the
           // target's Y axis. Keeps target steady so the section
           // stays centred in frame. Rotation speed eases from 0
-          // up to DRONE_DWELL_ROT_SPEED over DRONE_DWELL_RAMP_S so
-          // the motion never snaps in (matters especially when the
-          // drone resumes after the user-input pause).
-          const rampT = Math.min(1, elapsed / DRONE_DWELL_RAMP_S);
+          // up to dwellRotSpeed over dwellRampS so the motion
+          // never snaps in (matters especially when the drone
+          // resumes after the user-input pause).
+          const rampT = Math.min(1, elapsed / dwellRampS);
           const eased = rampT * rampT * (3 - 2 * rampT);
-          dwellAngleRef.current += DRONE_DWELL_ROT_SPEED * eased * dt;
+          dwellAngleRef.current += dwellRotSpeed * eased * dt;
           const angle = dwellAngleRef.current;
           const ox = wp.camOffset.x;
           const oy = wp.camOffset.y;
@@ -5674,13 +5764,17 @@ function CameraRig({
             wp.target.z + rotZ
           );
           controlsRef.current.target.copy(wp.target);
-          if (elapsed > DRONE_DWELL_S) {
+          if (elapsed > dwellS) {
             // End of dwell — seed prev for the next transition and
             // advance to the next waypoint (wrap around the loop).
             dronePrevPosRef.current.copy(state.camera.position);
             dronePrevTargetRef.current.copy(wp.target);
-            droneIdxRef.current =
+            const nextIdx =
               (droneIdxRef.current + 1) % DRONE_TOUR.length;
+            // We just finished the LAST waypoint of the lap — flip
+            // to slow preset for all subsequent laps.
+            if (nextIdx === 0) firstCycleDoneRef.current = true;
+            droneIdxRef.current = nextIdx;
             droneStateRef.current = "transitioning";
             dronePhaseStartRef.current = now;
           }
