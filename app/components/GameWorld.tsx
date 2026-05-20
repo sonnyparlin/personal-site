@@ -1080,7 +1080,9 @@ function Scene({
   return (
     <>
       {isAcademy ? (
-        <Academy onExit={() => router.push("/")} />
+        <Suspense fallback={null}>
+          <Academy onExit={() => router.push("/")} />
+        </Suspense>
       ) : (
         <>
           <Lights />
@@ -6392,6 +6394,11 @@ function Academy({ onExit }: { onExit: () => void }) {
   const DOOR_FRAME = "#33312c";
   const DOOR_GLASS = "#5a7388";
 
+  // Photo banner of Helio Gracie in front of the Federação de
+  // Jiu-Jitsu da Guanabara flag — hung as the centerpiece banner.
+  const helioTex = useTexture("/helio.jpg");
+  helioTex.colorSpace = THREE.SRGBColorSpace;
+
   // Wall planes face INWARD (visible from inside the room only).
   return (
     <group>
@@ -6497,15 +6504,11 @@ function Academy({ onExit }: { onExit: () => void }) {
       {/* ── Banner wall above the kick pad ────────────────────── */}
       {/* Five banners stripe across the upper north wall. From left
           to right (looking at the wall from inside the room):
-          Gracie-style red/gold, US flag, "Built on Respect" white,
+          Gracie-style red, US flag, Helio Gracie photo (centerpiece),
           Brazil flag, "NEVER GIVE UP" black. */}
       {[
         { color: "#9a2424", x: -4.0 }, // Gracie red
         { color: "#1a3a72", x: -2.0 }, // US blue field abstraction
-        { color: "#b8b1a5", x: 0.0 }, // Built on Respect (light grey; the
-        //                              real one is white text on white but
-        //                              we tone it down so it doesn't blend
-        //                              with the wall)
         { color: "#1a8a3a", x: 2.0 }, // Brazil green
         { color: "#101012", x: 4.0 }, // Never Give Up (black)
       ].map((b, i) => (
@@ -6517,6 +6520,12 @@ function Academy({ onExit }: { onExit: () => void }) {
           <meshStandardMaterial color={b.color} roughness={0.85} side={THREE.DoubleSide} />
         </mesh>
       ))}
+      {/* Helio Gracie centerpiece — slightly taller (2u) to match the
+          portrait photo's 0.75 aspect without squishing his face. */}
+      <mesh position={[0, 3.5, ACADEMY_L / 2 - 0.08]}>
+        <planeGeometry args={[1.5, 2.0]} />
+        <meshBasicMaterial map={helioTex} toneMapped={false} side={THREE.DoubleSide} />
+      </mesh>
       {/* Subtle red horizontal stripe on the US "flag" so it reads
           as a flag, not just a blue rectangle. */}
       <mesh position={[-2.0, 3.2, ACADEMY_L / 2 - 0.07]}>
