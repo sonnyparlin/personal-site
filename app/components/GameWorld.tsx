@@ -4805,7 +4805,10 @@ const TATTOO = "#0a1838";
 const GI = "#f4f1de";
 const GI_SHADE = "#d6cfb0";
 const BELT = "#0a0a0a";
-const FOOT = "#1a1a1a";
+// Bare feet — skin tone so they read against both the green grass
+// on the plaza and the black mat in the academy. (Previously
+// "#1a1a1a" which vanished against the dark mat.)
+const FOOT = SKIN;
 const EYE = "#1a1a1a";
 
 // FaceBillboard — a textured plane displaying Sonny's actual face photo.
@@ -5239,8 +5242,12 @@ function Character({
             old bald head was. FaceBillboard manages its own rotation
             internally: billboards to the camera most of the time, but
             locks to body rotation while riding the coaster so the face
-            points down the track. */}
-        <group position={[0, 1.45, 0]}>
+            points down the track.
+
+            Y was bumped 1.45 → 1.60 so the bottom of the face plane
+            clears the gi collar — the beard is in the lower ~30% of
+            the photo, and the old position put it under the lapels. */}
+        <group position={[0, 1.6, 0]}>
           <FaceBillboard charRef={charRef} balloonRef={balloonRef} />
         </group>
 
@@ -6383,6 +6390,166 @@ const ACADEMY_DOOR_H = 2.2;
 const ACADEMY_DOOR_Z = -ACADEMY_L / 2; // south wall
 const ACADEMY_ENTRY = { x: 0, z: -ACADEMY_L / 2 + 2 };
 
+// Brown belt color used by training partners standing on the mat
+// with the player character. Warm BJJ brown, matches typical IBJJF
+// brown belt color.
+const BROWN_BELT = "#6b4226";
+
+// PartnerFace — billboarded photo plane for the training partner's
+// head. Same trick as FaceBillboard: aim the plane's local -Z away
+// from the camera so the textured +Z side ends up facing it.
+function PartnerFace({ src, size = 0.85 }: { src: string; size?: number }) {
+  const tex = useTexture(src);
+  // sRGB so the photo's colors render correctly (not washed out as
+  // if it were a linear-color data texture).
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const meshRef = useRef<THREE.Mesh>(null);
+  const meshWorld = useMemo(() => new THREE.Vector3(), []);
+  const lookTarget = useMemo(() => new THREE.Vector3(), []);
+  useFrame((state) => {
+    const m = meshRef.current;
+    if (!m) return;
+    m.getWorldPosition(meshWorld);
+    lookTarget.copy(meshWorld).multiplyScalar(2).sub(state.camera.position);
+    m.lookAt(lookTarget);
+  });
+  // kate.png is 288×332 (aspect 0.867) — keep the plane in that
+  // aspect so her hair / face don't squish. Width = `size`,
+  // height derived.
+  const h = size / 0.867;
+  return (
+    <mesh ref={meshRef}>
+      <planeGeometry args={[size, h]} />
+      <meshBasicMaterial
+        map={tex}
+        transparent
+        toneMapped={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+// TrainingPartner — a static figure standing on the academy mat
+// next to the player character. Same gi style as the Character
+// component but slimmer, no tattoos, no exposed chest-V (closed
+// kimono), and a configurable belt color. Face is a billboard
+// photo plane (see PartnerFace).
+function TrainingPartner({
+  position,
+  beltColor = BROWN_BELT,
+  faceSrc,
+}: {
+  position: [number, number, number];
+  beltColor?: string;
+  faceSrc: string;
+}) {
+  // Body-local +Z is the front of the body. Group is rotated by π
+  // around Y so the body faces world -Z (south, toward the camera
+  // at the default academy vantage). Lapels / belt ends are placed
+  // at local +Z (positive) so they render on the camera-facing side
+  // after the rotation flips +Z to world -Z.
+  return (
+    <group position={position} rotation={[0, Math.PI, 0]}>
+      {/* Torso (gi top) — slightly slimmer than Sonny's 0.55 */}
+      <mesh position={[0, 1.0, 0]} castShadow>
+        <boxGeometry args={[0.48, 0.55, 0.30]} />
+        <meshStandardMaterial color={GI} />
+      </mesh>
+      {/* Closed kimono — two crossed lapels, no exposed skin V.
+          Left lapel sits behind the right at the waist so the right
+          lapel visibly overlaps. */}
+      <mesh position={[-0.09, 1.04, 0.155]} rotation={[0, 0, 0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
+      </mesh>
+      <mesh position={[0.09, 1.04, 0.158]} rotation={[0, 0, -0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
+      </mesh>
+      {/* Dark piping along the inner edge of each lapel. */}
+      <mesh position={[-0.05, 1.06, 0.172]} rotation={[0, 0, 0.4]}>
+        <boxGeometry args={[0.016, 0.46, 0.005]} />
+        <meshStandardMaterial color="#9c9580" />
+      </mesh>
+      <mesh position={[0.05, 1.06, 0.175]} rotation={[0, 0, -0.4]}>
+        <boxGeometry args={[0.016, 0.46, 0.005]} />
+        <meshStandardMaterial color="#9c9580" />
+      </mesh>
+
+      {/* Belt */}
+      <mesh position={[0, 0.71, 0]} castShadow>
+        <boxGeometry args={[0.51, 0.10, 0.32]} />
+        <meshStandardMaterial color={beltColor} />
+      </mesh>
+      {/* Belt knot */}
+      <mesh position={[0, 0.71, 0.17]} castShadow>
+        <boxGeometry args={[0.10, 0.13, 0.05]} />
+        <meshStandardMaterial color={beltColor} />
+      </mesh>
+      {/* Belt ends */}
+      <mesh position={[-0.025, 0.55, 0.183]} rotation={[0, 0, 0.08]}>
+        <boxGeometry args={[0.045, 0.20, 0.02]} />
+        <meshStandardMaterial color={beltColor} />
+      </mesh>
+      <mesh position={[0.04, 0.56, 0.183]} rotation={[0, 0, -0.15]}>
+        <boxGeometry args={[0.045, 0.18, 0.02]} />
+        <meshStandardMaterial color={beltColor} />
+      </mesh>
+
+      {/* Arms — hanging at sides, no swing. Slimmer than Sonny. */}
+      <group position={[-0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group position={[0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Legs — gi pants + bare feet (no shoes on the mat). */}
+      <group position={[-0.12, 0.66, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group position={[0.12, 0.66, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Head — photo billboard. Plane rotation is managed inside
+          PartnerFace so the photo always faces the camera. */}
+      <group position={[0, 1.45, 0]}>
+        <PartnerFace src={faceSrc} size={0.85} />
+      </group>
+    </group>
+  );
+}
+
 function Academy({ onExit }: { onExit: () => void }) {
   // Colours pulled from the user's reference photo.
   const MAT_BLACK = "#1f1f23";
@@ -6574,6 +6741,16 @@ function Academy({ onExit }: { onExit: () => void }) {
           <meshStandardMaterial color="#c2b59a" metalness={0.6} roughness={0.4} />
         </mesh>
       </group>
+
+      {/* ── Training partner — Kate, brown belt ─────────────────── */}
+      {/* Stands on the mat just to Sonny's right side. Sonny spawns
+          at (0, 0) facing south; with his body-local +X (right hand)
+          mapping to world -X after his π rotation, placing her at
+          x=-1.4 puts her on his right. From the academy default
+          vantage (camera at z=-9 looking north), world -X displays
+          on the camera's right side of frame, so she also reads as
+          right-of-Sonny in the broadcast composition. */}
+      <TrainingPartner position={[-1.4, 0, 0]} faceSrc="/kate.png" />
 
       {/* ── Sandals lined up at the mat edge ──────────────────── */}
       {/* A signature jiu-jitsu detail — couple of pairs along the
