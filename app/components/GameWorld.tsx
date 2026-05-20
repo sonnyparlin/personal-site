@@ -5329,6 +5329,23 @@ function CameraRig({
   // entry to riding/golfing; cleared once the camera has glided back close
   // to CAM_DEFAULT. Used so the post-ride walk-back gets a camera return.
   const camHijackedRef = useRef(false);
+  // True while the user is actively dragging OrbitControls (mousedown
+  // → mouseup with movement, or pinch-zoom on touch). Wired via the
+  // OrbitControls 'start'/'end' events on mount.
+  const userDraggingRef = useRef(false);
+  // Sticky version of userDragging: set to true on drag start, stays
+  // true after release so the follow-cam doesn't snap the camera back
+  // to its tracking position the instant the user lets go. Cleared
+  // when a fresh click fires (pointerdown listener), since clicking
+  // on a new event is a clear signal the user wants the auto-camera
+  // back. Especially important during the walk-back after an event
+  // — the user gets to keep whatever vantage they dragged to instead
+  // of fighting the follow-cam pulling it back every frame.
+  const manualOverrideRef = useRef(false);
+  // Previous frame's c.walking, used to detect the false→true edge
+  // that clears manualOverrideRef (= the user clicked something and
+  // started a fresh walk-to-event, so they want the follow-cam back).
+  const prevWalkingRef = useRef(false);
 
   // Drone tour state (idle waypoint-by-waypoint world tour).
   const droneActiveRef = useRef(false);
@@ -5349,21 +5366,82 @@ function CameraRig({
   const lastInputTimeRef = useRef(0);
 
   useEffect(() => {
-    const bump = () => {
+    const bump = (e: Event) => {
       lastInputTimeRef.current = performance.now() / 1000;
+      // CRITICAL for click reliability during drone tour: only handle
+      // pointerdown here (wheel/touchstart go to the simple stamp).
+      // R3F's onClick requires pointerdown and pointerup raycasts to
+      // land on the same mesh; if the camera shifts between them
+      // (drone motion, or OrbitControls damping continuing to apply
+      // a residual delta from the drone's recent position writes),
+      // the raycasts can hit different meshes and onClick silently
+      // fails. Visible symptom is "sometimes the click works,
+      // sometimes it doesn't" — variability comes from where in the
+      // transition/dwell cycle the click landed.
+      //
+      // Fix: on pointerdown, halt the drone IMMEDIATELY (don't wait
+      // for the next useFrame), flush any pending damping, and arm
+      // the camHijacked glide so the camera will recover to
+      // CAM_DEFAULT if the click misses. If the click hits and
+      // starts a walk, the follow-cam wantCam branch takes
+      // precedence over the glide-back (see wantCam if/else chain
+      // in useFrame below).
+      if (e.type === "pointerdown") {
+        droneActiveRef.current = false;
+        camHijackedRef.current = true;
+        if (controlsRef.current) controlsRef.current.update();
+        // Note: manualOverrideRef is NOT cleared here. The window
+        // pointerdown listener bubbles AFTER OrbitControls fires its
+        // 'start' (which sets manualOverrideRef = true), so clearing
+        // here would erase the user's drag intent every time. Instead
+        // manualOverrideRef is cleared in useFrame on the
+        // c.walking false→true edge (i.e. a click that started a
+        // new walk-to-event — a clearer "user wants auto-cam back"
+        // signal than just any pointerdown).
+      }
     };
     window.addEventListener("pointerdown", bump);
     window.addEventListener("wheel", bump, { passive: true });
     window.addEventListener("touchstart", bump, { passive: true });
+
+    // Track active manipulation so the wantCam chain yields to the
+    // user during drags. OrbitControls dispatches 'start' on the
+    // first pointer/wheel input that actually moves the camera and
+    // 'end' when it stops.
+    const onDragStart = () => {
+      userDraggingRef.current = true;
+      manualOverrideRef.current = true;
+    };
+    const onDragEnd = () => {
+      userDraggingRef.current = false;
+    };
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.addEventListener("start", onDragStart);
+      controls.addEventListener("end", onDragEnd);
+    }
     return () => {
       window.removeEventListener("pointerdown", bump);
       window.removeEventListener("wheel", bump);
       window.removeEventListener("touchstart", bump);
+      if (controls) {
+        controls.removeEventListener("start", onDragStart);
+        controls.removeEventListener("end", onDragEnd);
+      }
     };
   }, []);
 
   useFrame((state, dt) => {
     const c = charRef.current;
+
+    // Clear the manual-override sticky bit when the character begins
+    // a fresh walk (false→true edge on c.walking). That's the
+    // explicit "user clicked something that started an event" signal
+    // — past drag-overrides should give way to the follow-cam now.
+    if (c.walking && !prevWalkingRef.current) {
+      manualOverrideRef.current = false;
+    }
+    prevWalkingRef.current = c.walking;
 
     // ── Target ────────────────────────────────────────────────────────────
     // OrbitControls .target lerps toward the character whenever they're
@@ -5503,7 +5581,15 @@ function CameraRig({
         camHijackedRef.current = false;
       }
     }
-    if (wantCam) {
+    if (wantCam && !manualOverrideRef.current) {
+      // Skip the wantCam lerp while the user has manually taken over
+      // the camera (any drag this session, until the next click).
+      // Otherwise the follow-cam / glide-back fights the user's input
+      // every frame and the camera snaps back the instant they
+      // release the mouse mid-drag. Most painful during the walk-
+      // back after an event (gator chase, coaster ride, golf,
+      // balloon ride) where the user expects to be able to look
+      // around the world while Sonny walks home.
       const cam = state.camera;
       const k = Math.min(1, dt * camLerpSpeed);
       cam.position.x += (wantCam.x - cam.position.x) * k;
@@ -5512,7 +5598,13 @@ function CameraRig({
     }
 
     if (controlsRef.current) {
-      controlsRef.current.target.copy(targetVec);
+      // Don't overwrite the user's drag-controlled target once they've
+      // taken over manually — otherwise pan input is erased each frame
+      // by the targetVec lerp and the target snaps back as soon as the
+      // wantCam recovery resumes.
+      if (!manualOverrideRef.current) {
+        controlsRef.current.target.copy(targetVec);
+      }
       const nowSec = performance.now() / 1000;
       const userIdle =
         !lastInputTimeRef.current ||
@@ -5594,30 +5686,10 @@ function CameraRig({
           }
         }
       } else {
-        // The drone just released the camera (user clicked, or a
-        // cinematic mode kicked in). Two cases:
-        //   1. A walk was kicked off (the click hit a clickable mesh)
-        //      → snap the camera to the follow-cam position so the
-        //      user sees the character immediately instead of waiting
-        //      ~1s for the lerp to drag the camera across the map.
-        //   2. No walk started (the click missed any clickable mesh,
-        //      which is easy to do from the drone's unusual vantage)
-        //      → trigger the existing camHijacked glide-back so the
-        //      camera returns to CAM_DEFAULT, giving the user the
-        //      familiar plaza overview they can click from reliably.
-        if (droneActiveRef.current) {
-          if (c.walking) {
-            state.camera.position.set(
-              c.x - Math.sin(c.angle) * 5.5,
-              4,
-              c.z - Math.cos(c.angle) * 5.5
-            );
-            targetVec.set(c.x, 1, c.z);
-            controlsRef.current.target.copy(targetVec);
-          } else {
-            camHijackedRef.current = true;
-          }
-        }
+        // The pointerdown listener already cleared droneActiveRef and
+        // armed camHijackedRef, so the glide-back-to-CAM_DEFAULT (if
+        // the click missed) or the follow-cam (if a walk started)
+        // handles the visual recovery automatically.
         droneActiveRef.current = false;
       }
       controlsRef.current.update();
