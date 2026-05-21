@@ -1,17 +1,12 @@
-import SectionOverlay from "@/app/components/SectionOverlay";
-import { SECTIONS } from "@/app/lib/sections";
-
-const section = SECTIONS.find((s) => s.id === "chess")!;
+// This route deliberately renders nothing — the chess "section"
+// is a full 3D scene inside a chess study room, mounted by
+// GameWorld when pathname === "/chess". GameShell knows to skip
+// its overlay container for this route so canvas clicks (the
+// chess board squares, the exit door, the reset-view button)
+// remain interactive.
 
 export const metadata = { title: "Chess — Sonny Parlin" };
 
 export default function ChessPage() {
-  return (
-    <SectionOverlay title={section.label} accent={section.buildingColor}>
-      <p className="mb-4">
-        chess.com stats and highlight checkmates.
-      </p>
-      <p className="text-white/60">[ Coming soon ]</p>
-    </SectionOverlay>
-  );
+  return null;
 }

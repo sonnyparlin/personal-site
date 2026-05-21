@@ -55,14 +55,15 @@ function ResetViewButton() {
   );
 }
 
-// Exit-the-academy button shown only on /jiu-jitsu. Navigates back
-// to the plaza via plain anchor-style routing (Next.js intercepts
-// it). The 3D scene flips back to the plaza on the route change.
-function AcademyExitButton() {
+// Exit-the-scene button shown on routes that render a full 3D
+// interior (currently /jiu-jitsu and /chess). Navigates back to the
+// plaza via plain anchor-style routing (Next.js intercepts it).
+// The 3D scene flips back to the plaza on the route change.
+function ExitSceneButton({ label }: { label: string }) {
   return (
     <a
       href="/"
-      aria-label="Exit the academy and return to the plaza"
+      aria-label={`Exit ${label} and return to the plaza`}
       className="
         absolute top-4 left-4 z-10
         h-12 px-4
@@ -99,18 +100,21 @@ function AcademyExitButton() {
 export default function GameShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const section = getSectionByPath(pathname ?? "/");
-  // The jiu-jitsu route renders its content as a full 3D scene
-  // INSIDE the canvas (the academy interior), not as a 2D overlay.
-  // Skip the overlay container for it so canvas clicks still pass
-  // through, and add an exit-academy button instead.
+  // The jiu-jitsu and chess routes render their content as full 3D
+  // scenes INSIDE the canvas (the academy interior / chess study),
+  // not as 2D overlays. Skip the overlay container for them so
+  // canvas clicks still pass through, and add an exit button.
   const isAcademy = pathname === "/jiu-jitsu";
+  const isChess = pathname === "/chess";
+  const isFullScene = isAcademy || isChess;
+  const exitLabel = isAcademy ? "the academy" : "chess";
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1a1a2e]">
       <GameWorld />
-      {isAcademy ? (
+      {isFullScene ? (
         <>
-          <AcademyExitButton />
+          <ExitSceneButton label={exitLabel} />
           <ResetViewButton />
           <div className="hidden">{children}</div>
         </>
