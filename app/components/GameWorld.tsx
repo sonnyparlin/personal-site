@@ -2,7 +2,12 @@
 
 import { forwardRef, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Text, useTexture } from "@react-three/drei";
+import {
+  Billboard,
+  OrbitControls,
+  Text,
+  useTexture,
+} from "@react-three/drei";
 import { usePathname, useRouter } from "next/navigation";
 import * as THREE from "three";
 import {
@@ -4762,6 +4767,28 @@ function Building({
           {section.label}
         </Text>
       </group>
+
+      {/* ── Floating roof label ─────────────────────────────────── */}
+      {/* Big section name floating above the roof, always faces the
+          camera (drei <Billboard>). Visible from any orbit angle or
+          distance so visitors can identify each building at a glance.
+          Cream text on a dark outline pops against both the sky and
+          the building colors. */}
+      <Billboard position={[0, BUILDING_H + 1.9, 0]}>
+        <Text
+          fontSize={0.55}
+          color={section.signColor}
+          outlineColor="#1a1410"
+          outlineWidth={0.045}
+          outlineOpacity={1}
+          anchorX="center"
+          anchorY="middle"
+          letterSpacing={0.06}
+        >
+          {section.label}
+        </Text>
+      </Billboard>
+
     </group>
   );
 }
