@@ -465,24 +465,33 @@ export default function GameWorld() {
         // see Sonny's FRONT, not his back.
         faceAngle = Math.PI;
       } else if (section.id === "chess") {
-        // Park Sonny well off to the side of the chess room — the
-        // board is the focal point and the player's-seat camera is
-        // tucked in close to the board, so we don't want him in
-        // frame. (Hidden via the y=-100 dodge inside ChessRoom too.)
-        t = { x: 0, z: -8 };
-        faceAngle = 0;
+        // Stand Sonny at the OPPONENT seat — well past the north
+        // edge of the chess table (table ends at z=+1.5, he's at
+        // z=2.2 so his body is fully behind it, not poking through
+        // it) facing south toward the player camera. angle=π faces
+        // -Z (south, toward the camera at (0, 4.5, -3)). The
+        // camera's wantTY is bumped on this route so his head still
+        // frames cleanly even though he's further out.
+        t = { x: 0, z: 2.2 };
+        faceAngle = Math.PI;
       }
       charRef.current.x = t.x;
       charRef.current.z = t.z;
       // HOME is special — Sonny just waved with the family at the
       // doorstep, so leave him facing south (+Z, toward the camera)
-      // to match the family. Other sections snap him to face the
-      // building (away from origin) since the overlay covers most
-      // of the scene and there's no family in the foreground.
+      // to match the family. JIU JITSU and CHESS both reuse the
+      // `faceAngle` set above (= π so Sonny faces the camera across
+      // the mat / chess table) — without that, both routes would
+      // fall to the default and Sonny's body would twist to point
+      // at the exterior building on the plaza while his face
+      // billboards toward the camera. Other sections snap him to
+      // face the building (away from origin) since the overlay
+      // covers most of the scene and there's no figure in the
+      // foreground.
       charRef.current.angle =
         section.id === "personal-life"
           ? 0
-          : section.id === "jiu-jitsu"
+          : section.id === "jiu-jitsu" || section.id === "chess"
           ? faceAngle
           : Math.atan2(section.x - t.x, section.z - t.z);
       charRef.current.walking = false;
@@ -1137,19 +1146,13 @@ function Scene({
           <Family familyRef={refs.family} />
         </>
       )}
-      {/* Character stays mounted on the plaza and inside the academy
-          so its refs persist across route swaps, but the chess study
-          is a focused board-only view where Sonny would be out of
-          frame anyway — skip rendering him there. */}
-      {!isChess && (
-        <Suspense fallback={null}>
-          <Character
-            charRef={refs.char}
-            golfRef={refs.golf}
-            balloonRef={refs.balloon}
-          />
-        </Suspense>
-      )}
+      <Suspense fallback={null}>
+        <Character
+          charRef={refs.char}
+          golfRef={refs.golf}
+          balloonRef={refs.balloon}
+        />
+      </Suspense>
       <CameraRig
         charRef={refs.char}
         gatorRef={refs.gator}
@@ -5698,12 +5701,14 @@ function CameraRig({
     let wantTX = pathname === "/jiu-jitsu" ? c.x : 0;
     let wantTZ = pathname === "/jiu-jitsu" ? c.z : 0;
     let wantTY = pathname === "/jiu-jitsu" ? 1.5 : 1;
-    // /chess: look down at the centre of the board (which sits at
-    // world origin, ~1 unit above the floor on the chess table).
+    // /chess: look at a point above the board (y=1.7) so the camera
+    // tilts less steeply downward — that keeps Sonny's whole head
+    // in frame across the table even though he's seated further
+    // back (z=2.2) than directly behind the board.
     if (pathname === "/chess") {
       wantTX = 0;
       wantTZ = 0;
-      wantTY = 1.0;
+      wantTY = 1.7;
     }
     if (c.mode === "golfing") {
       wantTX = GOLF_MIDPOINT.x;
@@ -5998,6 +6003,14 @@ function CameraRig({
       maxPolarAngle={maxPolar}
       target={[0, 1, 0]}
       autoRotateSpeed={0.4}
+      // On /chess, disable camera rotation + pan so a small mouse
+      // drag while clicking a piece doesn't rotate the view out
+      // from under the user. Zoom is left on so the board can still
+      // be inspected closer. R3F's onClick raycaster on the square
+      // / piece meshes still fires normally — OrbitControls only
+      // owns the camera, not the pick events.
+      enableRotate={!isChess}
+      enablePan={!isChess}
     />
   );
 }
@@ -6891,33 +6904,56 @@ const CHESS_BOARD_EDGE = CHESS_SQUARE * 8; // 2.24
 // Y of the top surface of the board (table top + board veneer).
 const CHESS_BOARD_TOP_Y = 0.95;
 const CHESS_TABLE_TOP_Y = CHESS_BOARD_TOP_Y - 0.04;
-// Board square colors — high contrast so the grid reads even in
-// the dim study lighting. Light squares are a soft pale blue (so
-// the cream-colored white pieces don't blend in with them); dark
-// squares stay warm brown to match the wood-paneled study.
-const CHESS_LIGHT = "#a8c4d6";
-const CHESS_DARK = "#8a5a2b";
+// Board square colors — classic warm wood palette (lichess/
+// chess.com brown). Light squares are warm cream, dark squares are
+// caramel. Pieces (defined below) are tuned so the warm-white
+// pieces have enough lightness contrast against the cream squares
+// to not blend in.
+const CHESS_LIGHT = "#e2c89c"; // warm cream (slightly deeper than lichess)
+const CHESS_DARK = "#b58863"; // caramel brown
 const CHESS_HILITE = "#f6e58d"; // selected-square overlay
 const CHESS_LEGAL_DOT = "#5d8b48"; // small dot on legal-destination squares
-// Piece colors (matte stone / ivory feel)
-const PIECE_WHITE = "#efe6d3";
-const PIECE_WHITE_DARK = "#cdc4b1";
-const PIECE_BLACK = "#2a241e";
-const PIECE_BLACK_DARK = "#15110d";
-// Room palette
-const STUDY_WALL = "#5b3a26"; // warm wood-paneled wall
-const STUDY_FLOOR = "#3a2820";
+// Last-move highlight — slightly muted yellow that mixes nicely with
+// each of the two base square colors. Two shades (one per base
+// square color) so the highlight reads consistently against either.
+const CHESS_LAST_LIGHT = "#e8d068";
+const CHESS_LAST_DARK = "#b89438";
+// Piece colors — white pieces are pushed brighter than the cream
+// light squares so they stand out clearly. Black pieces stay deep
+// near-black; both _DARK variants are used for the bases / collars
+// so pieces have a touch of shading rather than being a single
+// flat hue.
+const PIECE_WHITE = "#fafaf0";
+const PIECE_WHITE_DARK = "#d8d5c4";
+// Black pieces — was #2a241e (near-black) but the lighting couldn't
+// carve out enough detail at that depth. Bumped to a dark walnut so
+// shape detail (the king's cross, queen's crown, rook's
+// crenellations) reads clearly while pieces still feel "black".
+const PIECE_BLACK = "#3e2f22";
+const PIECE_BLACK_DARK = "#1e1610";
+// Room palette — dark forest green walls (classic study /
+// gentlemen's club vibe), warm honey-oak floor, deep brown ceiling.
+// Green walls + warm wood floor + walnut table is a traditional
+// library / chess club combination — the cool dark green frames
+// the warm-toned board as the focal point.
+const STUDY_WALL = "#2a4530"; // dark forest green
+const STUDY_FLOOR = "#a48562"; // muted honey oak
 const STUDY_CEILING = "#241712";
-const STUDY_TABLE = "#3a2820";
-const STUDY_TABLE_DARK = "#241712";
+// Table — warm walnut. Was previously near-black (#3a2820) which
+// blended into the black chess pieces (#2a241e). Lighter walnut
+// keeps the wood feel without disappearing behind the pieces.
+const STUDY_TABLE = "#7a4628";
+const STUDY_TABLE_DARK = "#4a2818";
 // Stockfish strength — Skill Level 2 lands roughly around 1000-1200
 // Elo per the engine's internal scaling. Range is 0 (random-ish) to
 // 20 (full ~3500 Elo).
 const STOCKFISH_SKILL = 2;
-// Time the engine gets to think before returning a move (ms). Short
-// because the engine is intentionally weak; longer thinking would
-// make it stronger than the user's set rating.
-const STOCKFISH_MOVE_MS = 600;
+// Time the engine gets to think before returning a move (ms).
+// 1000 ms gives the human a beat between making their move and
+// seeing the AI respond — feels less instant / robotic. The
+// engine's strength is capped by Skill Level, so the extra
+// thinking time doesn't push it beyond the user's rating.
+const STOCKFISH_MOVE_MS = 1000;
 
 type PieceColor = "w" | "b";
 type PieceType = "p" | "n" | "b" | "r" | "q" | "k";
@@ -6941,9 +6977,85 @@ function chessSquareToFR(sq: string): [number, number] {
   return [file, rank];
 }
 
+// Synthesized chess-move sound. Uses Web Audio API to make a short
+// noise burst through a band-pass filter so it reads as a wood tap
+// rather than a sine beep — no external audio files needed, no
+// asset loading lag, no browser-autoplay headaches as long as the
+// AudioContext is created (or resumed) inside a user gesture
+// (the click that moves the piece).
+function makeMoveSoundPlayer() {
+  let ctx: AudioContext | null = null;
+  return function playMoveSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctx) return;
+      if (!ctx) ctx = new Ctx();
+      if (ctx.state === "suspended") void ctx.resume();
+      const duration = 0.09; // seconds
+      const sampleRate = ctx.sampleRate;
+      const buffer = ctx.createBuffer(
+        1,
+        Math.floor(sampleRate * duration),
+        sampleRate
+      );
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        const t = i / sampleRate;
+        const envelope = Math.exp(-t * 38); // quick percussive decay
+        data[i] = (Math.random() * 2 - 1) * envelope;
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      // Band-pass filter centred around 700 Hz to give the noise a
+      // wood-knock character (low enough to feel "thunk", high
+      // enough to feel like wood on wood rather than a soft thud).
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 720;
+      filter.Q.value = 1.8;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.28;
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      source.start();
+    } catch {
+      // Silent failure — never break the game over a sound effect.
+    }
+  };
+}
+
+// Clone a chess.js instance while PRESERVING the move history. The
+// obvious-looking `new Chess(game.fen())` only carries the position
+// across — its `.history()` resets to empty, which breaks anything
+// that depends on the move log (the captured-pieces display).
+// Using PGN round-trips both position AND moves.
+function cloneChessWithHistory(game: Chess): Chess {
+  const next = new Chess();
+  const pgn = game.pgn();
+  if (pgn) {
+    try {
+      next.loadPgn(pgn);
+    } catch {
+      // Fall back to position-only clone if the PGN is somehow
+      // malformed; the captured-pieces display will be stale for
+      // this game but the game itself stays playable.
+      return new Chess(game.fen());
+    }
+  }
+  return next;
+}
+
 function ChessRoom(_: { onExit: () => void }) {
   // onExit is unused here — GameShell renders the top-left Exit
   // button which navigates back via plain anchor routing.
+  // One AudioContext per ChessRoom mount, lazily created on the
+  // first move so the browser doesn't yell about autoplay.
+  const playMoveSoundRef = useRef(makeMoveSoundPlayer());
   // ── Game state ────────────────────────────────────────────────
   // chess.js Chess instance lives in state. Mutations replace the
   // instance (new Chess(fen)) so React picks up renders.
@@ -6959,15 +7071,25 @@ function ChessRoom(_: { onExit: () => void }) {
   // Legal destination squares from `selected` — used to highlight
   // dots and validate the second click.
   const [legalMoves, setLegalMoves] = useState<Square[]>([]);
+  // Resigned-by tracker. chess.js doesn't model resignation; we
+  // track it as separate state and treat it like a game-over so
+  // the banner shows the result and the click handler stops
+  // accepting input. Reset on every new game.
+  const [resignedBy, setResignedBy] = useState<PieceColor | null>(null);
   // Game over state. `null` while the game is in progress;
   // otherwise holds a human-readable reason for the end (used by
   // the banner above the board).
   const gameOver = useMemo(() => {
+    if (resignedBy) {
+      return resignedBy === playerColor
+        ? "You resigned — Sonny won"
+        : "Sonny resigned — You won";
+    }
     if (!game.isGameOver()) return null;
     if (game.isCheckmate()) {
       // The side whose turn it IS got mated. Loser = game.turn().
       const loserColor = game.turn();
-      const winner = loserColor === playerColor ? "Stockfish" : "You";
+      const winner = loserColor === playerColor ? "Sonny" : "You";
       return `Checkmate — ${winner} won`;
     }
     if (game.isStalemate()) return "Stalemate — draw";
@@ -6976,7 +7098,7 @@ function ChessRoom(_: { onExit: () => void }) {
       return "Draw — insufficient material";
     if (game.isDraw()) return "Draw";
     return "Game over";
-  }, [game, playerColor]);
+  }, [game, playerColor, resignedBy]);
 
   // ── Stockfish worker ─────────────────────────────────────────
   // Spawns once on mount. Subsequent re-renders just re-use it.
@@ -6998,7 +7120,7 @@ function ChessRoom(_: { onExit: () => void }) {
   useEffect(() => {
     const w = stockfishRef.current;
     if (!w) return;
-    if (game.isGameOver()) return;
+    if (game.isGameOver() || resignedBy) return;
     if (game.turn() === playerColor) return;
     let cancelled = false;
     const handle = (e: MessageEvent) => {
@@ -7011,13 +7133,16 @@ function ChessRoom(_: { onExit: () => void }) {
       if (cancelled) return;
       const move = line.split(/\s+/)[1];
       if (!move || move === "(none)") return;
-      const next = new Chess(game.fen());
+      const next = cloneChessWithHistory(game);
       const result = next.move({
         from: move.slice(0, 2) as Square,
         to: move.slice(2, 4) as Square,
         promotion: move.length > 4 ? move[4] : undefined,
       });
-      if (result) setGame(next);
+      if (result) {
+        playMoveSoundRef.current();
+        setGame(next);
+      }
     };
     w.addEventListener("message", handle);
     w.postMessage(`position fen ${game.fen()}`);
@@ -7026,57 +7151,135 @@ function ChessRoom(_: { onExit: () => void }) {
       cancelled = true;
       w.removeEventListener("message", handle);
     };
-  }, [game, playerColor]);
+  }, [game, playerColor, resignedBy]);
 
-  // ── Click handlers ───────────────────────────────────────────
-  // Clicking a square either picks up a piece (if it belongs to the
-  // player and it's their turn) or attempts to move from the
-  // previously-selected square. Anything else clears the selection.
-  function onSquareClick(sq: Square) {
-    if (game.isGameOver()) return;
-    if (game.turn() !== playerColor) return; // not your turn
-    if (selected === null) {
-      const piece = game.get(sq);
-      if (piece && piece.color === playerColor) {
-        const moves = game.moves({ square: sq, verbose: true });
-        setSelected(sq);
-        setLegalMoves(moves.map((m) => m.to as Square));
-      }
-      return;
-    }
-    if (sq === selected) {
-      // Tapped the picked-up piece again — drop it.
-      setSelected(null);
-      setLegalMoves([]);
-      return;
-    }
-    if (legalMoves.includes(sq)) {
-      const next = new Chess(game.fen());
-      const result = next.move({
-        from: selected,
-        to: sq,
-        promotion: "q", // auto-queen on promotion (UI for picking
-        // under-promotions is overkill for a portfolio toy)
-      });
-      if (result) setGame(next);
-      setSelected(null);
-      setLegalMoves([]);
-      return;
-    }
-    // Tapped a different friendly piece — switch the selection to
-    // that one (chess UX convention).
+  // ── Move handlers ────────────────────────────────────────────
+  // Two interactions both lead to a move:
+  //
+  // 1. Click-click — press + release on origin (selects), then
+  //    press + release on destination (moves).
+  // 2. Drag-and-drop — press on origin, drag, release on destination.
+  //
+  // To support both, we attach onPointerDown + onPointerUp instead
+  // of onClick. PointerDown records the drag origin and updates the
+  // selection; PointerUp fires the actual move whenever it lands on
+  // a different (legal) square than the press. PointerUp on the
+  // same square is a no-op (a plain tap leaves the piece selected
+  // for the next click).
+  const dragFromRef = useRef<Square | null>(null);
+  // While the user is dragging a piece, this state holds the
+  // current board-local (x, z) the dragged piece is rendered at.
+  // Set on pointerdown to the origin square's centre, updated by
+  // pointermove to follow the cursor, cleared on pointerup. When
+  // non-null the original piece is hidden from its square and the
+  // dragged piece is rendered floating at this position.
+  const [dragPos, setDragPos] = useState<{ x: number; z: number } | null>(
+    null
+  );
+
+  function selectPiece(sq: Square) {
     const piece = game.get(sq);
     if (piece && piece.color === playerColor) {
       const moves = game.moves({ square: sq, verbose: true });
       setSelected(sq);
       setLegalMoves(moves.map((m) => m.to as Square));
+      return true;
+    }
+    return false;
+  }
+
+  function attemptMove(from: Square, to: Square): boolean {
+    if (game.isGameOver() || resignedBy) return false;
+    if (game.turn() !== playerColor) return false;
+    if (!legalMoves.includes(to)) return false;
+    const next = cloneChessWithHistory(game);
+    const result = next.move({
+      from,
+      to,
+      promotion: "q", // auto-queen on promotion (UI for picking
+      // under-promotions is overkill for a portfolio toy)
+    });
+    if (!result) return false;
+    playMoveSoundRef.current();
+    setGame(next);
+    return true;
+  }
+
+  function onSquarePointerDown(sq: Square) {
+    if (game.isGameOver() || resignedBy) return;
+    if (game.turn() !== playerColor) return;
+    const piece = game.get(sq);
+    // Friendly piece → start drag from here. Switches selection
+    // automatically if a different friendly piece was previously
+    // selected.
+    if (piece && piece.color === playerColor) {
+      selectPiece(sq);
+      dragFromRef.current = sq;
+      const [f, r] = chessSquareToFR(sq);
+      const [lx, lz] = chessSquareToWorld(f, r);
+      setDragPos({ x: lx, z: lz });
       return;
     }
-    // Clicked empty / opponent square that's not a legal target —
-    // clear selection.
+    // Empty / opponent square WITH an active selection that legally
+    // covers this square → arm the drag-from so the matching
+    // PointerUp commits the move (whether the user actually dragged
+    // or just clicked).
+    if (selected !== null && legalMoves.includes(sq)) {
+      dragFromRef.current = selected;
+      return;
+    }
+    // Anywhere else → drop the selection.
+    setSelected(null);
+    setLegalMoves([]);
+    dragFromRef.current = null;
+    setDragPos(null);
+  }
+
+  function onSquarePointerMove(worldX: number, worldZ: number) {
+    if (!dragFromRef.current) return;
+    // Pieces live inside the boardRotY-wrapped group, so positions
+    // we set on them are interpreted in BOARD-LOCAL coords. The
+    // pointermove event gives us a world-space intersection. When
+    // the board is flipped (player is black), local = -world.
+    const localX = boardRotY === Math.PI ? -worldX : worldX;
+    const localZ = boardRotY === Math.PI ? -worldZ : worldZ;
+    setDragPos({ x: localX, z: localZ });
+  }
+
+  function onSquarePointerUp(sq: Square) {
+    const from = dragFromRef.current;
+    dragFromRef.current = null;
+    setDragPos(null);
+    if (!from) return;
+    if (from === sq) {
+      // Plain tap on the dragged square — leave the piece selected
+      // so the user can click-click their destination next.
+      return;
+    }
+    // Released on a different square — try the move. attemptMove
+    // returns false if it wasn't legal; in either case clear the
+    // selection so we don't leave a stale highlight.
+    attemptMove(from, sq);
     setSelected(null);
     setLegalMoves([]);
   }
+
+  // Fallback: if the pointer is released OUTSIDE any board square
+  // (e.g., off the board on the table or wall), no square's
+  // onPointerUp fires and the drag would otherwise stay armed
+  // forever. A window-level pointerup catches the case and resets
+  // the drag state without committing a move.
+  useEffect(() => {
+    function onUp() {
+      if (dragFromRef.current === null) return;
+      dragFromRef.current = null;
+      setDragPos(null);
+      setSelected(null);
+      setLegalMoves([]);
+    }
+    window.addEventListener("pointerup", onUp);
+    return () => window.removeEventListener("pointerup", onUp);
+  }, []);
 
   // Reset to a fresh game with a new random color assignment.
   function newGame() {
@@ -7084,7 +7287,88 @@ function ChessRoom(_: { onExit: () => void }) {
     setPlayerColor(Math.random() < 0.5 ? "w" : "b");
     setSelected(null);
     setLegalMoves([]);
+    setResignedBy(null);
   }
+
+  // ── External button events ──────────────────────────────────
+  // GameShell renders the New Game + Resign buttons as DOM
+  // overlays (outside the canvas), so they reach into our state
+  // via window CustomEvents — the same pattern used by the
+  // reset-camera button. Refs hold the latest copies of the state
+  // we need to read inside the handlers, so the listener callbacks
+  // can stay stable for the lifetime of the component instead of
+  // re-binding on every re-render.
+  const playerColorRef = useRef(playerColor);
+  playerColorRef.current = playerColor;
+  const gameRef = useRef(game);
+  gameRef.current = game;
+  const resignedByRef = useRef(resignedBy);
+  resignedByRef.current = resignedBy;
+  useEffect(() => {
+    function onNewGame() {
+      setGame(new Chess());
+      setPlayerColor(Math.random() < 0.5 ? "w" : "b");
+      setSelected(null);
+      setLegalMoves([]);
+      setResignedBy(null);
+    }
+    function onResign() {
+      if (gameRef.current.isGameOver()) return;
+      if (resignedByRef.current) return;
+      setResignedBy(playerColorRef.current);
+    }
+    window.addEventListener("chess-new-game", onNewGame);
+    window.addEventListener("chess-resign", onResign);
+    return () => {
+      window.removeEventListener("chess-new-game", onNewGame);
+      window.removeEventListener("chess-resign", onResign);
+    };
+  }, []);
+
+  // ── Captured pieces ───────────────────────────────────────────
+  // Walk chess.js's move history and bucket each capture by who
+  // made it. `player` = pieces the user has taken (opponent's
+  // color); `ai` = pieces Stockfish has taken (player's color).
+  // Sorted by value (high to low) so the row reads like a
+  // material display rather than a chronological log.
+  const captures = useMemo(() => {
+    const VALUE: Record<PieceType, number> = {
+      q: 9,
+      r: 5,
+      b: 3,
+      n: 3,
+      p: 1,
+      k: 0,
+    };
+    const player: PieceType[] = [];
+    const ai: PieceType[] = [];
+    for (const move of game.history({ verbose: true })) {
+      if (!move.captured) continue;
+      const taken = move.captured as PieceType;
+      if (move.color === playerColor) player.push(taken);
+      else ai.push(taken);
+    }
+    player.sort((a, b) => VALUE[b] - VALUE[a]);
+    ai.sort((a, b) => VALUE[b] - VALUE[a]);
+    return { player, ai };
+  }, [game, playerColor]);
+
+  // Broadcast captures to the GameShell HUD whenever they change.
+  // The 2D overlay sits outside the canvas, so a window event is
+  // the simplest bridge (same pattern as the new-game / resign
+  // buttons going the other direction).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(
+      new CustomEvent("chess-captures-update", {
+        detail: {
+          player: captures.player,
+          ai: captures.ai,
+          playerColor,
+        },
+      })
+    );
+  }, [captures, playerColor]);
 
   // ── Render ────────────────────────────────────────────────────
   const boardLayout = game.board();
@@ -7093,6 +7377,14 @@ function ChessRoom(_: { onExit: () => void }) {
     () => new Set(legalMoves.map((sq) => sq)),
     [legalMoves]
   );
+  // Last move's from/to squares (for highlighting). Pulled from the
+  // verbose move history so we get the algebraic square names.
+  const lastMoveSquares = useMemo(() => {
+    const history = game.history({ verbose: true });
+    const last = history[history.length - 1];
+    if (!last) return new Set<string>();
+    return new Set<string>([last.from, last.to]);
+  }, [game]);
   // Rotation around Y for the visible board so the player's pieces
   // are always at the bottom of the camera frame. Pulled out of the
   // JSX so the inline ternary inside an array literal inside a JSX
@@ -7175,15 +7467,21 @@ function ChessRoom(_: { onExit: () => void }) {
       </mesh>
 
       {/* ── Pendant lamp ────────────────────────────────────── */}
-      <mesh position={[0, 3.5, 0]}>
-        <cylinderGeometry args={[0.01, 0.01, 1.0, 6]} />
+      {/* Mounted higher than a "normal" pendant (shade at y=3.45)
+          so it clears Sonny's bald head silhouette in the camera's
+          framing — with the shade at the original 2.95 it hung
+          right at his hair-line and was cropping the top of his
+          head against the board. Wire is shorter to compensate
+          (ceiling y=4 → shade top y=3.6). */}
+      <mesh position={[0, 3.8, 0]}>
+        <cylinderGeometry args={[0.01, 0.01, 0.4, 6]} />
         <meshStandardMaterial color="#1a1410" />
       </mesh>
-      <mesh position={[0, 2.95, 0]} castShadow>
+      <mesh position={[0, 3.45, 0]} castShadow>
         <coneGeometry args={[0.35, 0.30, 16, 1, true]} />
         <meshStandardMaterial color="#1a1410" side={THREE.DoubleSide} />
       </mesh>
-      <mesh position={[0, 2.80, 0]}>
+      <mesh position={[0, 3.30, 0]}>
         <sphereGeometry args={[0.06, 12, 10]} />
         <meshBasicMaterial color="#fff4c8" toneMapped={false} />
       </mesh>
@@ -7228,6 +7526,11 @@ function ChessRoom(_: { onExit: () => void }) {
           to the camera. Pure visual flip - chess.js square names
           and click-handler logic don't change. */}
       <group rotation={[0, boardRotY, 0]}>
+      {/* Board border — dark walnut frame around the squares, the
+          classic chess-board look. Sits OUTSIDE the playing area
+          so it doesn't matter that black pieces are dark too —
+          pieces are on the squares, not on the frame. Frames the
+          whole board with a clear edge against the cream squares. */}
       <mesh position={[0, CHESS_BOARD_TOP_Y - 0.011, 0]}>
         <boxGeometry
           args={[
@@ -7236,7 +7539,7 @@ function ChessRoom(_: { onExit: () => void }) {
             CHESS_BOARD_EDGE + 0.18,
           ]}
         />
-        <meshStandardMaterial color="#1f130a" roughness={0.7} />
+        <meshStandardMaterial color="#6b3f25" roughness={0.7} />
       </mesh>
       {Array.from({ length: 8 }).flatMap((_, rank) =>
         Array.from({ length: 8 }).map((__, file) => {
@@ -7249,14 +7552,40 @@ function ChessRoom(_: { onExit: () => void }) {
             selectedFR[0] === file &&
             selectedFR[1] === rank;
           const isLegal = legalFRSet.has(square);
+          const isLastMove = lastMoveSquares.has(square);
+          // Color precedence: selected → last-move → base square.
+          // Last-move uses a per-base tint so the highlight reads
+          // the same brightness against either square color.
+          const squareColor = isSelected
+            ? CHESS_HILITE
+            : isLastMove
+            ? dark
+              ? CHESS_LAST_DARK
+              : CHESS_LAST_LIGHT
+            : dark
+            ? CHESS_DARK
+            : CHESS_LIGHT;
           return (
             <group key={square}>
               <mesh
                 position={[x, CHESS_BOARD_TOP_Y, z]}
                 rotation={[-Math.PI / 2, 0, 0]}
-                onClick={(e) => {
+                onPointerDown={(e) => {
                   e.stopPropagation();
-                  onSquareClick(square);
+                  onSquarePointerDown(square);
+                }}
+                onPointerUp={(e) => {
+                  e.stopPropagation();
+                  onSquarePointerUp(square);
+                }}
+                onPointerMove={(e) => {
+                  // e.point is the world-space intersection on this
+                  // square's plane. Forwarded to the move handler
+                  // which converts to board-local coords (the
+                  // dragged piece lives inside the rotation wrapper).
+                  if (dragFromRef.current === null) return;
+                  e.stopPropagation();
+                  onSquarePointerMove(e.point.x, e.point.z);
                 }}
                 onPointerOver={(e) => {
                   document.body.style.cursor = "pointer";
@@ -7268,13 +7597,7 @@ function ChessRoom(_: { onExit: () => void }) {
               >
                 <planeGeometry args={[CHESS_SQUARE, CHESS_SQUARE]} />
                 <meshStandardMaterial
-                  color={
-                    isSelected
-                      ? CHESS_HILITE
-                      : dark
-                      ? CHESS_DARK
-                      : CHESS_LIGHT
-                  }
+                  color={squareColor}
                   roughness={0.6}
                 />
               </mesh>
@@ -7298,17 +7621,26 @@ function ChessRoom(_: { onExit: () => void }) {
       )}
 
       {/* ── Pieces ──────────────────────────────────────────── */}
+      {/* The dragged piece is re-positioned at the current cursor
+          intersection (via dragPos) and lifted above the board so
+          it visibly "floats" while the user holds it. Every other
+          piece sits on its square as usual. */}
       {boardLayout.flatMap((row, r) =>
         row.map((cell, f) => {
           if (!cell) return null;
           const rank = 7 - r;
-          const [x, z] = chessSquareToWorld(f, rank);
-          const key = `${f}-${rank}`;
+          const square = (String.fromCharCode(97 + f) +
+            (rank + 1)) as Square;
+          const isDragging =
+            dragFromRef.current === square && dragPos !== null;
+          const [x, z] = isDragging
+            ? [dragPos.x, dragPos.z]
+            : chessSquareToWorld(f, rank);
+          const y = isDragging
+            ? CHESS_BOARD_TOP_Y + 0.20
+            : CHESS_BOARD_TOP_Y + 0.005;
           return (
-            <group
-              key={key}
-              position={[x, CHESS_BOARD_TOP_Y + 0.005, z]}
-            >
+            <group key={`${f}-${rank}`} position={[x, y, z]}>
               <Piece
                 type={cell.type as PieceType}
                 color={cell.color as PieceColor}
@@ -7317,6 +7649,7 @@ function ChessRoom(_: { onExit: () => void }) {
           );
         })
       )}
+
       </group>
 
       {/* ── Game-over banner ────────────────────────────────── */}
@@ -7452,36 +7785,75 @@ function PieceRook({ color }: { color: PieceColor }) {
 
 function PieceKnight({ color }: { color: PieceColor }) {
   const { main, dark } = pieceColors(color);
+  // Horse head faces the +X body axis (sideways from the camera
+  // POV), so the iconic horse profile reads at a glance instead of
+  // the head pointing up/down toward/away from the camera as a
+  // generic blocky lump.
   return (
     <group>
+      {/* Base */}
       <mesh position={[0, 0.02, 0]} castShadow>
         <cylinderGeometry args={[0.065, 0.075, 0.04, 18]} />
         <meshStandardMaterial color={dark} roughness={0.65} />
       </mesh>
-      <mesh position={[0, 0.10, 0]} castShadow>
-        <cylinderGeometry args={[0.04, 0.06, 0.12, 18]} />
+      {/* Body — short stout neck below the head */}
+      <mesh position={[0, 0.11, 0]} castShadow>
+        <cylinderGeometry args={[0.042, 0.062, 0.14, 18]} />
         <meshStandardMaterial color={main} roughness={0.5} />
       </mesh>
-      <group position={[0, 0.18, 0.018]} rotation={[0.3, 0, 0]}>
-        <mesh castShadow>
-          <boxGeometry args={[0.058, 0.075, 0.085]} />
+      {/* Horse head assembly. All sub-meshes are at the same y so
+          the silhouette reads as a side-on horse head when viewed
+          from south (camera). +X is the snout direction. */}
+      <group position={[0, 0.215, 0]}>
+        {/* Back of the head — squarish block */}
+        <mesh position={[-0.005, 0, 0]} castShadow>
+          <boxGeometry args={[0.10, 0.10, 0.07]} />
+          <meshStandardMaterial color={main} roughness={0.5} />
+        </mesh>
+        {/* Snout — narrower block extending forward (+X), tipped
+            slightly down so it has the classic horse-head droop. */}
+        <group position={[0.075, -0.012, 0]} rotation={[0, 0, -0.35]}>
+          <mesh castShadow>
+            <boxGeometry args={[0.085, 0.055, 0.058]} />
+            <meshStandardMaterial color={main} roughness={0.5} />
+          </mesh>
+        </group>
+        {/* Underjaw — tucked under the snout for a stronger profile */}
+        <mesh
+          position={[0.07, -0.045, 0]}
+          rotation={[0, 0, -0.55]}
+          castShadow
+        >
+          <boxGeometry args={[0.055, 0.025, 0.05]} />
+          <meshStandardMaterial color={dark} roughness={0.55} />
+        </mesh>
+        {/* Mane crest on the back of the head, pointing up + back */}
+        <mesh
+          position={[-0.045, 0.06, 0]}
+          rotation={[0, 0, 0.55]}
+          castShadow
+        >
+          <boxGeometry args={[0.06, 0.04, 0.065]} />
+          <meshStandardMaterial color={dark} roughness={0.55} />
+        </mesh>
+        {/* Two pointed ears on top, slightly tilted forward */}
+        <mesh
+          position={[0.005, 0.075, -0.025]}
+          rotation={[0, 0, -0.2]}
+          castShadow
+        >
+          <coneGeometry args={[0.014, 0.045, 6]} />
+          <meshStandardMaterial color={main} roughness={0.5} />
+        </mesh>
+        <mesh
+          position={[0.005, 0.075, 0.025]}
+          rotation={[0, 0, -0.2]}
+          castShadow
+        >
+          <coneGeometry args={[0.014, 0.045, 6]} />
           <meshStandardMaterial color={main} roughness={0.5} />
         </mesh>
       </group>
-      <group position={[0, 0.205, 0.06]} rotation={[0.7, 0, 0]}>
-        <mesh castShadow>
-          <boxGeometry args={[0.05, 0.06, 0.07]} />
-          <meshStandardMaterial color={main} roughness={0.5} />
-        </mesh>
-      </group>
-      <mesh
-        position={[0, 0.245, -0.005]}
-        rotation={[-0.2, 0, 0]}
-        castShadow
-      >
-        <boxGeometry args={[0.04, 0.04, 0.05]} />
-        <meshStandardMaterial color={dark} roughness={0.55} />
-      </mesh>
     </group>
   );
 }
@@ -7516,39 +7888,49 @@ function PieceBishop({ color }: { color: PieceColor }) {
 
 function PieceQueen({ color }: { color: PieceColor }) {
   const { main, dark } = pieceColors(color);
+  // Queen is intentionally TALLER than the rook + has a crown of
+  // pointed cone spikes (not little spheres) so the silhouette
+  // reads instantly as "queen" rather than "rook with bumps."
   return (
     <group>
+      {/* Base — slightly wider than other pieces */}
       <mesh position={[0, 0.02, 0]} castShadow>
-        <cylinderGeometry args={[0.068, 0.078, 0.04, 20]} />
+        <cylinderGeometry args={[0.072, 0.082, 0.04, 20]} />
         <meshStandardMaterial color={dark} roughness={0.65} />
       </mesh>
-      <mesh position={[0, 0.13, 0]} castShadow>
-        <cylinderGeometry args={[0.034, 0.062, 0.18, 20]} />
+      {/* Tall tapered body */}
+      <mesh position={[0, 0.155, 0]} castShadow>
+        <cylinderGeometry args={[0.034, 0.064, 0.23, 20]} />
         <meshStandardMaterial color={main} roughness={0.5} />
       </mesh>
-      <mesh position={[0, 0.232, 0]} castShadow>
-        <cylinderGeometry args={[0.05, 0.038, 0.04, 20]} />
-        <meshStandardMaterial color={main} roughness={0.5} />
+      {/* Crown collar — a slightly darker ring under the spikes */}
+      <mesh position={[0, 0.285, 0]} castShadow>
+        <cylinderGeometry args={[0.05, 0.038, 0.025, 20]} />
+        <meshStandardMaterial color={dark} roughness={0.6} />
       </mesh>
-      {[0, 1, 2, 3, 4].map((i) => {
-        const angle = (i / 5) * Math.PI * 2;
+      {/* Crown of 8 pointed spikes around the rim — these are the
+          key visual differentiator from the rook's blocky
+          crenellations. */}
+      {Array.from({ length: 8 }, (_, i) => {
+        const angle = (i / 8) * Math.PI * 2;
         return (
           <mesh
             key={i}
             position={[
-              Math.cos(angle) * 0.034,
-              0.27,
-              Math.sin(angle) * 0.034,
+              Math.cos(angle) * 0.04,
+              0.34,
+              Math.sin(angle) * 0.04,
             ]}
             castShadow
           >
-            <sphereGeometry args={[0.014, 10, 8]} />
+            <coneGeometry args={[0.014, 0.075, 8]} />
             <meshStandardMaterial color={main} roughness={0.5} />
           </mesh>
         );
       })}
-      <mesh position={[0, 0.28, 0]} castShadow>
-        <sphereGeometry args={[0.022, 14, 12]} />
+      {/* Centre dome / orb on top */}
+      <mesh position={[0, 0.36, 0]} castShadow>
+        <sphereGeometry args={[0.020, 14, 12]} />
         <meshStandardMaterial color={main} roughness={0.5} />
       </mesh>
     </group>
