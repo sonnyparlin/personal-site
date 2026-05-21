@@ -4840,11 +4840,13 @@ function FaceBillboard({
     "/face-back.png",
     "/face-scared.png",
   ]);
-  // The back/scared photos came in less saturated than the
-  // photo-edited front face. Punch up contrast + saturation once
-  // via a canvas filter so all three textures read with similar
-  // vibrance on the billboard. Done as a load-time effect so we
-  // don't pay a per-frame cost.
+  // Light color-correction pass on back/scared — the current source
+  // PNGs are uniformly processed and read close to the front face
+  // out of the box, so we only nudge saturation + contrast slightly
+  // for a hair more pop on the billboard. A previous version applied
+  // `saturate(1.2) contrast(1.18) brightness(1.04)` here, which
+  // pushed the new photos' skin tones into a red tint. The current
+  // values are gentle enough to add vibrance without color cast.
   useEffect(() => {
     for (const tex of [texBack, texScared]) {
       const img = tex.image as HTMLImageElement | undefined;
@@ -4854,12 +4856,24 @@ function FaceBillboard({
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
-      ctx.filter = "saturate(1.2) contrast(1.18) brightness(1.04)";
+      ctx.filter = "saturate(1.10) contrast(1.06)";
       ctx.drawImage(img, 0, 0);
       tex.image = canvas;
       tex.needsUpdate = true;
     }
   }, [texBack, texScared]);
+
+  // Vertical alignment fix: face-scared.png has its head positioned
+  // higher in its source canvas than face.png does, so without a
+  // shift the scared face hovers noticeably above the shoulders.
+  // texture.offset.y is in UV space (V=0 bottom, V=1 top). Positive
+  // offset shifts the texture content DOWN on the plane — what's
+  // sampled at plane V=0 is actually at texture V=offset.y, so the
+  // head moves down. Tuned by eye against the gator-chase view.
+  useEffect(() => {
+    texScared.offset.y = 0.10;
+    texScared.needsUpdate = true;
+  }, [texScared]);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   // Scratch vectors so we don't allocate every frame.
@@ -4929,7 +4943,17 @@ function FaceBillboard({
 
   return (
     <mesh ref={meshRef}>
-      <planeGeometry args={[0.85, 0.9]} />
+      {/* Plane sized to match the source PNGs' 433×577 aspect (≈0.75)
+          with a ~12% scale-up vs the original 0.85×1.13 so the head
+          reads slightly larger / more dominant. The new PNGs have
+          transparent space below the chin, which is why the plane
+          is tall — the empty bottom region sits over the gi
+          (invisibly, since it's all alpha 0). The bobble +
+          scared-shake Z-rotations still pivot around the plane's
+          geometric center, which is fine because the camera
+          billboard logic doesn't care about content position
+          within the texture. */}
+      <planeGeometry args={[0.95, 1.27]} />
       <meshBasicMaterial
         ref={matRef}
         map={texFront}
@@ -5244,10 +5268,14 @@ function Character({
             locks to body rotation while riding the coaster so the face
             points down the track.
 
-            Y was bumped 1.45 → 1.60 so the bottom of the face plane
-            clears the gi collar — the beard is in the lower ~30% of
-            the photo, and the old position put it under the lapels. */}
-        <group position={[0, 1.6, 0]}>
+            Y position chosen for the current source PNGs (433×577,
+            face content in the upper ~60% of the canvas). With the
+            plane height = 1.27, the face center on the plane sits
+            ~0.16 above the plane's geometric center, so a group y
+            of 1.50 puts the face center near y=1.66 and the chin
+            just above the gi collar (y≈1.275). If you swap the
+            photos with differently-cropped sources, retune this. */}
+        <group position={[0, 1.5, 0]}>
           <FaceBillboard charRef={charRef} balloonRef={balloonRef} />
         </group>
 
