@@ -889,10 +889,12 @@ function Scene({
         k.x = ADV_KATE_BASKET.x + 0.6 - swayT;
         k.z = ADV_KATE_BASKET.z + 0.4;
         k.y = Math.max(0, fallY);
-        // Balloon (now empty) drifts back down at its own pace
-        // while the parachuters descend — looks natural; if both
-        // came down at the same speed it'd feel synchronised.
-        adv.balloonY = Math.max(0, ADV_RISE_HEIGHT * (1 - p * 0.7));
+        // Balloon (now empty) descends in lockstep with the chutes
+        // so they all land together. Earlier this ran at 0.7x speed
+        // which left the balloon stranded at ~5u above ground when
+        // the chutes touched down — the empty balloon would then
+        // float there the whole walk-back, visually broken.
+        adv.balloonY = Math.max(0, ADV_RISE_HEIGHT * (1 - p));
         if (adv.t >= 1) {
           adv.phase = "landing";
           adv.t = 0;
@@ -903,8 +905,10 @@ function Scene({
         adv.t += clampedDt / ADV_LANDING_DURATION;
         trav.y = 0;
         k.y = 0;
-        // Balloon settles fully too.
-        adv.balloonY = Math.max(0, adv.balloonY - clampedDt * 4);
+        // Balloon already at the ground from end of parachuting —
+        // pin to 0 so any tiny rounding wobble doesn't show as a
+        // hovering basket.
+        adv.balloonY = 0;
         if (adv.t >= 1) {
           adv.phase = "returning";
           adv.t = 0;
@@ -6136,12 +6140,14 @@ function CameraRig({
       // modes where the character barely leaves the ground).
       wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
     } else if (balloonAdventureRef.current.active) {
-      // Adventure: look at the balloon. Y tracks the balloon's
-      // rising height so the basket / parachutes stay centred.
+      // Adventure: look at the balloon basket. Y tracks balloonY
+      // 1:1 so the basket / parachutes stay centred in frame
+      // regardless of altitude. Earlier this ran at 0.55x and the
+      // balloon floated up out of frame on the way up.
       const adv = balloonAdventureRef.current;
       wantTX = BALLOON_POSITION.x;
       wantTZ = BALLOON_POSITION.z;
-      wantTY = 1.5 + adv.balloonY * 0.55;
+      wantTY = adv.balloonY + 0.9; // basket center is at balloonY + ~0.7
     }
     // Note: when idle, the drone-tour state machine below
     // overrides controls.target directly, so wantT* defaults to
@@ -6195,21 +6201,18 @@ function CameraRig({
       camHijackedRef.current = true;
     } else if (balloonAdventureRef.current.active) {
       // Travis+Kate balloon adventure: camera pulls back south-east
-      // of the balloon and lifts with the balloon (and with the
-      // parachuting characters during descent), framing the whole
-      // height of the ride. Sonny is OFF-CAMERA on the plaza, which
-      // is intentional — he's a spectator, not a rider.
+      // of the balloon and lifts 1:1 with the balloon (and with the
+      // parachuting characters during descent), so the basket stays
+      // centred at every altitude. Sonny is OFF-CAMERA on the plaza,
+      // intentional — he's a spectator, not a rider.
       const adv = balloonAdventureRef.current;
-      const trackHeight =
-        adv.phase === "rising" ||
-        adv.phase === "atTop" ||
-        adv.phase === "jumping" ||
-        adv.phase === "parachuting"
-          ? adv.balloonY
-          : 0;
       wantCam = {
         x: BALLOON_POSITION.x + 4,
-        y: 3.5 + trackHeight * 0.55,
+        // Camera ~2u above the basket so the look-down angle is
+        // gentle (basket fills lower half of frame, sky above).
+        // 3.5 minimum height keeps the camera off the ground even
+        // when balloonY = 0 during boarding/landing/returning.
+        y: Math.max(3.5, adv.balloonY + 2),
         z: BALLOON_POSITION.z + 14,
       };
       camHijackedRef.current = true;
