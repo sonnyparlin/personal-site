@@ -7314,12 +7314,12 @@ function Travis({
         </mesh>
       </group>
 
-      {/* Head — photo billboard. Raised to y=1.78 so the chin
-          fully clears the gi collar (earlier y=1.6 still cropped
-          the very bottom of the beard against the lapel V).
+      {/* Head — photo billboard. y=1.7 sits the chin just above
+          the gi collar/lapel V — earlier y=1.6 cropped the beard,
+          earlier y=1.78 floated noticeably above the torso.
           Suspense fallback={null} so the body still renders if
           the photo is missing/loading. */}
-      <group position={[0, 1.78, 0]}>
+      <group position={[0, 1.7, 0]}>
         <Suspense fallback={null}>
           <PartnerFace src={faceSrc} size={0.85} />
         </Suspense>
