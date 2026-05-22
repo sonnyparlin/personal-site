@@ -1758,6 +1758,13 @@ function Environment({
         color="#3a6ab0"
         altColor="#f4f1de"
       />
+      {/* Love heart that pops above the kiss + floats away as
+          Kate walks back home. */}
+      <Heart
+        adventureRef={balloonAdventureRef}
+        travisRef={travisRef}
+        kateRef={kateRef}
+      />
 
       {/* Amusement park to the northwest (opposite the golf course) */}
       <AmusementPark onSelect={onParkClick} />
@@ -7522,6 +7529,130 @@ function Parachute({
           </mesh>
         );
       })}
+    </group>
+  );
+}
+
+// Heart — small love-heart that pops up above Travis + Kate during
+// the balloon-adventure kiss phase, then floats up + fades out as
+// they walk away during the returning phase.
+//
+// Built from two top-lobe spheres + a downward-pointing cone for
+// the V-point (low-poly heart silhouette). Position locks to the
+// kiss spot on entry to kiss — during returning we keep it at the
+// snapshotted spot (so the heart stays where the kiss happened
+// instead of trailing Travis as he walks home).
+function Heart({
+  adventureRef,
+  travisRef,
+  kateRef,
+}: {
+  adventureRef: React.MutableRefObject<BalloonAdventureState>;
+  travisRef: React.MutableRefObject<AvatarState>;
+  kateRef: React.MutableRefObject<AvatarState>;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const fixedXRef = useRef(0);
+  const fixedZRef = useRef(0);
+  const wasKissRef = useRef(false);
+  useFrame((state) => {
+    const g = groupRef.current;
+    if (
+      !g ||
+      !adventureRef ||
+      !adventureRef.current ||
+      !travisRef ||
+      !travisRef.current ||
+      !kateRef ||
+      !kateRef.current
+    )
+      return;
+    const adv = adventureRef.current;
+    const trav = travisRef.current;
+    const k = kateRef.current;
+    const isKiss = adv.active && adv.phase === "kiss";
+    const isReturn = adv.active && adv.phase === "returning";
+    // Snapshot kiss-spot midpoint on entry to kiss so during the
+    // returning phase the heart stays put (instead of following
+    // Travis as he walks back home).
+    if (isKiss && !wasKissRef.current) {
+      fixedXRef.current = (trav.x + k.x) / 2;
+      fixedZRef.current = (trav.z + k.z) / 2;
+    }
+    wasKissRef.current = isKiss;
+    let visible = false;
+    let posY = 2.6;
+    let opacity = 1;
+    let scale = 0.5;
+    if (isKiss) {
+      visible = true;
+      const t = adv.t;
+      // Pop in over the first 20% of the kiss, then gentle pulse.
+      if (t < 0.2) scale = (t / 0.2) * 0.55;
+      else scale = 0.55 + Math.sin(state.clock.elapsedTime * 6) * 0.05;
+      posY = 2.6 + Math.sin(state.clock.elapsedTime * 3) * 0.06;
+      g.position.x = (trav.x + k.x) / 2;
+      g.position.z = (trav.z + k.z) / 2;
+    } else if (isReturn) {
+      visible = true;
+      const t = adv.t;
+      // Float up + fade out across the first ~half of the walk-back.
+      posY = 2.6 + t * 5;
+      opacity = Math.max(0, 1 - t * 2);
+      scale = 0.55;
+      g.position.x = fixedXRef.current;
+      g.position.z = fixedZRef.current;
+    }
+    g.visible = visible && opacity > 0.01;
+    if (!g.visible) return;
+    g.position.y = posY;
+    g.scale.setScalar(scale);
+    // Apply opacity to all materials in the heart so the fade-out
+    // affects every sub-mesh uniformly.
+    g.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      const mat = mesh.material as THREE.Material | undefined;
+      if (mat && "opacity" in mat) {
+        (mat as THREE.MeshStandardMaterial).opacity = opacity;
+        mat.transparent = true;
+      }
+    });
+  });
+  // Heart silhouette: two top-lobe spheres + a downward-pointing
+  // cone (rotated π around X so its apex points down). The cone's
+  // top edge sits just below the spheres so the three shapes
+  // visually merge into a heart silhouette.
+  const PINK = "#ff3a78";
+  const DEEP_PINK = "#ff1a5a";
+  return (
+    <group ref={groupRef} visible={false}>
+      <mesh position={[-0.22, 0.08, 0]}>
+        <sphereGeometry args={[0.28, 14, 10]} />
+        <meshStandardMaterial
+          color={PINK}
+          emissive={DEEP_PINK}
+          emissiveIntensity={0.6}
+          transparent
+        />
+      </mesh>
+      <mesh position={[0.22, 0.08, 0]}>
+        <sphereGeometry args={[0.28, 14, 10]} />
+        <meshStandardMaterial
+          color={PINK}
+          emissive={DEEP_PINK}
+          emissiveIntensity={0.6}
+          transparent
+        />
+      </mesh>
+      <mesh position={[0, -0.36, 0]} rotation={[Math.PI, 0, 0]}>
+        <coneGeometry args={[0.42, 0.6, 18]} />
+        <meshStandardMaterial
+          color={PINK}
+          emissive={DEEP_PINK}
+          emissiveIntensity={0.6}
+          transparent
+        />
+      </mesh>
     </group>
   );
 }
