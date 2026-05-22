@@ -75,6 +75,41 @@ type BalloonState = {
   startZ: number;
 };
 
+// State machine for the new balloon adventure: Travis + Kate ride
+// the balloon up high, jump out, parachute down, walk back. Sonny
+// is a spectator (stays on the plaza, camera pans away to the
+// balloon and back).
+type BalloonAdventurePhase =
+  | "kateWalking"   // Kate walks from academy to her boarding spot
+  | "boarding"      // both characters move into the basket
+  | "rising"        // balloon ascends with both inside
+  | "atTop"         // brief beat at peak altitude
+  | "jumping"       // both leap out
+  | "parachuting"   // parachutes deployed, slow descent
+  | "landing"       // touchdown
+  | "returning";    // both walk back to their home spots
+
+type BalloonAdventureState = {
+  active: boolean;
+  phase: BalloonAdventurePhase;
+  t: number;          // 0..1 progress within the current phase
+  balloonY: number;   // world Y of the balloon group (basket floor)
+};
+
+// Position + pose for a non-player avatar (Travis, Kate). Drives
+// dynamic placement and walking animation when the adventure is
+// active. When idle, ref holds the home position (Travis next to
+// the balloon; Kate hidden / inside the academy).
+type AvatarState = {
+  x: number;
+  z: number;
+  y: number;
+  angle: number;     // facing direction (atan2(dx, dz) convention)
+  walking: boolean;  // drives the walk-cycle limb swing
+  stepPhase: number; // 0..1 step cycle
+  visible: boolean;  // hide outside the adventure (used for Kate)
+};
+
 type SharedRefs = {
   char: React.MutableRefObject<CharState>;
   target: React.MutableRefObject<{
@@ -97,6 +132,9 @@ type SharedRefs = {
   approachingGolf: React.MutableRefObject<boolean>;
   balloon: React.MutableRefObject<BalloonState>;
   approachingBalloon: React.MutableRefObject<boolean>;
+  balloonAdventure: React.MutableRefObject<BalloonAdventureState>;
+  travis: React.MutableRefObject<AvatarState>;
+  kate: React.MutableRefObject<AvatarState>;
 };
 
 const WALK_SPEED = 2.5; // units/sec
@@ -152,6 +190,29 @@ const BALLOON_RISE_DURATION = 3.5; // seconds of ascent
 const BALLOON_SCARE_DURATION = 0.45; // "uh-oh I'm too high" beat
 const BALLOON_JUMP_DURATION = 0.55; // seconds airborne from the basket to the ground
 const BALLOON_ROLL_DURATION = 0.9; // seconds of forward roll to break the fall
+
+// ── New balloon-adventure choreography (Travis + Kate ride up high,
+// jump out, parachute down, walk back). Sonny stays on the plaza.
+const ADV_KATE_SPAWN = { x: -5.7, z: 0.2 }; // exterior of JIU JITSU door
+const ADV_KATE_BOARDING = {            // walking destination by the basket
+  x: BALLOON_POSITION.x + 0.6,
+  z: BALLOON_POSITION.z + 0.4,
+};
+const ADV_TRAVIS_BOARDING = {          // Travis steps in from his standing spot
+  x: BALLOON_POSITION.x + 0.3,
+  z: BALLOON_POSITION.z,
+};
+const ADV_KATE_BASKET = { x: BALLOON_POSITION.x + 0.28, z: BALLOON_POSITION.z };
+const ADV_TRAVIS_BASKET = { x: BALLOON_POSITION.x - 0.28, z: BALLOON_POSITION.z };
+const ADV_RISE_HEIGHT = 18;            // much higher than the legacy 6u
+const ADV_KATE_WALK_DURATION = 5.5;    // sec for Kate's walk from academy
+const ADV_BOARDING_DURATION = 1.4;     // sec to climb in
+const ADV_RISE_DURATION = 4.5;
+const ADV_AT_TOP_DURATION = 0.9;
+const ADV_JUMP_DURATION = 0.55;        // brief free-fall before chutes open
+const ADV_PARACHUTE_DURATION = 5.0;    // slow descent
+const ADV_LANDING_DURATION = 0.4;
+const ADV_RETURN_TRAVIS = { x: BALLOON_POSITION.x + 1.7, z: BALLOON_POSITION.z + 0.4 };
 
 // Amusement park
 const PARK = { x: -17, z: -19 };
@@ -441,6 +502,36 @@ export default function GameWorld() {
     startZ: 0,
   });
   const approachingBalloonRef = useRef(false);
+  const balloonAdventureRef = useRef<BalloonAdventureState>({
+    active: false,
+    phase: "kateWalking",
+    t: 0,
+    balloonY: 0,
+  });
+  // Travis's "home" position is the same spot the static Travis figure
+  // stood at — south-east of the basket. He starts visible there and
+  // moves into / out of the basket during the adventure.
+  const travisRef = useRef<AvatarState>({
+    x: BALLOON_POSITION.x + 1.7,
+    z: BALLOON_POSITION.z + 0.4,
+    y: 0,
+    angle: 0, // face south (toward camera)
+    walking: false,
+    stepPhase: 0,
+    visible: true,
+  });
+  // Kate is hidden by default — she only appears outside the academy
+  // when the balloon adventure is triggered. Her "spawn" point is the
+  // south-facing exterior door of the JIU JITSU building.
+  const kateRef = useRef<AvatarState>({
+    x: -5.7,
+    z: 0.2, // just south of the academy building (door side)
+    y: 0,
+    angle: 0,
+    walking: false,
+    stepPhase: 0,
+    visible: false,
+  });
 
   const pathname = usePathname();
   const router = useRouter();
@@ -549,6 +640,9 @@ export default function GameWorld() {
       approachingGolf: approachingGolfRef,
       balloon: balloonRef,
       approachingBalloon: approachingBalloonRef,
+      balloonAdventure: balloonAdventureRef,
+      travis: travisRef,
+      kate: kateRef,
     }),
     []
   );
@@ -655,6 +749,233 @@ function Scene({
     const target = refs.target.current;
     const gator = refs.gator.current;
     const coaster = refs.coaster.current;
+
+    // ── 0ab. Travis + Kate balloon adventure ──
+    // Multi-phase state machine that runs independently of Sonny.
+    // Sonny stays on the plaza; Travis and Kate are the riders.
+    if (refs.balloonAdventure.current.active) {
+      const adv = refs.balloonAdventure.current;
+      const trav = refs.travis.current;
+      const k = refs.kate.current;
+
+      if (adv.phase === "kateWalking") {
+        // Kate walks from the academy spawn to her boarding spot.
+        const dx = ADV_KATE_BOARDING.x - k.x;
+        const dz = ADV_KATE_BOARDING.z - k.z;
+        const dist = Math.hypot(dx, dz);
+        const step = WALK_SPEED * clampedDt;
+        if (dist <= step) {
+          k.x = ADV_KATE_BOARDING.x;
+          k.z = ADV_KATE_BOARDING.z;
+          k.walking = false;
+          k.stepPhase = 0;
+          // Face the basket so the next phase's "climb in" looks
+          // natural (she pivots into the basket from behind).
+          k.angle = Math.atan2(
+            BALLOON_POSITION.x - k.x,
+            BALLOON_POSITION.z - k.z
+          );
+          adv.phase = "boarding";
+          adv.t = 0;
+        } else {
+          k.x += (dx / dist) * step;
+          k.z += (dz / dist) * step;
+          k.angle = Math.atan2(dx, dz);
+          k.walking = true;
+          k.stepPhase = (k.stepPhase + clampedDt * 4.5) % 1;
+        }
+        // Sanity guard: if she somehow gets stuck (shouldn't), still
+        // advance after a generous timeout so the adventure isn't
+        // soft-locked.
+        adv.t += clampedDt / ADV_KATE_WALK_DURATION;
+        if (adv.t > 1.4 && dist > 0.1) {
+          // Snap her to the boarding spot and proceed
+          k.x = ADV_KATE_BOARDING.x;
+          k.z = ADV_KATE_BOARDING.z;
+          k.walking = false;
+          adv.phase = "boarding";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "boarding") {
+        // Climb in: lerp both characters from their waiting spots
+        // to their basket positions over a short beat. Faces look
+        // toward the camera (south, angle=0) — keeps the photos
+        // billboarded clearly during the ride.
+        adv.t += clampedDt / ADV_BOARDING_DURATION;
+        const p = Math.min(1, adv.t);
+        // Smoothstep for an eased climb-in (no abrupt start/stop).
+        const e = p * p * (3 - 2 * p);
+        // Travis from his home to his basket spot.
+        trav.x = ADV_RETURN_TRAVIS.x + (ADV_TRAVIS_BASKET.x - ADV_RETURN_TRAVIS.x) * e;
+        trav.z = ADV_RETURN_TRAVIS.z + (ADV_TRAVIS_BASKET.z - ADV_RETURN_TRAVIS.z) * e;
+        trav.angle = 0;
+        trav.walking = false;
+        // Kate from her boarding spot to her basket spot.
+        k.x = ADV_KATE_BOARDING.x + (ADV_KATE_BASKET.x - ADV_KATE_BOARDING.x) * e;
+        k.z = ADV_KATE_BOARDING.z + (ADV_KATE_BASKET.z - ADV_KATE_BOARDING.z) * e;
+        k.angle = 0;
+        k.walking = false;
+        if (adv.t >= 1) {
+          adv.phase = "rising";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "rising") {
+        // Balloon lifts off carrying both characters in the basket.
+        adv.t += clampedDt / ADV_RISE_DURATION;
+        const p = Math.min(1, adv.t);
+        // Ease the rise (slow start, slow end) for a "majestic
+        // balloon takeoff" feel rather than a uniform crank.
+        const e = p * p * (3 - 2 * p);
+        adv.balloonY = e * ADV_RISE_HEIGHT;
+        // Riders track the basket — y = balloon height + small
+        // offset so feet sit on the basket floor.
+        trav.x = ADV_TRAVIS_BASKET.x;
+        trav.z = ADV_TRAVIS_BASKET.z;
+        trav.y = adv.balloonY + 0.28;
+        trav.angle = 0;
+        k.x = ADV_KATE_BASKET.x;
+        k.z = ADV_KATE_BASKET.z;
+        k.y = adv.balloonY + 0.28;
+        k.angle = 0;
+        if (adv.t >= 1) {
+          adv.phase = "atTop";
+          adv.t = 0;
+          adv.balloonY = ADV_RISE_HEIGHT;
+        }
+      } else if (adv.phase === "atTop") {
+        // Brief pause at the peak. Pretty much same as the end of
+        // rising — characters in basket, balloon at full height.
+        adv.t += clampedDt / ADV_AT_TOP_DURATION;
+        trav.y = adv.balloonY + 0.28;
+        k.y = adv.balloonY + 0.28;
+        if (adv.t >= 1) {
+          adv.phase = "jumping";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "jumping") {
+        // Both leap out of the basket — small forward arc into a
+        // brief free-fall. Mostly drops a short distance before
+        // chutes deploy. Travis nudges -x (west), Kate +x (east)
+        // so they spread out and don't overlap during the chute.
+        adv.t += clampedDt / ADV_JUMP_DURATION;
+        const p = Math.min(1, adv.t);
+        // Parabolic fall: drop a few units while drifting outward.
+        const drop = p * 2.5; // fall 2.5u during the brief free-fall
+        trav.x = ADV_TRAVIS_BASKET.x - p * 0.6;
+        trav.z = ADV_TRAVIS_BASKET.z + p * 0.4;
+        trav.y = adv.balloonY + 0.28 - drop;
+        k.x = ADV_KATE_BASKET.x + p * 0.6;
+        k.z = ADV_KATE_BASKET.z + p * 0.4;
+        k.y = adv.balloonY + 0.28 - drop;
+        if (adv.t >= 1) {
+          adv.phase = "parachuting";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "parachuting") {
+        // Slow descent with parachutes deployed. Linear fall plus a
+        // gentle horizontal sway so the chutes don't drop in a
+        // perfectly straight line.
+        adv.t += clampedDt / ADV_PARACHUTE_DURATION;
+        const p = Math.min(1, adv.t);
+        // Start altitude = balloonY at top of jump minus jump drop
+        const startY = ADV_RISE_HEIGHT - 2.5 + 0.28;
+        const fallY = startY * (1 - p);
+        // Slight side-to-side sway from chute drag, opposite phases
+        // for the two characters so they don't look glued together.
+        const swayT = Math.sin(adv.t * Math.PI * 3) * 0.18;
+        trav.x = ADV_TRAVIS_BASKET.x - 0.6 + swayT;
+        trav.z = ADV_TRAVIS_BASKET.z + 0.4;
+        trav.y = Math.max(0, fallY);
+        k.x = ADV_KATE_BASKET.x + 0.6 - swayT;
+        k.z = ADV_KATE_BASKET.z + 0.4;
+        k.y = Math.max(0, fallY);
+        // Balloon (now empty) drifts back down at its own pace
+        // while the parachuters descend — looks natural; if both
+        // came down at the same speed it'd feel synchronised.
+        adv.balloonY = Math.max(0, ADV_RISE_HEIGHT * (1 - p * 0.7));
+        if (adv.t >= 1) {
+          adv.phase = "landing";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "landing") {
+        // Touchdown beat — both on the ground, parachutes vanish
+        // (handled by phase-aware visibility in Parachute component).
+        adv.t += clampedDt / ADV_LANDING_DURATION;
+        trav.y = 0;
+        k.y = 0;
+        // Balloon settles fully too.
+        adv.balloonY = Math.max(0, adv.balloonY - clampedDt * 4);
+        if (adv.t >= 1) {
+          adv.phase = "returning";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "returning") {
+        // Both walk back to their home spots — Travis to his stand-
+        // beside-the-balloon spot, Kate to the academy door (where
+        // she'll go back inside / disappear). Easter egg ends when
+        // BOTH have arrived.
+        const step = WALK_SPEED * clampedDt;
+        // Travis returns to his home spot.
+        const tdx = ADV_RETURN_TRAVIS.x - trav.x;
+        const tdz = ADV_RETURN_TRAVIS.z - trav.z;
+        const tdist = Math.hypot(tdx, tdz);
+        let travArrived = false;
+        if (tdist <= step) {
+          trav.x = ADV_RETURN_TRAVIS.x;
+          trav.z = ADV_RETURN_TRAVIS.z;
+          trav.angle = 0; // face camera at home spot
+          trav.walking = false;
+          trav.stepPhase = 0;
+          travArrived = true;
+        } else {
+          trav.x += (tdx / tdist) * step;
+          trav.z += (tdz / tdist) * step;
+          trav.angle = Math.atan2(tdx, tdz);
+          trav.walking = true;
+          trav.stepPhase = (trav.stepPhase + clampedDt * 4.5) % 1;
+        }
+        // Kate returns to the academy door.
+        const kdx = ADV_KATE_SPAWN.x - k.x;
+        const kdz = ADV_KATE_SPAWN.z - k.z;
+        const kdist = Math.hypot(kdx, kdz);
+        let kateArrived = false;
+        if (kdist <= step) {
+          k.x = ADV_KATE_SPAWN.x;
+          k.z = ADV_KATE_SPAWN.z;
+          k.walking = false;
+          k.stepPhase = 0;
+          kateArrived = true;
+        } else {
+          k.x += (kdx / kdist) * step;
+          k.z += (kdz / kdist) * step;
+          k.angle = Math.atan2(kdx, kdz);
+          k.walking = true;
+          k.stepPhase = (k.stepPhase + clampedDt * 4.5) % 1;
+        }
+        if (travArrived && kateArrived) {
+          // Both home — end the adventure. Kate disappears (she's
+          // back inside the academy); Travis stays standing at his
+          // spot. Easter egg is now replayable.
+          adv.active = false;
+          adv.t = 0;
+          adv.phase = "kateWalking";
+          adv.balloonY = 0;
+          k.visible = false;
+        }
+      }
+      // Mirror the adventure's balloonY onto the legacy balloonRef
+      // so the Balloon component (which reads balloonRef.height)
+      // visually rises in sync with the adventure. We also flag
+      // balloonRef.active so it stays at height instead of lerping
+      // back to 0 each frame. Cleared when adventure ends.
+      if (adv.active) {
+        refs.balloon.current.active = true;
+        refs.balloon.current.height = adv.balloonY;
+      } else {
+        refs.balloon.current.active = false;
+        refs.balloon.current.height = 0;
+      }
+    }
 
     // ── 0aa. Hot-air balloon ride (with chicken-out + roll) ──
     if (char.mode === "ballooning") {
@@ -1043,7 +1364,8 @@ function Scene({
       refs.coaster.current.riding ||
       refs.family.current.active ||
       refs.golf.current.active ||
-      refs.balloon.current.active
+      refs.balloon.current.active ||
+      refs.balloonAdventure.current.active
     );
   }
 
@@ -1094,13 +1416,25 @@ function Scene({
 
   function handleBalloonClick() {
     if (!isOnHome || isBusy()) return;
-    // Remember where the character was standing so he can run back to
-    // the same spot after rolling out of the failed balloon ride.
-    const c = refs.char.current;
-    refs.balloon.current.startX = c.x;
-    refs.balloon.current.startZ = c.z;
-    walkTo(BALLOON_ENTRY.x, BALLOON_ENTRY.z, null);
-    refs.approachingBalloon.current = true;
+    // NEW BEHAVIOUR: Sonny does NOT walk to the balloon. He stays on
+    // the plaza as a spectator. Trigger the Travis+Kate adventure:
+    //   - Kate spawns at the academy door
+    //   - Kate walks to the balloon
+    //   - Both board, balloon rises high
+    //   - Both jump out, parachutes deploy
+    //   - Both walk back to home positions
+    // The camera pans to the balloon vantage while the adventure runs.
+    refs.kate.current.x = ADV_KATE_SPAWN.x;
+    refs.kate.current.z = ADV_KATE_SPAWN.z;
+    refs.kate.current.y = 0;
+    refs.kate.current.angle = 0;
+    refs.kate.current.walking = true;
+    refs.kate.current.stepPhase = 0;
+    refs.kate.current.visible = true;
+    refs.balloonAdventure.current.active = true;
+    refs.balloonAdventure.current.phase = "kateWalking";
+    refs.balloonAdventure.current.t = 0;
+    refs.balloonAdventure.current.balloonY = 0;
   }
 
 
@@ -1138,6 +1472,9 @@ function Scene({
             onGolfClick={handleGolfClick}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
+            travisRef={refs.travis}
+            kateRef={refs.kate}
+            balloonAdventureRef={refs.balloonAdventure}
           />
           {SECTIONS.map((s) => (
             <Building
@@ -1160,6 +1497,7 @@ function Scene({
       <CameraRig
         charRef={refs.char}
         gatorRef={refs.gator}
+        balloonAdventureRef={refs.balloonAdventure}
         pathname={pathname}
         camDefault={camDefault}
       />
@@ -1247,6 +1585,9 @@ function Environment({
   onGolfClick,
   balloonRef,
   onBalloonClick,
+  travisRef,
+  kateRef,
+  balloonAdventureRef,
 }: {
   gatorRef: React.MutableRefObject<GatorState>;
   onGatorClick: () => void;
@@ -1256,6 +1597,9 @@ function Environment({
   onGolfClick: () => void;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
+  travisRef: React.MutableRefObject<AvatarState>;
+  kateRef: React.MutableRefObject<AvatarState>;
+  balloonAdventureRef: React.MutableRefObject<BalloonAdventureState>;
 }) {
   return (
     <>
@@ -1306,6 +1650,32 @@ function Environment({
 
       {/* Hot-air balloon to the south-east (clickable easter egg) */}
       <Balloon balloonRef={balloonRef} onSelect={onBalloonClick} />
+      {/* Travis — black-belt friend stationed by the balloon. Position,
+          facing, and walking are driven by travisRef so the same figure
+          can stand idle, walk into the basket, ride up, parachute down,
+          and walk back. Initial ref position is set to the home spot. */}
+      <Travis avatarRef={travisRef} />
+      {/* Kate-outside — only visible during the balloon adventure (her
+          static academy instance keeps rendering on /jiu-jitsu). Walks
+          from the academy door to the balloon, rides up, parachutes
+          down, walks back. */}
+      <KateOutside avatarRef={kateRef} />
+      {/* Parachutes — one per character, only visible during the
+          parachuting phase. They follow each character down. Red
+          for Travis (matches the balloon), cream for Kate (matches
+          her gi accent). */}
+      <Parachute
+        avatarRef={travisRef}
+        adventureRef={balloonAdventureRef}
+        color="#d94a4a"
+        altColor="#f4f1de"
+      />
+      <Parachute
+        avatarRef={kateRef}
+        adventureRef={balloonAdventureRef}
+        color="#3a6ab0"
+        altColor="#f4f1de"
+      />
 
       {/* Amusement park to the northwest (opposite the golf course) */}
       <AmusementPark onSelect={onParkClick} />
@@ -5524,11 +5894,13 @@ const GOLF_MIDPOINT = {
 function CameraRig({
   charRef,
   gatorRef,
+  balloonAdventureRef,
   pathname,
   camDefault,
 }: {
   charRef: React.MutableRefObject<CharState>;
   gatorRef: React.MutableRefObject<GatorState>;
+  balloonAdventureRef: React.MutableRefObject<BalloonAdventureState>;
   pathname: string;
   camDefault: { x: number; y: number; z: number };
 }) {
@@ -5745,6 +6117,13 @@ function CameraRig({
       // dead-center as the balloon rises (vs. only halfway for other
       // modes where the character barely leaves the ground).
       wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
+    } else if (balloonAdventureRef.current.active) {
+      // Adventure: look at the balloon. Y tracks the balloon's
+      // rising height so the basket / parachutes stay centred.
+      const adv = balloonAdventureRef.current;
+      wantTX = BALLOON_POSITION.x;
+      wantTZ = BALLOON_POSITION.z;
+      wantTY = 1.5 + adv.balloonY * 0.55;
     }
     // Note: when idle, the drone-tour state machine below
     // overrides controls.target directly, so wantT* defaults to
@@ -5794,6 +6173,26 @@ function CameraRig({
         x: BALLOON_POSITION.x + 2,
         y: 2.5 + c.y,
         z: BALLOON_POSITION.z + 10,
+      };
+      camHijackedRef.current = true;
+    } else if (balloonAdventureRef.current.active) {
+      // Travis+Kate balloon adventure: camera pulls back south-east
+      // of the balloon and lifts with the balloon (and with the
+      // parachuting characters during descent), framing the whole
+      // height of the ride. Sonny is OFF-CAMERA on the plaza, which
+      // is intentional — he's a spectator, not a rider.
+      const adv = balloonAdventureRef.current;
+      const trackHeight =
+        adv.phase === "rising" ||
+        adv.phase === "atTop" ||
+        adv.phase === "jumping" ||
+        adv.phase === "parachuting"
+          ? adv.balloonY
+          : 0;
+      wantCam = {
+        x: BALLOON_POSITION.x + 4,
+        y: 3.5 + trackHeight * 0.55,
+        z: BALLOON_POSITION.z + 14,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "flee") {
@@ -5888,6 +6287,7 @@ function CameraRig({
         c.mode === "idle" &&
         !c.walking &&
         !camHijackedRef.current &&
+        !balloonAdventureRef.current.active &&
         userIdle &&
         isOnHomeRoute;
       controlsRef.current.autoRotate = false;
@@ -6672,6 +7072,348 @@ function TrainingPartner({
       <group position={[0, 1.45, 0]}>
         <PartnerFace src={faceSrc} size={0.85} />
       </group>
+    </group>
+  );
+}
+
+// Travis — black-belt friend hanging out by the hot-air balloon.
+// Built with a slim no-gi look (black rashguard + dark shorts) so he
+// reads as a distinct character from Sonny's white gi. Face is a
+// photo billboard, same trick as PartnerFace. Position + facing +
+// walking animation are driven by an AvatarState ref so the same
+// figure can stand idle by the balloon, walk into the basket,
+// parachute down, and walk back without remounting.
+const RASHGUARD = "#101014"; // near-black, slightly warm
+const RASHGUARD_TRIM = "#2a2a30"; // subtle seam/trim
+const SHORTS = "#1a1a20"; // shorts a hair lighter than the rashguard
+function Travis({
+  avatarRef,
+  faceSrc = "/travis.png",
+}: {
+  avatarRef: React.MutableRefObject<AvatarState>;
+  faceSrc?: string;
+}) {
+  const rootRef = useRef<THREE.Group>(null);
+  const leftShoulderRef = useRef<THREE.Group>(null);
+  const rightShoulderRef = useRef<THREE.Group>(null);
+  const leftHipRef = useRef<THREE.Group>(null);
+  const rightHipRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!avatarRef || !avatarRef.current || !rootRef.current) return;
+    const a = avatarRef.current;
+    rootRef.current.visible = a.visible;
+    if (!a.visible) return;
+    rootRef.current.position.x = a.x;
+    rootRef.current.position.y = a.y;
+    rootRef.current.position.z = a.z;
+    // Smooth rotation toward target facing direction (same lerp
+    // approach as Sonny — 20% per frame is a comfortable turn rate).
+    const cur = rootRef.current.rotation.y;
+    let diff = a.angle - cur;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    rootRef.current.rotation.y = cur + diff * 0.2;
+    // Limb swing while walking — opposite-phase shoulders/hips for
+    // a natural gait. Match the WALK_SPEED * 4.5 step rate Sonny uses.
+    const swing = a.walking ? Math.sin(a.stepPhase * Math.PI * 2) * 0.6 : 0;
+    if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = swing;
+    if (rightShoulderRef.current) rightShoulderRef.current.rotation.x = -swing;
+    if (leftHipRef.current) leftHipRef.current.rotation.x = -swing;
+    if (rightHipRef.current) rightHipRef.current.rotation.x = swing;
+  });
+  return (
+    <group ref={rootRef}>
+      {/* Torso — slim rashguard */}
+      <mesh position={[0, 1.0, 0]} castShadow>
+        <boxGeometry args={[0.46, 0.55, 0.28]} />
+        <meshStandardMaterial color={RASHGUARD} />
+      </mesh>
+      {/* Trim band along the bottom hem (slight contrast to break up
+          the solid black). */}
+      <mesh position={[0, 0.73, 0]}>
+        <boxGeometry args={[0.47, 0.04, 0.29]} />
+        <meshStandardMaterial color={RASHGUARD_TRIM} />
+      </mesh>
+      {/* Shorts — slightly wider than rashguard, end above knee */}
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <boxGeometry args={[0.48, 0.35, 0.32]} />
+        <meshStandardMaterial color={SHORTS} />
+      </mesh>
+      {/* Shorts waistband — thin band at top of shorts */}
+      <mesh position={[0, 0.72, 0]}>
+        <boxGeometry args={[0.49, 0.03, 0.33]} />
+        <meshStandardMaterial color={RASHGUARD_TRIM} />
+      </mesh>
+
+      {/* Arms — long rashguard sleeves to the wrist. Pivot is at the
+          shoulder; rotation.x swings forward/back during walks. */}
+      <group ref={leftShoulderRef} position={[-0.28, 1.22, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.62, 0.16]} />
+          <meshStandardMaterial color={RASHGUARD} />
+        </mesh>
+        {/* Hand — small skin block at the wrist */}
+        <mesh position={[0, -0.68, 0]} castShadow>
+          <boxGeometry args={[0.12, 0.10, 0.14]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group ref={rightShoulderRef} position={[0.28, 1.22, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.62, 0.16]} />
+          <meshStandardMaterial color={RASHGUARD} />
+        </mesh>
+        <mesh position={[0, -0.68, 0]} castShadow>
+          <boxGeometry args={[0.12, 0.10, 0.14]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Legs — bare skin from shorts hem to feet, since he's in
+          nogi shorts not gi pants. Pivot at the hip. */}
+      <group ref={leftHipRef} position={[-0.12, 0.66, 0]}>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.44, 0.20]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+        <mesh position={[0, -0.76, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group ref={rightHipRef} position={[0.12, 0.66, 0]}>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.44, 0.20]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+        <mesh position={[0, -0.76, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Head — photo billboard. Reuses PartnerFace; if travis.png
+          has a different aspect than kate.png the plane will squish.
+          travis.png should be a transparent PNG roughly portrait.
+          Suspense fallback={null} so the body still renders if the
+          photo is missing/loading (otherwise the whole Travis subtree
+          waits on the texture). */}
+      <group position={[0, 1.45, 0]}>
+        <Suspense fallback={null}>
+          <PartnerFace src={faceSrc} size={0.85} />
+        </Suspense>
+      </group>
+    </group>
+  );
+}
+
+// KateOutside — Kate's BJJ-gi figure used OUTSIDE the academy
+// (during the balloon adventure). Same gi build as TrainingPartner
+// but driven by an AvatarState ref so she can walk, sit in the
+// basket, and parachute down. The static academy version
+// (TrainingPartner) is unchanged.
+function KateOutside({
+  avatarRef,
+  faceSrc = "/kate.png",
+}: {
+  avatarRef: React.MutableRefObject<AvatarState>;
+  faceSrc?: string;
+}) {
+  const rootRef = useRef<THREE.Group>(null);
+  const leftShoulderRef = useRef<THREE.Group>(null);
+  const rightShoulderRef = useRef<THREE.Group>(null);
+  const leftHipRef = useRef<THREE.Group>(null);
+  const rightHipRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!avatarRef || !avatarRef.current || !rootRef.current) return;
+    const a = avatarRef.current;
+    rootRef.current.visible = a.visible;
+    if (!a.visible) return;
+    rootRef.current.position.x = a.x;
+    rootRef.current.position.y = a.y;
+    rootRef.current.position.z = a.z;
+    const cur = rootRef.current.rotation.y;
+    let diff = a.angle - cur;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    rootRef.current.rotation.y = cur + diff * 0.2;
+    const swing = a.walking ? Math.sin(a.stepPhase * Math.PI * 2) * 0.6 : 0;
+    if (leftShoulderRef.current) leftShoulderRef.current.rotation.x = swing;
+    if (rightShoulderRef.current) rightShoulderRef.current.rotation.x = -swing;
+    if (leftHipRef.current) leftHipRef.current.rotation.x = -swing;
+    if (rightHipRef.current) rightHipRef.current.rotation.x = swing;
+  });
+  // Wrap in another group at root so child-space content (lapels)
+  // sits correctly when rootRef.rotation is applied around the
+  // figure's vertical axis.
+  return (
+    <group ref={rootRef}>
+      {/* Torso (gi top) */}
+      <mesh position={[0, 1.0, 0]} castShadow>
+        <boxGeometry args={[0.48, 0.55, 0.30]} />
+        <meshStandardMaterial color={GI} />
+      </mesh>
+      {/* Closed kimono — lapels facing -Z so they read on the
+          camera-facing side after the root rotation aims her body
+          at the direction of travel. (Note: rootRef.rotation.y is
+          set per-frame from kateRef.angle so the lapels rotate
+          with her — there's no fixed π flip like TrainingPartner.) */}
+      <mesh position={[-0.09, 1.04, -0.155]} rotation={[0, 0, -0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
+      </mesh>
+      <mesh position={[0.09, 1.04, -0.158]} rotation={[0, 0, 0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
+      </mesh>
+
+      {/* Belt — brown */}
+      <mesh position={[0, 0.71, 0]} castShadow>
+        <boxGeometry args={[0.51, 0.10, 0.32]} />
+        <meshStandardMaterial color={BROWN_BELT} />
+      </mesh>
+      <mesh position={[0, 0.71, -0.17]} castShadow>
+        <boxGeometry args={[0.10, 0.13, 0.05]} />
+        <meshStandardMaterial color={BROWN_BELT} />
+      </mesh>
+
+      {/* Arms — pivot at shoulder for walking swing. */}
+      <group ref={leftShoulderRef} position={[-0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group ref={rightShoulderRef} position={[0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Legs — gi pants, pivot at hip for walking swing. */}
+      <group ref={leftHipRef} position={[-0.12, 0.66, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+      <group ref={rightHipRef} position={[0.12, 0.66, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.28]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Head — photo billboard. */}
+      <group position={[0, 1.45, 0]}>
+        <Suspense fallback={null}>
+          <PartnerFace src={faceSrc} size={0.85} />
+        </Suspense>
+      </group>
+    </group>
+  );
+}
+
+// Parachute — dome canopy + 4 suspension lines above a falling
+// character. Only visible during the balloon-adventure parachuting
+// phase. Position tracks the avatar so the chute follows them
+// during their descent.
+function Parachute({
+  avatarRef,
+  adventureRef,
+  color = "#d94a4a",
+  altColor = "#f4f1de",
+}: {
+  avatarRef: React.MutableRefObject<AvatarState>;
+  adventureRef: React.MutableRefObject<BalloonAdventureState>;
+  color?: string;
+  altColor?: string;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!groupRef.current || !avatarRef || !avatarRef.current || !adventureRef || !adventureRef.current) return;
+    const a = avatarRef.current;
+    const adv = adventureRef.current;
+    const visible = adv.active && adv.phase === "parachuting";
+    groupRef.current.visible = visible;
+    if (!visible) return;
+    // Position above the character's head (head sits at ~y=1.6 in
+    // their local frame). Canopy's base sits at y=2.4 above the
+    // character's feet, lines reach down to shoulder level.
+    groupRef.current.position.x = a.x;
+    groupRef.current.position.y = a.y + 2.4;
+    groupRef.current.position.z = a.z;
+  });
+  // Canopy radius + line length. Tuned by eye to look "carrying"
+  // rather than oversized.
+  const CANOPY_R = 1.2;
+  const LINE_LEN = 1.4;
+  const LINE_R = 0.012;
+  // Suspension lines at four corners. Each is a thin cylinder
+  // angled from the canopy edge down to the character's shoulder.
+  const corners: [number, number][] = [
+    [-CANOPY_R * 0.55, -CANOPY_R * 0.55],
+    [CANOPY_R * 0.55, -CANOPY_R * 0.55],
+    [-CANOPY_R * 0.55, CANOPY_R * 0.55],
+    [CANOPY_R * 0.55, CANOPY_R * 0.55],
+  ];
+  return (
+    <group ref={groupRef} visible={false}>
+      {/* Canopy — upper hemisphere of a sphere = dome shape */}
+      <mesh castShadow>
+        <sphereGeometry
+          args={[CANOPY_R, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2]}
+        />
+        <meshStandardMaterial color={color} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Alternating-color stripes for a parachute-like pattern.
+          Thin equator band in a contrasting color. */}
+      <mesh position={[0, 0.02, 0]}>
+        <torusGeometry args={[CANOPY_R * 0.99, 0.04, 6, 24]} />
+        <meshStandardMaterial color={altColor} />
+      </mesh>
+      {/* Four suspension lines — cylinders angled from canopy edge
+          down to where the character's shoulders are (~y=-LINE_LEN). */}
+      {corners.map(([cx, cz], i) => {
+        // Each line goes from (cx, 0, cz) to (0, -LINE_LEN, 0).
+        // Use a midpoint position + lookAt-style rotation.
+        const mid = new THREE.Vector3(cx / 2, -LINE_LEN / 2, cz / 2);
+        const dir = new THREE.Vector3(-cx, -LINE_LEN, -cz);
+        const len = dir.length();
+        // cylinder geometry hangs along +Y; rotate so its axis aligns
+        // with dir. Use quaternion from up-axis (+Y) to dir.
+        const quat = new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          dir.clone().normalize()
+        );
+        return (
+          <mesh
+            key={i}
+            position={[mid.x, mid.y, mid.z]}
+            quaternion={quat}
+          >
+            <cylinderGeometry args={[LINE_R, LINE_R, len, 6]} />
+            <meshStandardMaterial color="#1a1a1a" />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
