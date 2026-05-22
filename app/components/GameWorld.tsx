@@ -25,7 +25,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning";
+type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "shooting";
 
 type CharState = {
   x: number;
@@ -60,6 +60,11 @@ type FamilyState = {
 type GolfState = {
   active: boolean;
   t: number; // 0..1 progress of the golf easter-egg animation
+};
+
+type RangeState = {
+  active: boolean;
+  t: number; // 0..1 progress of the gun-range easter-egg animation
 };
 
 type BalloonState = {
@@ -140,6 +145,8 @@ type SharedRefs = {
   family: React.MutableRefObject<FamilyState>;
   golf: React.MutableRefObject<GolfState>;
   approachingGolf: React.MutableRefObject<boolean>;
+  range: React.MutableRefObject<RangeState>;
+  approachingRange: React.MutableRefObject<boolean>;
   balloon: React.MutableRefObject<BalloonState>;
   approachingBalloon: React.MutableRefObject<boolean>;
   balloonAdventure: React.MutableRefObject<BalloonAdventureState>;
@@ -188,6 +195,22 @@ const GOLF_TEE = { x: -16.5, z: 8.3 };
 const GOLF_BALL_START = { x: -17.0, z: 8.7 };
 const GOLF_HOLE = { x: -18, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
+
+// Outdoor gun range easter egg (south side, replaces the old farm).
+// Character walks to the firing line, fires a .50 cal hand cannon at
+// the downrange target, the recoil topples him onto his back, he gets
+// up and walks home. Layout: shooter stands at the firing line,
+// targets sit ~12 units south, dirt berm backstops them another
+// ~6 units further south.
+const RANGE_CENTER = { x: -3, z: 50 };
+const RANGE_FIRING_LINE = { x: -3, z: 42 }; // where the character stands to shoot
+const RANGE_TARGET = { x: -3, z: 54 };       // centre target stand position
+const RANGE_BERM = { x: -3, z: 60 };          // dirt mound backstop
+const RANGE_DURATION = 6.5; // total seconds: aim → fire → topple → lie → getup → relax
+const RANGE_MIDPOINT = {
+  x: RANGE_FIRING_LINE.x,
+  z: (RANGE_FIRING_LINE.z + RANGE_TARGET.z) / 2,
+};
 
 // Hot-air balloon easter egg (SE quadrant — south of the gator, right
 // of the golf course, away from the building cluster).
@@ -512,6 +535,8 @@ export default function GameWorld() {
   const familyRef = useRef<FamilyState>({ active: false, t: 0 });
   const golfRef = useRef<GolfState>({ active: false, t: 0 });
   const approachingGolfRef = useRef(false);
+  const rangeRef = useRef<RangeState>({ active: false, t: 0 });
+  const approachingRangeRef = useRef(false);
   const balloonRef = useRef<BalloonState>({
     active: false,
     phase: "rising",
@@ -624,6 +649,9 @@ export default function GameWorld() {
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
+      rangeRef.current.active = false;
+      rangeRef.current.t = 0;
+      approachingRangeRef.current = false;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -637,6 +665,9 @@ export default function GameWorld() {
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
+      rangeRef.current.active = false;
+      rangeRef.current.t = 0;
+      approachingRangeRef.current = false;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -658,6 +689,8 @@ export default function GameWorld() {
       family: familyRef,
       golf: golfRef,
       approachingGolf: approachingGolfRef,
+      range: rangeRef,
+      approachingRange: approachingRangeRef,
       balloon: balloonRef,
       approachingBalloon: approachingBalloonRef,
       balloonAdventure: balloonAdventureRef,
@@ -1159,6 +1192,41 @@ function Scene({
       }
     }
 
+    // ── 0aa. Gun range — fire, recoil topple, lie, getup ──
+    if (char.mode === "shooting") {
+      refs.range.current.t += clampedDt / RANGE_DURATION;
+      const rt = refs.range.current.t;
+      // Pin to firing line facing south (toward target). char.angle = 0
+      // means face +Z (south), matching the golf convention.
+      char.x = RANGE_FIRING_LINE.x;
+      char.z = RANGE_FIRING_LINE.z;
+      char.angle = 0;
+      // Recoil arc: char.y rises briefly during the topple (0.25..0.40)
+      // so the body appears to lift off the platform as it tips back.
+      // The body rotation (-π/2 by the lying phase) is driven inside
+      // the Character component reading range.t.
+      if (rt > 0.25 && rt < 0.40) {
+        const p = (rt - 0.25) / 0.15;
+        // Smoothstep peak ~0.18 (small lift; we want a topple, not a fly-back)
+        char.y = Math.sin(p * Math.PI) * 0.18;
+      } else {
+        char.y = 0;
+      }
+      if (rt >= 1) {
+        refs.range.current.t = 0;
+        refs.range.current.active = false;
+        char.mode = "idle";
+        char.y = 0;
+        // Walk back to the plaza — route via bypass waypoints so the
+        // path home doesn't clip the golf course or south buildings.
+        const path = routeTo(char.x, char.z, 0, 0);
+        const first = path[0];
+        refs.target.current = { x: first.x, z: first.z, sectionId: null };
+        refs.pathQueue.current = path.slice(1);
+        char.walking = true;
+      }
+    }
+
     // ── 0a. Golf hole-in-one ──
     if (char.mode === "golfing") {
       refs.golf.current.t += clampedDt / GOLF_DURATION;
@@ -1302,6 +1370,16 @@ function Scene({
             char.angle = 0;
             refs.golf.current.active = true;
             refs.golf.current.t = 0;
+          } else if (refs.approachingRange.current) {
+            // Step up to the firing line — start the gun-range sequence.
+            // Face SOUTH (toward the target). The shooting state machine
+            // (0aa above) drives the rest from here.
+            refs.approachingRange.current = false;
+            char.mode = "shooting";
+            char.walking = false;
+            char.angle = 0;
+            refs.range.current.active = true;
+            refs.range.current.t = 0;
           } else if (refs.approachingBalloon.current) {
             // Climb in! Balloon starts its ascent.
             refs.approachingBalloon.current = false;
@@ -1448,10 +1526,12 @@ function Scene({
       refs.char.current.mode === "riding" ||
       refs.char.current.mode === "golfing" ||
       refs.char.current.mode === "ballooning" ||
+      refs.char.current.mode === "shooting" ||
       refs.gator.current.chasing ||
       refs.coaster.current.riding ||
       refs.family.current.active ||
       refs.golf.current.active ||
+      refs.range.current.active ||
       refs.balloon.current.active ||
       refs.balloonAdventure.current.active
     );
@@ -1500,6 +1580,12 @@ function Scene({
     if (!isOnHome || isBusy()) return;
     walkTo(GOLF_TEE.x, GOLF_TEE.z, null);
     refs.approachingGolf.current = true;
+  }
+
+  function handleRangeClick() {
+    if (!isOnHome || isBusy()) return;
+    walkTo(RANGE_FIRING_LINE.x, RANGE_FIRING_LINE.z, null);
+    refs.approachingRange.current = true;
   }
 
   function handleBalloonClick() {
@@ -1558,6 +1644,7 @@ function Scene({
             onParkClick={handleParkClick}
             golfRef={refs.golf}
             onGolfClick={handleGolfClick}
+            onRangeClick={handleRangeClick}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
             travisRef={refs.travis}
@@ -1579,6 +1666,7 @@ function Scene({
         <Character
           charRef={refs.char}
           golfRef={refs.golf}
+          rangeRef={refs.range}
           balloonRef={refs.balloon}
         />
       </Suspense>
@@ -1671,6 +1759,7 @@ function Environment({
   onParkClick,
   golfRef,
   onGolfClick,
+  onRangeClick,
   balloonRef,
   onBalloonClick,
   travisRef,
@@ -1683,6 +1772,7 @@ function Environment({
   onParkClick: () => void;
   golfRef: React.MutableRefObject<GolfState>;
   onGolfClick: () => void;
+  onRangeClick: () => void;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
   travisRef: React.MutableRefObject<AvatarState>;
@@ -1796,86 +1886,15 @@ function Environment({
       <Mountain x={-5} z={-68} height={28} baseRadius={15} snow color="#42523f" />
       <Mountain x={4} z={-58} height={20} baseRadius={10} snow color="#4a5a48" />
 
-      {/* Farmland to the south — crop fields, a barn + silo +
-          farmhouse, plus a few hay bales. Sits behind the south
-          hills so the visual progression is plaza → hills → fields
-          → farm buildings when looking south. */}
-      <CropField x={-12} z={45} w={11} d={9} color="#c8a64a" rowColor="#a8862a" />
-      <CropField x={3} z={47} w={11} d={11} color="#7aa84a" rowColor="#5a8838" />
-      <CropField x={12} z={38} w={5} d={4} color="#6e4830" />
-      <Farmhouse x={-22} z={60} rotation={-Math.PI * 0.05} />
-      <Barn x={-12} z={59} />
-      <Silo x={-5} z={58} />
-      <HayBale x={-9} z={53} rotation={0.4} />
-      <HayBale x={-7} z={54} rotation={-0.2} />
-      <HayBale x={-11} z={52} />
+      {/* Outdoor gun range to the south — covered firing platform,
+          three target stands downrange, dirt berm backstop, perimeter
+          fencing. Replaces the old farm. Click anywhere on the
+          concrete pad to send the character to the firing line. */}
+      <GunRange onSelect={onRangeClick} />
 
-      {/* Red tractor parked east of the barn */}
-      <Tractor x={-4} z={56} rotation={-Math.PI * 0.15} />
-
-      {/* Fenced animal pen east of the barn — three cows, a goat, a
-          pig. Fence runs around the south + east edges. */}
-      <Cow x={1} z={48} rotation={-Math.PI * 0.6} />
-      <Cow x={4} z={50} rotation={Math.PI * 0.2} />
-      <Cow x={2} z={52} rotation={Math.PI * 0.9} />
-      <Goat x={6} z={48} rotation={Math.PI * 0.4} />
-      <Goat x={7} z={52} rotation={-Math.PI * 0.3} />
-      <Pig x={-1} z={50} rotation={Math.PI * 1.2} />
-      {/* Pen fences — south side then east side */}
-      <FenceSection x={2} z={54.5} length={6} />
-      <FenceSection x={5} z={54.5} length={6} />
-      <FenceSection x={8.3} z={51} rotation={Math.PI / 2} length={6} />
-      <FenceSection x={8.3} z={47} rotation={Math.PI / 2} length={4} />
-
-      {/* Chickens scattered near the farmhouse / barn */}
-      <Chicken x={-17} z={56} rotation={Math.PI * 0.4} />
-      <Chicken x={-15} z={55} rotation={Math.PI * 1.1} color="#3a2a1a" />
-      <Chicken x={-19} z={54} rotation={-Math.PI * 0.5} color="#c8a878" />
-      <Chicken x={-16} z={58} rotation={Math.PI * 0.8} />
-      <Chicken x={-13} z={56} rotation={Math.PI * 1.5} color="#3a2a1a" />
-
-      {/* Two turkeys near the chickens — bigger and fancier */}
-      <Turkey x={-18} z={57} rotation={Math.PI * 0.6} />
-      <Turkey x={-15} z={59} rotation={-Math.PI * 0.4} />
-
-      {/* Tall corn stalks scattered across the green cornfield at
-          (3, 47). Adds vertical texture so the field reads as
-          actual corn rather than just a green patch. */}
-      <CornStalk x={-1} z={43} scale={1.0} />
-      <CornStalk x={1} z={44} scale={1.05} />
-      <CornStalk x={3} z={43} scale={0.95} />
-      <CornStalk x={5} z={44} scale={1.0} />
-      <CornStalk x={7} z={43} scale={1.05} />
-      <CornStalk x={-1} z={46} scale={1.0} />
-      <CornStalk x={1} z={47} scale={1.1} />
-      <CornStalk x={3} z={46} scale={1.0} />
-      <CornStalk x={5} z={47} scale={1.05} />
-      <CornStalk x={7} z={46} scale={0.95} />
-      <CornStalk x={-1} z={49} scale={1.0} />
-      <CornStalk x={1} z={50} scale={1.05} />
-      <CornStalk x={3} z={49} scale={1.0} />
-      <CornStalk x={5} z={50} scale={1.05} />
-      <CornStalk x={7} z={49} scale={1.0} />
-
-      {/* Scarecrow in the middle of the cornfield */}
-      <Scarecrow x={3} z={47} rotation={Math.PI * 0.1} />
-
-      {/* Windmill — tall well-pump style with rotating blades. Sits
-          on the empty grass east of the farm, between the farm and
-          the lake/play area. */}
-      <Windmill x={11} z={55} />
-
-      {/* Distant farm backdrop — additional buildings, fields, hills,
-          and pines south of the main farm so the world doesn't end at
-          a grass edge when the camera looks south. */}
-      <Farmhouse x={-20} z={78} rotation={Math.PI * 0.1} />
-      <Barn x={-8} z={77} rotation={Math.PI} />
-      <Silo x={0} z={78} />
-      <Silo x={3} z={79} scale={0.85} />
-      <Barn x={10} z={76} rotation={Math.PI * 0.85} />
-      <CropField x={-12} z={68} w={14} d={6} color="#8aa83a" rowColor="#6a8a28" />
-      <CropField x={6} z={70} w={10} d={7} color="#c8a64a" rowColor="#a8862a" />
-      <CropField x={-15} z={75} w={6} d={3} color="#6e4830" />
+      {/* Distant pine backdrop south of the range — softens the
+          horizon so the world doesn't end at a grass edge when the
+          camera looks south past the berm. */}
       <Hill position={[-22, 0, 72]} scale={1.4} color="#3d6824" />
       <Hill position={[14, 0, 73]} scale={1.5} color="#446e2a" />
       <Hill position={[-3, 0, 84]} scale={1.6} color="#4a7a30" />
@@ -1889,7 +1908,7 @@ function Environment({
       <PineTree position={[5, 0, 82]} scale={1.4} />
 
       {/* Atmospheric haze wall at the southern ground edge so the
-          drone-tour farm vantage fades into a soft horizon instead of
+          drone-tour range vantage fades into a soft horizon instead of
           showing the abrupt line where the grass plane ends. */}
       <FarmMist z={85} />
 
@@ -2341,6 +2360,235 @@ const PARK_LANE_X = ROAD_CENTER_X + 2.0; // parked cars on the east shoulder
 // Four stacked semi-transparent planes (sky horizon color) build up
 // a soft gradient — the near plane is sparse, the far one is nearly
 // opaque so anything past the edge is fully hidden.
+// GunRange — outdoor pistol range south of the plaza. Concrete firing
+// platform with a wooden shade canopy, three downrange target stands
+// (paper bullseye on a wooden frame), a long curved dirt berm behind
+// the targets as a backstop, and perimeter fencing. The concrete pad
+// is the click target: anywhere on it routes the character to the
+// firing line and triggers the shooting easter egg.
+function GunRange({ onSelect }: { onSelect: () => void }) {
+  const [hover, setHover] = useState(false);
+  const PAD_W = 14;
+  const PAD_D = 5;
+  const PAD_Y = 0.04; // sit just above the grass to avoid z-fighting
+  const PAD_COLOR = "#7c7c84";
+  const PAD_HOVER = "#94949e";
+  const ROOF_Y = 3.0;
+  const POST_COLOR = "#4a3422";
+  const ROOF_COLOR = "#3a2818";
+  const TARGET_FRAME = "#5a3c20";
+  const TARGET_PAPER = "#f0ead8";
+  const BERM_COLOR = "#7a5a32";
+  const FENCE_COLOR = "#b89868";
+  // Three lanes — each gets a target at z = RANGE_TARGET.z.
+  const LANE_XS = [RANGE_TARGET.x - 4, RANGE_TARGET.x, RANGE_TARGET.x + 4];
+  return (
+    <group>
+      {/* Concrete firing pad — clickable. The mesh sits a hair above
+          ground at PAD_Y so it doesn't z-fight with the grass plane. */}
+      <mesh
+        position={[RANGE_FIRING_LINE.x, PAD_Y, RANGE_FIRING_LINE.z]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        receiveShadow
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect();
+        }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHover(true);
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          setHover(false);
+          document.body.style.cursor = "";
+        }}
+      >
+        <planeGeometry args={[PAD_W, PAD_D]} />
+        <meshStandardMaterial color={hover ? PAD_HOVER : PAD_COLOR} />
+      </mesh>
+      {/* Yellow firing-line stripe along the southern edge of the pad */}
+      <mesh
+        position={[RANGE_FIRING_LINE.x, PAD_Y + 0.001, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.25]}
+        rotation={[-Math.PI / 2, 0, 0]}
+      >
+        <planeGeometry args={[PAD_W - 1, 0.18]} />
+        <meshStandardMaterial color="#e8c84a" />
+      </mesh>
+
+      {/* Wooden shade canopy — four posts + flat roof above the pad */}
+      {[
+        [-PAD_W / 2 + 0.3, RANGE_FIRING_LINE.z - PAD_D / 2 + 0.3],
+        [PAD_W / 2 - 0.3, RANGE_FIRING_LINE.z - PAD_D / 2 + 0.3],
+        [-PAD_W / 2 + 0.3, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.3],
+        [PAD_W / 2 - 0.3, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.3],
+      ].map(([px, pz], i) => (
+        <mesh
+          key={i}
+          position={[RANGE_FIRING_LINE.x + px, ROOF_Y / 2, pz]}
+          castShadow
+        >
+          <boxGeometry args={[0.2, ROOF_Y, 0.2]} />
+          <meshStandardMaterial color={POST_COLOR} />
+        </mesh>
+      ))}
+      <mesh
+        position={[RANGE_FIRING_LINE.x, ROOF_Y + 0.05, RANGE_FIRING_LINE.z]}
+        castShadow
+      >
+        <boxGeometry args={[PAD_W + 0.4, 0.1, PAD_D + 0.4]} />
+        <meshStandardMaterial color={ROOF_COLOR} />
+      </mesh>
+      {/* Roof beam trim on the front edge (south-facing) */}
+      <mesh
+        position={[RANGE_FIRING_LINE.x, ROOF_Y - 0.15, RANGE_FIRING_LINE.z + PAD_D / 2 + 0.2]}
+        castShadow
+      >
+        <boxGeometry args={[PAD_W + 0.4, 0.18, 0.1]} />
+        <meshStandardMaterial color="#2a1810" />
+      </mesh>
+      {/* "RANGE" sign hanging from the roof beam, facing the plaza (north) */}
+      <Billboard position={[RANGE_FIRING_LINE.x, ROOF_Y + 0.7, RANGE_FIRING_LINE.z - PAD_D / 2 - 0.3]}>
+        <Text
+          fontSize={0.55}
+          color="#f4f1de"
+          outlineColor="#1a0e08"
+          outlineWidth={0.045}
+          outlineOpacity={1}
+          anchorY="middle"
+        >
+          RANGE
+        </Text>
+      </Billboard>
+
+      {/* Three downrange target stands — wooden frame holding a paper
+          bullseye. Each frame is two vertical posts + a top bar, with
+          the paper plane mounted across them. Slightly varied x so the
+          row reads naturally. */}
+      {LANE_XS.map((x, i) => (
+        <group key={i} position={[x, 0, RANGE_TARGET.z]}>
+          {/* Left post */}
+          <mesh position={[-0.55, 0.9, 0]} castShadow>
+            <boxGeometry args={[0.1, 1.8, 0.1]} />
+            <meshStandardMaterial color={TARGET_FRAME} />
+          </mesh>
+          {/* Right post */}
+          <mesh position={[0.55, 0.9, 0]} castShadow>
+            <boxGeometry args={[0.1, 1.8, 0.1]} />
+            <meshStandardMaterial color={TARGET_FRAME} />
+          </mesh>
+          {/* Top crossbar */}
+          <mesh position={[0, 1.85, 0]} castShadow>
+            <boxGeometry args={[1.3, 0.1, 0.1]} />
+            <meshStandardMaterial color={TARGET_FRAME} />
+          </mesh>
+          {/* Paper (front side faces north, toward shooter) */}
+          <mesh position={[0, 1.05, 0.06]} rotation={[0, Math.PI, 0]}>
+            <planeGeometry args={[0.9, 1.2]} />
+            <meshStandardMaterial color={TARGET_PAPER} side={THREE.DoubleSide} />
+          </mesh>
+          {/* Bullseye rings — three concentric circles on the front */}
+          <mesh position={[0, 1.05, 0.062]} rotation={[0, Math.PI, 0]}>
+            <circleGeometry args={[0.32, 24]} />
+            <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} />
+          </mesh>
+          <mesh position={[0, 1.05, 0.063]} rotation={[0, Math.PI, 0]}>
+            <circleGeometry args={[0.22, 24]} />
+            <meshStandardMaterial color="#d04a30" side={THREE.DoubleSide} />
+          </mesh>
+          <mesh position={[0, 1.05, 0.064]} rotation={[0, Math.PI, 0]}>
+            <circleGeometry args={[0.10, 24]} />
+            <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Dirt berm — long mound just south of the targets, acts as the
+          backstop. Two stacked half-spheres of decreasing height + a
+          rear ridge so the silhouette reads as a proper backstop. */}
+      <mesh position={[RANGE_BERM.x, 0, RANGE_BERM.z]} castShadow receiveShadow>
+        <sphereGeometry args={[6, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial color={BERM_COLOR} />
+      </mesh>
+      <mesh position={[RANGE_BERM.x - 7, 0, RANGE_BERM.z + 0.5]} castShadow receiveShadow>
+        <sphereGeometry args={[4.5, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial color={BERM_COLOR} />
+      </mesh>
+      <mesh position={[RANGE_BERM.x + 7, 0, RANGE_BERM.z + 0.5]} castShadow receiveShadow>
+        <sphereGeometry args={[4.5, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial color={BERM_COLOR} />
+      </mesh>
+
+      {/* Perimeter fence — west, east, and north (entrance) sides.
+          South side is the berm. Simple post-and-rail style. */}
+      {[
+        // west side — runs N/S along x = RANGE_CENTER.x - 9
+        { x: RANGE_CENTER.x - 9, z: RANGE_FIRING_LINE.z - 2, rotY: Math.PI / 2, len: 4 },
+        { x: RANGE_CENTER.x - 9, z: RANGE_FIRING_LINE.z + 4, rotY: Math.PI / 2, len: 8 },
+        // east side
+        { x: RANGE_CENTER.x + 9, z: RANGE_FIRING_LINE.z - 2, rotY: Math.PI / 2, len: 4 },
+        { x: RANGE_CENTER.x + 9, z: RANGE_FIRING_LINE.z + 4, rotY: Math.PI / 2, len: 8 },
+        // north side (behind firing line)
+        { x: RANGE_CENTER.x - 5, z: RANGE_FIRING_LINE.z - 4, rotY: 0, len: 8 },
+        { x: RANGE_CENTER.x + 5, z: RANGE_FIRING_LINE.z - 4, rotY: 0, len: 8 },
+      ].map(({ x, z, rotY, len }, i) => (
+        <group key={i} position={[x, 0, z]} rotation={[0, rotY, 0]}>
+          {/* Top rail */}
+          <mesh position={[0, 0.85, 0]}>
+            <boxGeometry args={[len, 0.08, 0.05]} />
+            <meshStandardMaterial color={FENCE_COLOR} />
+          </mesh>
+          {/* Middle rail */}
+          <mesh position={[0, 0.55, 0]}>
+            <boxGeometry args={[len, 0.08, 0.05]} />
+            <meshStandardMaterial color={FENCE_COLOR} />
+          </mesh>
+          {/* Posts every ~2 units */}
+          {Array.from({ length: Math.floor(len / 2) + 1 }).map((_, j) => {
+            const px = -len / 2 + j * 2;
+            return (
+              <mesh key={j} position={[px, 0.5, 0]} castShadow>
+                <boxGeometry args={[0.1, 1.0, 0.1]} />
+                <meshStandardMaterial color={POST_COLOR} />
+              </mesh>
+            );
+          })}
+        </group>
+      ))}
+
+      {/* Sandbag stack in front of the firing line — three rows */}
+      {[
+        [-1.2, 0],
+        [-0.6, 0],
+        [0, 0],
+        [0.6, 0],
+        [1.2, 0],
+        [-0.9, 0.3],
+        [-0.3, 0.3],
+        [0.3, 0.3],
+        [0.9, 0.3],
+        [-0.6, 0.6],
+        [0, 0.6],
+        [0.6, 0.6],
+      ].map(([dx, dy], i) => (
+        <mesh
+          key={i}
+          position={[
+            RANGE_FIRING_LINE.x + 4 + dx,
+            0.15 + dy,
+            RANGE_FIRING_LINE.z + PAD_D / 2 + 0.4,
+          ]}
+          castShadow
+        >
+          <boxGeometry args={[0.55, 0.28, 0.4]} />
+          <meshStandardMaterial color="#8a7048" />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function FarmMist({ z }: { z: number }) {
   return (
     <group position={[-10, 0, z]}>
@@ -5494,10 +5742,12 @@ function FaceBillboard({
 function Character({
   charRef,
   golfRef,
+  rangeRef,
   balloonRef,
 }: {
   charRef: React.MutableRefObject<CharState>;
   golfRef: React.MutableRefObject<GolfState>;
+  rangeRef: React.MutableRefObject<RangeState>;
   balloonRef: React.MutableRefObject<BalloonState>;
 }) {
   const rootRef = useRef<THREE.Group>(null);
@@ -5511,6 +5761,12 @@ function Character({
   // (not the right shoulder) so both hands appear to grip a centered club.
   // Rotates in sync with the shoulders during the golf swing.
   const clubHolderRef = useRef<THREE.Group>(null);
+  // Hand-cannon holder — body-centred pivot at shoulder height, the
+  // gun is parented here so both hands appear to grip it (shoulders
+  // tilt inward during shooting). Rotates with the arm pose.
+  const gunHolderRef = useRef<THREE.Group>(null);
+  const gunRef = useRef<THREE.Group>(null);
+  const muzzleFlashRef = useRef<THREE.Group>(null);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -5519,22 +5775,26 @@ function Character({
     if (clubRef.current) {
       clubRef.current.visible = c.mode === "golfing";
     }
+    if (gunRef.current) {
+      gunRef.current.visible = c.mode === "shooting";
+    }
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
       // y is driven by the game tick for ride (track height), golf
-      // (celebration jumps), and ballooning (rising / falling); zero on
-      // foot otherwise. While riding, lower the character so the hips
-      // (at body-local y=0.66) sit on the cart's top surface
-      // (cart-local y=0.36 × PARK_SCALE) rather than standing on top.
+      // (celebration jumps), ballooning (rising / falling), and shooting
+      // (recoil topple arc); zero on foot otherwise. While riding, lower
+      // the character so the hips (at body-local y=0.66) sit on the
+      // cart's top surface (cart-local y=0.36 × PARK_SCALE) rather than
+      // standing on top.
       rootRef.current.position.y =
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
-          : c.mode === "golfing" || c.mode === "ballooning"
+          : c.mode === "golfing" || c.mode === "ballooning" || c.mode === "shooting"
           ? c.y
           : 0;
       // Smoothly rotate to face direction. Snap during ride / golf /
-      // ballooning so we always match the expected heading.
+      // ballooning / shooting so we always match the expected heading.
       const cur = rootRef.current.rotation.y;
       let diff = c.angle - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
@@ -5542,7 +5802,8 @@ function Character({
       rootRef.current.rotation.y =
         c.mode === "riding" ||
         c.mode === "golfing" ||
-        c.mode === "ballooning"
+        c.mode === "ballooning" ||
+        c.mode === "shooting"
           ? c.angle
           : cur + diff * 0.2;
       // Forward roll: during the rolling phase of the balloon easter
@@ -5624,6 +5885,91 @@ function Character({
         }
         bodyRef.current.rotation.x = bend;
         bodyRef.current.position.y = 0;
+      }
+      return;
+    }
+
+    if (c.mode === "shooting") {
+      const rt = rangeRef.current.t;
+      // ── Body tilt (the topple) ─────────────────────────────────
+      // Positive rotation.x = forward bend (head moves in +Z, the
+      // facing direction). Negative = backward fall (head moves in
+      // -Z, away from facing direction = north). The character faces
+      // south (+Z, toward the target) so a backward fall is exactly
+      // what we want.
+      //
+      //   aim    (0.00..0.20): upright, slight forward shooter lean
+      //   fire   (0.20..0.25): brace, tiny backward twitch from initial recoil
+      //   topple (0.25..0.40): tip backward all the way to -π/2 (lying)
+      //   lying  (0.40..0.70): flat on back, hold pose
+      //   getup  (0.70..0.88): lerp back up to 0
+      //   relax  (0.88..1.00): upright, arms drop
+      let bodyTilt = 0;
+      if (rt < 0.20) {
+        bodyTilt = 0.08; // small forward stance lean
+      } else if (rt < 0.25) {
+        const p = (rt - 0.20) / 0.05;
+        bodyTilt = 0.08 - p * 0.20; // 0.08 → -0.12
+      } else if (rt < 0.40) {
+        const p = (rt - 0.25) / 0.15;
+        // -0.12 → -π/2 with an ease-out so the topple accelerates
+        const eased = 1 - (1 - p) * (1 - p);
+        bodyTilt = -0.12 + eased * (-Math.PI / 2 + 0.12);
+      } else if (rt < 0.70) {
+        bodyTilt = -Math.PI / 2;
+      } else if (rt < 0.88) {
+        const p = (rt - 0.70) / 0.18;
+        const eased = 1 - (1 - p) * (1 - p);
+        bodyTilt = -Math.PI / 2 * (1 - eased);
+      } else {
+        bodyTilt = 0;
+      }
+      if (bodyRef.current) {
+        bodyRef.current.rotation.x = bodyTilt;
+        bodyRef.current.position.y = 0;
+      }
+
+      // ── Arms (two-handed grip) ─────────────────────────────────
+      // Shoulders extended forward + slightly inward so both hands
+      // meet at the body-centre gun. Hold the pose through fire,
+      // topple, lying, and most of getup. Drop only during relax.
+      const AIM_X = -Math.PI / 2.3;   // forward extension (~78°)
+      const AIM_INWARD = 0.48;        // bring hands together
+      let armX = AIM_X;
+      let armZ_inward = AIM_INWARD;
+      if (rt > 0.88) {
+        // Relax — lerp arms back to sides
+        const p = (rt - 0.88) / 0.12;
+        armX = AIM_X * (1 - p);
+        armZ_inward = AIM_INWARD * (1 - p);
+      }
+      if (leftShoulderRef.current) {
+        leftShoulderRef.current.rotation.x = armX;
+        leftShoulderRef.current.rotation.z = armZ_inward;
+      }
+      if (rightShoulderRef.current) {
+        rightShoulderRef.current.rotation.x = armX;
+        rightShoulderRef.current.rotation.z = -armZ_inward;
+      }
+      // Gun-holder follows the arms — rotate forward by AIM_X so the
+      // barrel ends up pointing south (toward the target) when arms
+      // are up; lerps back when the arms drop.
+      if (gunHolderRef.current) {
+        gunHolderRef.current.rotation.x = armX;
+        gunHolderRef.current.rotation.z = 0;
+      }
+
+      // ── Legs ───────────────────────────────────────────────────
+      // Straight throughout the shot. During the lying phase the
+      // whole body group rotates so the legs naturally stick out
+      // toward the target — no per-hip rotation needed.
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+
+      // ── Muzzle flash ───────────────────────────────────────────
+      // Brief emissive cone visible only during the fire window.
+      if (muzzleFlashRef.current) {
+        muzzleFlashRef.current.visible = rt > 0.20 && rt < 0.25;
       }
       return;
     }
@@ -5863,6 +6209,59 @@ function Character({
 
         </group>
 
+        {/* Hand cannon — chunky cartoony .50 cal pistol on a body-centre
+            holder, same shoulder-height pivot trick as the golf club so
+            it appears to be gripped two-handed. When the gunHolderRef
+            rotates forward (AIM_X ≈ -π/2.3), the gun lifts to firing
+            position with the barrel pointing south (toward the target).
+            Hidden outside shooting mode. */}
+        <group ref={gunHolderRef} position={[0, 1.22, 0.05]}>
+          <group ref={gunRef} visible={false} position={[0, -0.6, 0.02]}>
+            {/* Barrel — thick cylinder. Oriented along local -Y (default
+                cylinderGeometry axis) so when the holder is rotated
+                forward by AIM_X, the barrel ends up pointing forward
+                in world space (matches the club shaft convention). */}
+            <mesh position={[0, -0.18, 0]} castShadow>
+              <cylinderGeometry args={[0.045, 0.045, 0.42, 14]} />
+              <meshStandardMaterial color="#26262c" metalness={0.65} roughness={0.4} />
+            </mesh>
+            {/* Frame / slide — boxy top above the grip */}
+            <mesh position={[0, -0.04, 0]} castShadow>
+              <boxGeometry args={[0.07, 0.18, 0.10]} />
+              <meshStandardMaterial color="#2a2a30" metalness={0.6} roughness={0.4} />
+            </mesh>
+            {/* Front sight — tiny block on the muzzle end */}
+            <mesh position={[0, -0.38, 0.05]}>
+              <boxGeometry args={[0.025, 0.04, 0.03]} />
+              <meshStandardMaterial color="#1a1a1a" />
+            </mesh>
+            {/* Grip — angled back & down from the frame */}
+            <mesh position={[0, 0.06, -0.07]} rotation={[Math.PI * 0.12, 0, 0]} castShadow>
+              <boxGeometry args={[0.075, 0.22, 0.08]} />
+              <meshStandardMaterial color="#3a2818" roughness={0.85} />
+            </mesh>
+            {/* Trigger guard — small loop under the frame */}
+            <mesh position={[0, 0.02, -0.005]} rotation={[Math.PI / 2, 0, 0]}>
+              <torusGeometry args={[0.045, 0.008, 8, 16, Math.PI]} />
+              <meshStandardMaterial color="#1a1a1a" />
+            </mesh>
+            {/* Muzzle flash — brief emissive cone at the barrel tip.
+                Visibility is toggled per-frame by the shooting pose
+                block (rt > 0.20 && rt < 0.25). */}
+            <group ref={muzzleFlashRef} visible={false} position={[0, -0.40, 0]}>
+              <mesh>
+                <coneGeometry args={[0.12, 0.28, 14]} />
+                <meshBasicMaterial color="#fff1a8" toneMapped={false} transparent opacity={0.9} />
+              </mesh>
+              {/* Inner brighter core */}
+              <mesh>
+                <sphereGeometry args={[0.09, 12, 8]} />
+                <meshBasicMaterial color="#ffffff" toneMapped={false} transparent opacity={0.85} />
+              </mesh>
+            </group>
+          </group>
+        </group>
+
         {/* Golf club — child of a body-centered pivot so it appears to be
             gripped by BOTH hands meeting in front of the body (the shoulders
             tilt inward during golf so the hands meet near x=0). The pivot
@@ -5966,12 +6365,11 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
   // Hot-air balloon
   { name: "balloon", target: new THREE.Vector3(10, 4, 6), camOffset: new THREE.Vector3(7, 5, 8) },
-  // Farm — animals + corn + tractor. Vantage matches the angle
-  // a rider on the coaster (north-west, elevated) would have when
-  // looking south at the farm: camera sits north + slightly west
-  // of the farm, ~12 units up, peering down the long axis toward
-  // the farmhouse cluster.
-  { name: "farm", target: new THREE.Vector3(-6, 4, 48), camOffset: new THREE.Vector3(-5, 20, -30) },
+  // Gun range — covered firing platform + three targets + dirt berm.
+  // Vantage from the north-east, slightly elevated, looking south-
+  // west across the lanes so the canopy, target row, and berm all
+  // fit in frame at once.
+  { name: "range", target: new THREE.Vector3(RANGE_CENTER.x, 2.5, (RANGE_FIRING_LINE.z + RANGE_TARGET.z) / 2), camOffset: new THREE.Vector3(12, 9, -12) },
   // Golf course
   { name: "golf", target: new THREE.Vector3(-14, 2, 17), camOffset: new THREE.Vector3(10, 8, 12) },
 ];
@@ -6212,6 +6610,12 @@ function CameraRig({
       wantTX = GOLF_MIDPOINT.x;
       wantTZ = GOLF_MIDPOINT.z;
       wantTY = 1;
+    } else if (c.mode === "shooting") {
+      // Focus on the midpoint between shooter and target so both stay
+      // in frame for the full sequence (aim → fire → topple → recover).
+      wantTX = RANGE_MIDPOINT.x;
+      wantTZ = RANGE_MIDPOINT.z;
+      wantTY = 1.8;
     } else if (c.mode === "riding") {
       // Lock the target to the park centre (slightly elevated to
       // include the loop) so the fixed cinematic vantage frames the
@@ -6269,6 +6673,19 @@ function CameraRig({
         x: GOLF_MIDPOINT.x + 0.5,
         y: 2.5,
         z: GOLF_MIDPOINT.z + 3.2,
+      };
+      camHijackedRef.current = true;
+    } else if (c.mode === "shooting") {
+      // Side-on cinematic — camera ~15 units east of the range, at the
+      // z-midpoint between the firing line and the targets so the lens
+      // is perpendicular to the lane. With the firing line 6u north
+      // and targets 6u south of the midpoint, FOV 45° at depth 15 fits
+      // both ends comfortably (half-frame ≈ 6.2u). Shooter ends up at
+      // camera-right (north side), targets at camera-left (south side).
+      wantCam = {
+        x: RANGE_MIDPOINT.x + 15,
+        y: 4,
+        z: RANGE_MIDPOINT.z,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
