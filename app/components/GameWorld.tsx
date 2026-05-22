@@ -94,6 +94,15 @@ type BalloonAdventureState = {
   phase: BalloonAdventurePhase;
   t: number;          // 0..1 progress within the current phase
   balloonY: number;   // world Y of the balloon group (basket floor)
+  // Y-altitude of the "action" the camera should frame each phase.
+  // - boarding/landing/returning: 0 (characters on ground)
+  // - rising/atTop: same as balloonY (characters in basket)
+  // - jumping/parachuting: average of Travis + Kate Y (mid-air)
+  // Decoupled from balloonY so the balloon can stay at peak after
+  // the jump (out-of-frame above) while the camera follows the
+  // parachuters down — keeps the balloon from cluttering the
+  // descent shot.
+  riderY: number;
 };
 
 // Position + pose for a non-player avatar (Travis, Kate). Drives
@@ -204,14 +213,19 @@ const ADV_TRAVIS_BOARDING = {          // Travis steps in from his standing spot
 };
 const ADV_KATE_BASKET = { x: BALLOON_POSITION.x + 0.28, z: BALLOON_POSITION.z };
 const ADV_TRAVIS_BASKET = { x: BALLOON_POSITION.x - 0.28, z: BALLOON_POSITION.z };
-const ADV_RISE_HEIGHT = 18;            // much higher than the legacy 6u
+const ADV_RISE_HEIGHT = 28;            // taller than before so the leap reads as a real altitude
 const ADV_KATE_WALK_DURATION = 5.5;    // sec for Kate's walk from academy
 const ADV_BOARDING_DURATION = 1.4;     // sec to climb in
-const ADV_RISE_DURATION = 4.5;
+const ADV_RISE_DURATION = 5.0;
 const ADV_AT_TOP_DURATION = 0.9;
 const ADV_JUMP_DURATION = 0.55;        // brief free-fall before chutes open
-const ADV_PARACHUTE_DURATION = 5.0;    // slow descent
-const ADV_LANDING_DURATION = 0.4;
+const ADV_PARACHUTE_DURATION = 5.5;    // slow descent
+const ADV_LANDING_DURATION = 0.5;
+// During returning, the balloon descends from ADV_RISE_HEIGHT down
+// to 0 while Kate walks back to the academy. Kate's walk is the
+// "slowest" return path, so balloon descent rate is sized to land
+// roughly when Kate gets home (uses the full walk-back time).
+const ADV_BALLOON_DESCENT_RATE = 4.0;  // units/sec during returning
 const ADV_RETURN_TRAVIS = { x: BALLOON_POSITION.x + 1.7, z: BALLOON_POSITION.z + 0.4 };
 
 // Amusement park
@@ -507,6 +521,7 @@ export default function GameWorld() {
     phase: "kateWalking",
     t: 0,
     balloonY: 0,
+    riderY: 0,
   });
   // Travis's "home" position is the same spot the static Travis figure
   // stood at — south-east of the basket. He starts visible there and
@@ -857,16 +872,18 @@ function Scene({
         // brief free-fall. Mostly drops a short distance before
         // chutes deploy. Travis nudges -x (west), Kate +x (east)
         // so they spread out and don't overlap during the chute.
+        // Balloon STAYS at peak — gives the characters a clean
+        // mid-air silhouette without the balloon backdrop.
         adv.t += clampedDt / ADV_JUMP_DURATION;
         const p = Math.min(1, adv.t);
-        // Parabolic fall: drop a few units while drifting outward.
-        const drop = p * 2.5; // fall 2.5u during the brief free-fall
+        const drop = p * 2.5;
         trav.x = ADV_TRAVIS_BASKET.x - p * 0.6;
         trav.z = ADV_TRAVIS_BASKET.z + p * 0.4;
-        trav.y = adv.balloonY + 0.28 - drop;
+        trav.y = ADV_RISE_HEIGHT + 0.28 - drop;
         k.x = ADV_KATE_BASKET.x + p * 0.6;
         k.z = ADV_KATE_BASKET.z + p * 0.4;
-        k.y = adv.balloonY + 0.28 - drop;
+        k.y = ADV_RISE_HEIGHT + 0.28 - drop;
+        adv.balloonY = ADV_RISE_HEIGHT;
         if (adv.t >= 1) {
           adv.phase = "parachuting";
           adv.t = 0;
@@ -874,14 +891,15 @@ function Scene({
       } else if (adv.phase === "parachuting") {
         // Slow descent with parachutes deployed. Linear fall plus a
         // gentle horizontal sway so the chutes don't drop in a
-        // perfectly straight line.
+        // perfectly straight line. Balloon STAYS at peak (above the
+        // chutes) so the camera (which now follows the chutes) can
+        // frame the descent without the balloon cluttering the
+        // background. The balloon's own descent happens during the
+        // returning phase, after the characters have landed.
         adv.t += clampedDt / ADV_PARACHUTE_DURATION;
         const p = Math.min(1, adv.t);
-        // Start altitude = balloonY at top of jump minus jump drop
         const startY = ADV_RISE_HEIGHT - 2.5 + 0.28;
         const fallY = startY * (1 - p);
-        // Slight side-to-side sway from chute drag, opposite phases
-        // for the two characters so they don't look glued together.
         const swayT = Math.sin(adv.t * Math.PI * 3) * 0.18;
         trav.x = ADV_TRAVIS_BASKET.x - 0.6 + swayT;
         trav.z = ADV_TRAVIS_BASKET.z + 0.4;
@@ -889,12 +907,7 @@ function Scene({
         k.x = ADV_KATE_BASKET.x + 0.6 - swayT;
         k.z = ADV_KATE_BASKET.z + 0.4;
         k.y = Math.max(0, fallY);
-        // Balloon (now empty) descends in lockstep with the chutes
-        // so they all land together. Earlier this ran at 0.7x speed
-        // which left the balloon stranded at ~5u above ground when
-        // the chutes touched down — the empty balloon would then
-        // float there the whole walk-back, visually broken.
-        adv.balloonY = Math.max(0, ADV_RISE_HEIGHT * (1 - p));
+        adv.balloonY = ADV_RISE_HEIGHT;
         if (adv.t >= 1) {
           adv.phase = "landing";
           adv.t = 0;
@@ -902,18 +915,21 @@ function Scene({
       } else if (adv.phase === "landing") {
         // Touchdown beat — both on the ground, parachutes vanish
         // (handled by phase-aware visibility in Parachute component).
+        // Balloon STILL at peak; it descends during returning.
         adv.t += clampedDt / ADV_LANDING_DURATION;
         trav.y = 0;
         k.y = 0;
-        // Balloon already at the ground from end of parachuting —
-        // pin to 0 so any tiny rounding wobble doesn't show as a
-        // hovering basket.
-        adv.balloonY = 0;
+        adv.balloonY = ADV_RISE_HEIGHT;
         if (adv.t >= 1) {
           adv.phase = "returning";
           adv.t = 0;
         }
       } else if (adv.phase === "returning") {
+        // Balloon descends from peak to ground while the characters
+        // walk back home. Kate's walk-back is the longest path, so
+        // by the time she reaches the academy the balloon should be
+        // settled — both end at roughly the same moment.
+        adv.balloonY = Math.max(0, adv.balloonY - ADV_BALLOON_DESCENT_RATE * clampedDt);
         // Both walk back to their home spots — Travis to his stand-
         // beside-the-balloon spot, Kate to the academy door (where
         // she'll go back inside / disappear). Easter egg ends when
@@ -966,6 +982,20 @@ function Scene({
           adv.balloonY = 0;
           k.visible = false;
         }
+      }
+      // Compute the "action" Y the camera should frame this phase.
+      // - boarding / kateWalking / landing / returning: ground (0)
+      // - rising / atTop: tied to the balloon (characters in basket)
+      // - jumping / parachuting: average of Travis + Kate Y (mid-air)
+      // The camera reads adv.riderY (NOT balloonY) for its target/
+      // position so the balloon can stay at peak while the camera
+      // follows the parachuters down.
+      if (adv.phase === "rising" || adv.phase === "atTop") {
+        adv.riderY = adv.balloonY;
+      } else if (adv.phase === "jumping" || adv.phase === "parachuting") {
+        adv.riderY = (trav.y + k.y) / 2;
+      } else {
+        adv.riderY = 0;
       }
       // Mirror the adventure's balloonY onto the legacy balloonRef
       // so the Balloon component (which reads balloonRef.height)
@@ -6140,14 +6170,17 @@ function CameraRig({
       // modes where the character barely leaves the ground).
       wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
     } else if (balloonAdventureRef.current.active) {
-      // Adventure: look at the balloon basket. Y tracks balloonY
-      // 1:1 so the basket / parachutes stay centred in frame
-      // regardless of altitude. Earlier this ran at 0.55x and the
-      // balloon floated up out of frame on the way up.
+      // Adventure: look at the "action" altitude (adv.riderY). For
+      // rising/atTop that IS the balloon (riders in basket). For
+      // jumping/parachuting it's the average character Y so the
+      // camera follows the chutes down while the balloon stays up
+      // at peak (above frame). Boarding/landing/returning track
+      // ground level so the camera lowers as the characters land
+      // and walk away.
       const adv = balloonAdventureRef.current;
       wantTX = BALLOON_POSITION.x;
       wantTZ = BALLOON_POSITION.z;
-      wantTY = adv.balloonY + 0.9; // basket center is at balloonY + ~0.7
+      wantTY = adv.riderY + 0.9;
     }
     // Note: when idle, the drone-tour state machine below
     // overrides controls.target directly, so wantT* defaults to
@@ -6201,18 +6234,19 @@ function CameraRig({
       camHijackedRef.current = true;
     } else if (balloonAdventureRef.current.active) {
       // Travis+Kate balloon adventure: camera pulls back south-east
-      // of the balloon and lifts 1:1 with the balloon (and with the
-      // parachuting characters during descent), so the basket stays
-      // centred at every altitude. Sonny is OFF-CAMERA on the plaza,
-      // intentional — he's a spectator, not a rider.
+      // and lifts with the action altitude (adv.riderY). During
+      // rising/atTop riderY == balloonY so the camera goes up with
+      // the balloon. During jumping/parachuting riderY follows the
+      // characters down (the balloon stays at peak above frame).
+      // During landing/returning riderY is 0 so the camera lowers
+      // to ground level. Sonny is OFF-CAMERA on the plaza — he's a
+      // spectator, not a rider.
       const adv = balloonAdventureRef.current;
       wantCam = {
         x: BALLOON_POSITION.x + 4,
-        // Camera ~2u above the basket so the look-down angle is
-        // gentle (basket fills lower half of frame, sky above).
-        // 3.5 minimum height keeps the camera off the ground even
-        // when balloonY = 0 during boarding/landing/returning.
-        y: Math.max(3.5, adv.balloonY + 2),
+        // ~2u above the action. 3.5 minimum keeps the camera off
+        // the ground even when riderY = 0.
+        y: Math.max(3.5, adv.riderY + 2),
         z: BALLOON_POSITION.z + 14,
       };
       camHijackedRef.current = true;
