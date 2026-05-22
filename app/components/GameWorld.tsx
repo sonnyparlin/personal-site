@@ -5927,6 +5927,11 @@ function CameraRig({
   // that clears manualOverrideRef (= the user clicked something and
   // started a fresh walk-to-event, so they want the follow-cam back).
   const prevWalkingRef = useRef(false);
+  // Previous-frame balloonAdventure.active — used to detect the
+  // false→true edge so we can clear stale user drag overrides
+  // when the adventure starts (Sonny doesn't walk so the c.walking
+  // edge can't trigger this clear).
+  const prevAdvActiveRef = useRef(false);
 
   // Drone tour state (idle waypoint-by-waypoint world tour).
   const droneActiveRef = useRef(false);
@@ -6070,6 +6075,19 @@ function CameraRig({
       manualOverrideRef.current = false;
     }
     prevWalkingRef.current = c.walking;
+
+    // Same edge-trigger for the balloon adventure: Sonny doesn't
+    // walk when the balloon is clicked, so the c.walking edge above
+    // doesn't fire. Clear manualOverrideRef when the adventure goes
+    // inactive → active so the wantCam pan to the balloon vantage
+    // takes effect (otherwise a stale user drag from earlier in
+    // the session blocks the camera from following the rise).
+    const advActive = balloonAdventureRef.current.active;
+    if (advActive && !prevAdvActiveRef.current) {
+      manualOverrideRef.current = false;
+      droneActiveRef.current = false;
+    }
+    prevAdvActiveRef.current = advActive;
 
     // ── Target ────────────────────────────────────────────────────────────
     // OrbitControls .target lerps toward the character whenever they're
@@ -7077,15 +7095,12 @@ function TrainingPartner({
 }
 
 // Travis — black-belt friend hanging out by the hot-air balloon.
-// Built with a slim no-gi look (black rashguard + dark shorts) so he
-// reads as a distinct character from Sonny's white gi. Face is a
-// photo billboard, same trick as PartnerFace. Position + facing +
-// walking animation are driven by an AvatarState ref so the same
-// figure can stand idle by the balloon, walk into the basket,
-// parachute down, and walk back without remounting.
-const RASHGUARD = "#101014"; // near-black, slightly warm
-const RASHGUARD_TRIM = "#2a2a30"; // subtle seam/trim
-const SHORTS = "#1a1a20"; // shorts a hair lighter than the rashguard
+// Same BJJ gi build as Sonny (white kimono + black belt) so he
+// reads as another practitioner. Distinct from Sonny via the face
+// photo (/public/travis.png). Position + facing + walking
+// animation are driven by an AvatarState ref so the same figure
+// can stand idle by the balloon, walk into the basket, parachute
+// down, and walk back without remounting.
 function Travis({
   avatarRef,
   faceSrc = "/travis.png",
@@ -7123,82 +7138,89 @@ function Travis({
   });
   return (
     <group ref={rootRef}>
-      {/* Torso — slim rashguard */}
+      {/* Torso (gi top) — closed kimono, same width as TrainingPartner. */}
       <mesh position={[0, 1.0, 0]} castShadow>
-        <boxGeometry args={[0.46, 0.55, 0.28]} />
-        <meshStandardMaterial color={RASHGUARD} />
+        <boxGeometry args={[0.48, 0.55, 0.30]} />
+        <meshStandardMaterial color={GI} />
       </mesh>
-      {/* Trim band along the bottom hem (slight contrast to break up
-          the solid black). */}
-      <mesh position={[0, 0.73, 0]}>
-        <boxGeometry args={[0.47, 0.04, 0.29]} />
-        <meshStandardMaterial color={RASHGUARD_TRIM} />
+      {/* Closed-kimono lapels on the front (camera-facing +Z when
+          angle=0). Crossed at the waist with a small overlap. */}
+      <mesh position={[-0.09, 1.04, 0.155]} rotation={[0, 0, 0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
       </mesh>
-      {/* Shorts — slightly wider than rashguard, end above knee */}
-      <mesh position={[0, 0.55, 0]} castShadow>
-        <boxGeometry args={[0.48, 0.35, 0.32]} />
-        <meshStandardMaterial color={SHORTS} />
+      <mesh position={[0.09, 1.04, 0.158]} rotation={[0, 0, -0.4]}>
+        <boxGeometry args={[0.10, 0.46, 0.025]} />
+        <meshStandardMaterial color={GI_SHADE} />
       </mesh>
-      {/* Shorts waistband — thin band at top of shorts */}
-      <mesh position={[0, 0.72, 0]}>
-        <boxGeometry args={[0.49, 0.03, 0.33]} />
-        <meshStandardMaterial color={RASHGUARD_TRIM} />
+      {/* Black belt around the waist + knot + ends */}
+      <mesh position={[0, 0.71, 0]} castShadow>
+        <boxGeometry args={[0.51, 0.10, 0.32]} />
+        <meshStandardMaterial color={BELT} />
+      </mesh>
+      <mesh position={[0, 0.71, 0.17]} castShadow>
+        <boxGeometry args={[0.10, 0.13, 0.05]} />
+        <meshStandardMaterial color={BELT} />
+      </mesh>
+      <mesh position={[-0.025, 0.55, 0.183]} rotation={[0, 0, 0.08]}>
+        <boxGeometry args={[0.045, 0.20, 0.02]} />
+        <meshStandardMaterial color={BELT} />
+      </mesh>
+      <mesh position={[0.04, 0.56, 0.183]} rotation={[0, 0, -0.15]}>
+        <boxGeometry args={[0.045, 0.18, 0.02]} />
+        <meshStandardMaterial color={BELT} />
       </mesh>
 
-      {/* Arms — long rashguard sleeves to the wrist. Pivot is at the
-          shoulder; rotation.x swings forward/back during walks. */}
-      <group ref={leftShoulderRef} position={[-0.28, 1.22, 0]}>
-        <mesh position={[0, -0.32, 0]} castShadow>
-          <boxGeometry args={[0.14, 0.62, 0.16]} />
-          <meshStandardMaterial color={RASHGUARD} />
+      {/* Arms — gi sleeves + forearm skin. Pivot at the shoulder so
+          rotation.x swings forward/back during walks. */}
+      <group ref={leftShoulderRef} position={[-0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
         </mesh>
-        {/* Hand — small skin block at the wrist */}
-        <mesh position={[0, -0.68, 0]} castShadow>
-          <boxGeometry args={[0.12, 0.10, 0.14]} />
-          <meshStandardMaterial color={SKIN} />
-        </mesh>
-      </group>
-      <group ref={rightShoulderRef} position={[0.28, 1.22, 0]}>
-        <mesh position={[0, -0.32, 0]} castShadow>
-          <boxGeometry args={[0.14, 0.62, 0.16]} />
-          <meshStandardMaterial color={RASHGUARD} />
-        </mesh>
-        <mesh position={[0, -0.68, 0]} castShadow>
-          <boxGeometry args={[0.12, 0.10, 0.14]} />
-          <meshStandardMaterial color={SKIN} />
-        </mesh>
-      </group>
-
-      {/* Legs — bare skin from shorts hem to feet, since he's in
-          nogi shorts not gi pants. Pivot at the hip. */}
-      <group ref={leftHipRef} position={[-0.12, 0.66, 0]}>
         <mesh position={[0, -0.5, 0]} castShadow>
-          <boxGeometry args={[0.18, 0.44, 0.20]} />
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
           <meshStandardMaterial color={SKIN} />
         </mesh>
-        <mesh position={[0, -0.76, 0.02]} castShadow>
+      </group>
+      <group ref={rightShoulderRef} position={[0.29, 1.22, 0]}>
+        <mesh position={[0, -0.2, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.4, 0.17]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.5, 0]} castShadow>
+          <boxGeometry args={[0.11, 0.25, 0.13]} />
+          <meshStandardMaterial color={SKIN} />
+        </mesh>
+      </group>
+
+      {/* Legs — gi pants, bare feet (matches the academy look). */}
+      <group ref={leftHipRef} position={[-0.12, 0.66, 0]}>
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
+        </mesh>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
           <boxGeometry args={[0.22, 0.08, 0.28]} />
           <meshStandardMaterial color={SKIN} />
         </mesh>
       </group>
       <group ref={rightHipRef} position={[0.12, 0.66, 0]}>
-        <mesh position={[0, -0.5, 0]} castShadow>
-          <boxGeometry args={[0.18, 0.44, 0.20]} />
-          <meshStandardMaterial color={SKIN} />
+        <mesh position={[0, -0.32, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.6, 0.22]} />
+          <meshStandardMaterial color={GI} />
         </mesh>
-        <mesh position={[0, -0.76, 0.02]} castShadow>
+        <mesh position={[0, -0.66, 0.02]} castShadow>
           <boxGeometry args={[0.22, 0.08, 0.28]} />
           <meshStandardMaterial color={SKIN} />
         </mesh>
       </group>
 
-      {/* Head — photo billboard. Reuses PartnerFace; if travis.png
-          has a different aspect than kate.png the plane will squish.
-          travis.png should be a transparent PNG roughly portrait.
-          Suspense fallback={null} so the body still renders if the
-          photo is missing/loading (otherwise the whole Travis subtree
-          waits on the texture). */}
-      <group position={[0, 1.45, 0]}>
+      {/* Head — photo billboard. Raised from y=1.45 to 1.6 so the
+          chin clears the gi collar (otherwise the gi top crops the
+          bottom of the face photo). Suspense fallback={null} so the
+          body still renders if the photo is missing/loading. */}
+      <group position={[0, 1.6, 0]}>
         <Suspense fallback={null}>
           <PartnerFace src={faceSrc} size={0.85} />
         </Suspense>
