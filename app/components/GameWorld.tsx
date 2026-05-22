@@ -128,11 +128,15 @@ const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
 // distance to drop the ball in the hole.
 //
 // GOLF_TEE is where the CHARACTER stands; GOLF_BALL_START is where
-// the BALL sits at address (offset slightly west + north of the
+// the BALL sits at address (offset slightly west + south of the
 // character so the character isn't standing directly on top of the
-// ball and hiding it from the camera).
+// ball, and so the forward body-bend tilts toward the ball).
 const GOLF_POSITION = { x: -14, z: 17 };
-const GOLF_TEE = { x: -16.5, z: 9 };
+// Char stands NORTH of the ball so the forward body-bend during the
+// swing tilts the torso SOUTH toward the ball. If the char were south
+// of the ball, the body would lean away from the ball and the swing
+// would appear to come from behind the back.
+const GOLF_TEE = { x: -16.5, z: 8.3 };
 const GOLF_BALL_START = { x: -17.0, z: 8.7 };
 const GOLF_HOLE = { x: -18, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
@@ -5193,27 +5197,36 @@ function Character({
         swingZ = -Math.PI * 0.8 + p * Math.PI * 0.8; // ease back to 0
       }
       // Two-handed grip (same as before) — hands stay near the
-      // centreline of the body while putting.
+      // centreline of the body while putting. FORWARD = negative
+      // rotation.x on both shoulders tilts the arms forward from
+      // the shoulder sockets so the whole swing arc lives IN FRONT
+      // of the torso (instead of hanging straight down at body
+      // depth, where it reads as the arms swinging through the
+      // chest from the south camera vantage).
       const INWARD = 0.42;
+      const FORWARD = -0.55;
       if (leftShoulderRef.current) {
-        leftShoulderRef.current.rotation.x = 0;
+        leftShoulderRef.current.rotation.x = FORWARD;
         leftShoulderRef.current.rotation.z = swingZ + INWARD;
       }
       if (rightShoulderRef.current) {
-        rightShoulderRef.current.rotation.x = 0;
+        rightShoulderRef.current.rotation.x = FORWARD;
         rightShoulderRef.current.rotation.z = swingZ - INWARD;
       }
       if (clubHolderRef.current) {
-        clubHolderRef.current.rotation.x = 0;
+        clubHolderRef.current.rotation.x = FORWARD;
         clubHolderRef.current.rotation.z = swingZ;
       }
       if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
       if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
-      // Deeper forward bend over the ball — putters hunch over more
-      // than a full-swing golfer.
+      // Slight forward bend over the ball. Kept small (0.15 rad ≈ 9°)
+      // because a deeper bend tilts the arms' swing plane backward and
+      // tucks them behind the torso from the south camera vantage —
+      // makes the swing look like the arms are coming from behind the
+      // character's back.
       if (bodyRef.current) {
-        if (gt < 0.4) bodyRef.current.rotation.x = 0.45;
-        else if (gt < 0.55) bodyRef.current.rotation.x = 0.35;
+        if (gt < 0.4) bodyRef.current.rotation.x = 0.15;
+        else if (gt < 0.55) bodyRef.current.rotation.x = 0.12;
         else bodyRef.current.rotation.x = 0;
         bodyRef.current.position.y = 0;
       }
