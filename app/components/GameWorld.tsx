@@ -87,6 +87,7 @@ type BalloonAdventurePhase =
   | "jumping"       // both leap out
   | "parachuting"   // parachutes deployed, slow descent
   | "landing"       // touchdown
+  | "kiss"          // Kate steps over and kisses Travis before they head home
   | "returning";    // both walk back to their home spots
 
 type BalloonAdventureState = {
@@ -221,6 +222,10 @@ const ADV_AT_TOP_DURATION = 0.9;
 const ADV_JUMP_DURATION = 0.55;        // brief free-fall before chutes open
 const ADV_PARACHUTE_DURATION = 5.5;    // slow descent
 const ADV_LANDING_DURATION = 0.5;
+const ADV_KISS_DURATION = 1.6;         // Kate steps in + holds the kiss + steps back
+// Where Kate stands relative to Travis during the kiss — just east
+// of him, face-to-face. Travis stays put; Kate is the one who moves.
+const ADV_KISS_KATE_OFFSET_X = 0.55;
 // During returning, the balloon descends from ADV_RISE_HEIGHT down
 // to 0 while Kate walks back to the academy. Kate's walk is the
 // "slowest" return path, so balloon descent rate is sized to land
@@ -920,6 +925,49 @@ function Scene({
         trav.y = 0;
         k.y = 0;
         adv.balloonY = ADV_RISE_HEIGHT;
+        if (adv.t >= 1) {
+          adv.phase = "kiss";
+          adv.t = 0;
+        }
+      } else if (adv.phase === "kiss") {
+        // Kate steps over to Travis and gives him a kiss before they
+        // both head home. Three sub-phases:
+        //   0.00..0.30 — Kate slides over to Travis's east side
+        //   0.30..0.85 — both turn to face each other, hold close
+        //                (the photo billboards always face the
+        //                 camera so we see both their faces in
+        //                 profile-distance, like a "smooch shot")
+        //   0.85..1.00 — Kate eases back slightly so it doesn't snap
+        adv.t += clampedDt / ADV_KISS_DURATION;
+        const p = Math.min(1, adv.t);
+        adv.balloonY = ADV_RISE_HEIGHT;
+        trav.y = 0;
+        k.y = 0;
+        // Travis stays put + turns east to face Kate.
+        const travKissAngle = Math.PI / 2; // face east (+X)
+        const kateKissAngle = -Math.PI / 2; // face west (-X), at Travis
+        trav.angle = travKissAngle;
+        // Kate's X — lerp from her landing spot (east of basket) in
+        // to right next to Travis on his east side.
+        const kateLandingX = ADV_KATE_BASKET.x + 0.6;
+        const kateKissX = trav.x + ADV_KISS_KATE_OFFSET_X;
+        // Slide-in 0..0.3 with smoothstep, hold 0.3..0.85, ease
+        // back 0.85..1.0 just barely (so the transition to walking
+        // away doesn't snap).
+        let slideP = 0;
+        if (p < 0.3) {
+          const sp = p / 0.3;
+          slideP = sp * sp * (3 - 2 * sp);
+        } else if (p < 0.85) {
+          slideP = 1;
+        } else {
+          const sp = (1 - p) / 0.15;
+          slideP = 0.85 + (sp * sp * (3 - 2 * sp)) * 0.15;
+        }
+        k.x = kateLandingX + (kateKissX - kateLandingX) * slideP;
+        k.z = trav.z;
+        k.angle = kateKissAngle;
+        k.walking = false;
         if (adv.t >= 1) {
           adv.phase = "returning";
           adv.t = 0;
@@ -7253,11 +7301,12 @@ function Travis({
         </mesh>
       </group>
 
-      {/* Head — photo billboard. Raised from y=1.45 to 1.6 so the
-          chin clears the gi collar (otherwise the gi top crops the
-          bottom of the face photo). Suspense fallback={null} so the
-          body still renders if the photo is missing/loading. */}
-      <group position={[0, 1.6, 0]}>
+      {/* Head — photo billboard. Raised to y=1.78 so the chin
+          fully clears the gi collar (earlier y=1.6 still cropped
+          the very bottom of the beard against the lapel V).
+          Suspense fallback={null} so the body still renders if
+          the photo is missing/loading. */}
+      <group position={[0, 1.78, 0]}>
         <Suspense fallback={null}>
           <PartnerFace src={faceSrc} size={0.85} />
         </Suspense>
