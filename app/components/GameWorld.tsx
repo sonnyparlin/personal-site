@@ -978,6 +978,12 @@ function Scene({
         // by the time she reaches the academy the balloon should be
         // settled — both end at roughly the same moment.
         adv.balloonY = Math.max(0, adv.balloonY - ADV_BALLOON_DESCENT_RATE * clampedDt);
+        // Advance t as elapsed-seconds-in-phase so the Heart
+        // component (and anything else that needs a returning-
+        // local clock) can use it directly — without it, t stays
+        // pinned at 0 the whole walk-back and consumers can't
+        // tell how far through the phase we are.
+        adv.t += clampedDt;
         // Both walk back to their home spots — Travis to his stand-
         // beside-the-balloon spot, Kate to the academy door (where
         // she'll go back inside / disappear). Easter egg ends when
@@ -7575,6 +7581,22 @@ function Heart({
     const k = kateRef.current;
     const isKiss = adv.active && adv.phase === "kiss";
     const isReturn = adv.active && adv.phase === "returning";
+    // Reset wasKissRef whenever the adventure is anywhere BEFORE
+    // kiss (or inactive), so a fresh adventure cycle re-captures
+    // the snapshot cleanly even if Fast Refresh / HMR preserved
+    // the ref from a previous cycle.
+    if (
+      !adv.active ||
+      adv.phase === "kateWalking" ||
+      adv.phase === "boarding" ||
+      adv.phase === "rising" ||
+      adv.phase === "atTop" ||
+      adv.phase === "jumping" ||
+      adv.phase === "parachuting" ||
+      adv.phase === "landing"
+    ) {
+      wasKissRef.current = false;
+    }
     // Snapshot kiss-spot midpoint on entry to kiss so during the
     // returning phase the heart stays put (instead of following
     // Travis as he walks back home).
@@ -7598,15 +7620,15 @@ function Heart({
       g.position.z = (trav.z + k.z) / 2;
     } else if (isReturn) {
       visible = true;
-      const t = adv.t;
-      // Float up out of frame. Camera vertical FOV at the balloon
-      // distance covers ~12u; rising 20u over the walk-back is well
-      // past the top edge. Stays fully opaque most of the way,
-      // gentle fade only in the last 20% so it doesn't pop out
-      // visibly even if the camera angle catches it on the way out.
-      posY = 2.6 + t * 20;
-      opacity = t < 0.8 ? 1 : Math.max(0, 1 - (t - 0.8) * 5);
-      scale = 0.55;
+      // adv.t in the returning phase is elapsed seconds since the
+      // phase started (game tick sets it to += clampedDt each
+      // frame). Slow rise at 1.5u/sec so the heart stays in frame
+      // long enough to read clearly; stays fully opaque the whole
+      // way up and disappears when the adventure ends (both home).
+      const HEART_RISE_RATE = 1.5;
+      posY = 2.6 + adv.t * HEART_RISE_RATE;
+      opacity = 1;
+      scale = 0.75;
       g.position.x = fixedXRef.current;
       g.position.z = fixedZRef.current;
     }
