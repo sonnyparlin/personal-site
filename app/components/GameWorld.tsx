@@ -7368,26 +7368,29 @@ function KateOutside({
         <boxGeometry args={[0.48, 0.55, 0.30]} />
         <meshStandardMaterial color={GI} />
       </mesh>
-      {/* Closed kimono — lapels facing -Z so they read on the
-          camera-facing side after the root rotation aims her body
-          at the direction of travel. (Note: rootRef.rotation.y is
-          set per-frame from kateRef.angle so the lapels rotate
-          with her — there's no fixed π flip like TrainingPartner.) */}
-      <mesh position={[-0.09, 1.04, -0.155]} rotation={[0, 0, -0.4]}>
+      {/* Closed kimono — lapels on the FRONT of the body (+Z, the
+          character's facing direction). Earlier these were at -Z
+          (back of body), which made Kate look like she was on
+          backwards. rootRef.rotation.y is set per-frame from
+          kateRef.angle so the lapels rotate to wherever her body
+          is facing. Rotation signs match Travis: outer lapel tips
+          tilt OUTWARD at the top (forming the V at the collar). */}
+      <mesh position={[-0.09, 1.04, 0.155]} rotation={[0, 0, 0.4]}>
         <boxGeometry args={[0.10, 0.46, 0.025]} />
         <meshStandardMaterial color={GI_SHADE} />
       </mesh>
-      <mesh position={[0.09, 1.04, -0.158]} rotation={[0, 0, 0.4]}>
+      <mesh position={[0.09, 1.04, 0.158]} rotation={[0, 0, -0.4]}>
         <boxGeometry args={[0.10, 0.46, 0.025]} />
         <meshStandardMaterial color={GI_SHADE} />
       </mesh>
 
-      {/* Belt — brown */}
+      {/* Belt — brown. Knot on the FRONT (+Z) so it reads with the
+          lapels above it. */}
       <mesh position={[0, 0.71, 0]} castShadow>
         <boxGeometry args={[0.51, 0.10, 0.32]} />
         <meshStandardMaterial color={BROWN_BELT} />
       </mesh>
-      <mesh position={[0, 0.71, -0.17]} castShadow>
+      <mesh position={[0, 0.71, 0.17]} castShadow>
         <boxGeometry args={[0.10, 0.13, 0.05]} />
         <meshStandardMaterial color={BROWN_BELT} />
       </mesh>
@@ -7596,9 +7599,13 @@ function Heart({
     } else if (isReturn) {
       visible = true;
       const t = adv.t;
-      // Float up + fade out across the first ~half of the walk-back.
-      posY = 2.6 + t * 5;
-      opacity = Math.max(0, 1 - t * 2);
+      // Float up out of frame. Camera vertical FOV at the balloon
+      // distance covers ~12u; rising 20u over the walk-back is well
+      // past the top edge. Stays fully opaque most of the way,
+      // gentle fade only in the last 20% so it doesn't pop out
+      // visibly even if the camera angle catches it on the way out.
+      posY = 2.6 + t * 20;
+      opacity = t < 0.8 ? 1 : Math.max(0, 1 - (t - 0.8) * 5);
       scale = 0.55;
       g.position.x = fixedXRef.current;
       g.position.z = fixedZRef.current;
