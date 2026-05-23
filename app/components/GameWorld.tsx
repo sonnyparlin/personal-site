@@ -6611,11 +6611,14 @@ function CameraRig({
       wantTZ = GOLF_MIDPOINT.z;
       wantTY = 1;
     } else if (c.mode === "shooting") {
-      // Focus on the midpoint between shooter and target so both stay
-      // in frame for the full sequence (aim → fire → topple → recover).
-      wantTX = RANGE_MIDPOINT.x;
-      wantTZ = RANGE_MIDPOINT.z;
-      wantTY = 1.8;
+      // Focus on the SHOOTER + topple bbox, not the target — the joke
+      // is the recoil knockdown, so framing on the lane midpoint left
+      // Sonny at the edge of frame (and sliding off when he toppled
+      // north). Bias the look-at slightly north of the firing line
+      // because the body extends ~1.5u north when prone.
+      wantTX = RANGE_FIRING_LINE.x;
+      wantTZ = RANGE_FIRING_LINE.z - 0.5;
+      wantTY = 1.0;
     } else if (c.mode === "riding") {
       // Lock the target to the park centre (slightly elevated to
       // include the loop) so the fixed cinematic vantage frames the
@@ -6676,16 +6679,18 @@ function CameraRig({
       };
       camHijackedRef.current = true;
     } else if (c.mode === "shooting") {
-      // Side-on cinematic — camera ~15 units east of the range, at the
-      // z-midpoint between the firing line and the targets so the lens
-      // is perpendicular to the lane. With the firing line 6u north
-      // and targets 6u south of the midpoint, FOV 45° at depth 15 fits
-      // both ends comfortably (half-frame ≈ 6.2u). Shooter ends up at
-      // camera-right (north side), targets at camera-left (south side).
+      // Side-on cinematic, tight on the shooter — camera 9u east of
+      // the firing line, slightly south so the topple direction
+      // (backward = north) keeps the prone body well inside the frame
+      // (head ends up ~1.5u north of the firing line). y=2.8 sits
+      // just under the canopy roof (roof at y=3.05) for a covered-
+      // firing-position feel. Targets are out of frame here on
+      // purpose — the joke is the recoil knockdown, not the hit; the
+      // targets are visible from the drone-tour range vantage.
       wantCam = {
-        x: RANGE_MIDPOINT.x + 15,
-        y: 4,
-        z: RANGE_MIDPOINT.z,
+        x: RANGE_FIRING_LINE.x + 9,
+        y: 2.8,
+        z: RANGE_FIRING_LINE.z - 0.5,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
