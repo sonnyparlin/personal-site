@@ -1644,6 +1644,7 @@ function Scene({
             onParkClick={handleParkClick}
             golfRef={refs.golf}
             onGolfClick={handleGolfClick}
+            rangeRef={refs.range}
             onRangeClick={handleRangeClick}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
@@ -1759,6 +1760,7 @@ function Environment({
   onParkClick,
   golfRef,
   onGolfClick,
+  rangeRef,
   onRangeClick,
   balloonRef,
   onBalloonClick,
@@ -1772,6 +1774,7 @@ function Environment({
   onParkClick: () => void;
   golfRef: React.MutableRefObject<GolfState>;
   onGolfClick: () => void;
+  rangeRef: React.MutableRefObject<RangeState>;
   onRangeClick: () => void;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
@@ -1891,6 +1894,10 @@ function Environment({
           fencing. Replaces the old farm. Click anywhere on the
           concrete pad to send the character to the firing line. */}
       <GunRange onSelect={onRangeClick} />
+      {/* Tracer bullet — flies from muzzle to centre target during
+          the fire phase of the shooting easter egg. Hidden outside
+          that ~0.5s window. */}
+      <Bullet rangeRef={rangeRef} />
 
       {/* Distant pine backdrop south of the range — softens the
           horizon so the world doesn't end at a grass edge when the
@@ -2586,6 +2593,54 @@ function GunRange({ onSelect }: { onSelect: () => void }) {
         </mesh>
       ))}
     </group>
+  );
+}
+
+// Bullet — a glowing tracer that flies from the gun muzzle to the
+// centre target during the fire phase. Stretched cylinder oriented
+// along the lane axis so it reads as a streak in motion, not a ball.
+// Visible only during a brief window inside the shooting sequence;
+// hidden the rest of the time.
+function Bullet({ rangeRef }: { rangeRef: React.MutableRefObject<RangeState> }) {
+  const ref = useRef<THREE.Mesh>(null);
+  // Approximate world positions: the muzzle ends up at this point
+  // once the gun-holder rotates forward to firing position (~1u in
+  // front of the firing line at y≈1.1). HIT is the centre target's
+  // bullseye position. If you tune AIM_X on Character or move the
+  // gun mesh inside the holder, retune MUZZLE here so the tracer
+  // starts from where the barrel actually points in world space.
+  const MUZZLE = { x: RANGE_FIRING_LINE.x, y: 1.1, z: RANGE_FIRING_LINE.z + 1.0 };
+  const HIT = { x: RANGE_TARGET.x, y: 1.05, z: RANGE_TARGET.z };
+  // Visible just after the muzzle flash starts (rt=0.27) until
+  // shortly into the topple (rt=0.40). ~0.5s of flight in real
+  // time — slow enough to read as motion, fast enough to feel
+  // like a tracer.
+  const FLIGHT_START = 0.27;
+  const FLIGHT_END = 0.40;
+  useFrame(() => {
+    if (!ref.current) return;
+    const r = rangeRef.current;
+    const rt = r.t;
+    if (!r.active || rt < FLIGHT_START || rt > FLIGHT_END) {
+      ref.current.visible = false;
+      return;
+    }
+    ref.current.visible = true;
+    const p = (rt - FLIGHT_START) / (FLIGHT_END - FLIGHT_START);
+    ref.current.position.set(
+      MUZZLE.x + (HIT.x - MUZZLE.x) * p,
+      MUZZLE.y + (HIT.y - MUZZLE.y) * p,
+      MUZZLE.z + (HIT.z - MUZZLE.z) * p
+    );
+  });
+  return (
+    // Cylinder oriented along Z (lane axis) via rotation.x = π/2 so
+    // its long axis runs in the direction of travel — reads as a
+    // tracer streak rather than a sphere.
+    <mesh ref={ref} visible={false} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.06, 0.06, 0.5, 8]} />
+      <meshBasicMaterial color="#ffe060" toneMapped={false} />
+    </mesh>
   );
 }
 
@@ -5772,6 +5827,12 @@ function Character({
   const gunHolderRef = useRef<THREE.Group>(null);
   const gunRef = useRef<THREE.Group>(null);
   const muzzleFlashRef = useRef<THREE.Group>(null);
+  // Gunshot sound — fires once on the rising edge of the fire window.
+  // The closure owns its own AudioContext, lazily created on first
+  // call (the first click on the range is a user gesture, so the
+  // context resumes cleanly).
+  const playGunshotRef = useRef(makeGunshotSoundPlayer());
+  const prevMuzzleVisibleRef = useRef(false);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -5783,6 +5844,20 @@ function Character({
     if (gunRef.current) {
       gunRef.current.visible = c.mode === "shooting";
     }
+
+    // Gunshot sound trigger — fire ONCE on the rising edge of the
+    // muzzle-flash visibility window (rt crosses 0.25 going up).
+    // Evaluated every frame regardless of mode so that prevMuzzleVisible
+    // resets cleanly outside the shooting sequence and the next
+    // session re-triggers correctly.
+    const muzzleVisibleNow =
+      c.mode === "shooting" &&
+      rangeRef.current.t > 0.25 &&
+      rangeRef.current.t < 0.30;
+    if (muzzleVisibleNow && !prevMuzzleVisibleRef.current) {
+      playGunshotRef.current();
+    }
+    prevMuzzleVisibleRef.current = muzzleVisibleNow;
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
@@ -8492,6 +8567,82 @@ function makeMoveSoundPlayer() {
       filter.connect(gain);
       gain.connect(ctx.destination);
       source.start();
+    } catch {
+      // Silent failure — never break the game over a sound effect.
+    }
+  };
+}
+
+// Synthesized .50 cal hand-cannon shot. Two noise bursts layered:
+// a fast high-frequency CRACK (the initial bang / supersonic snap)
+// and a slower low-frequency BOOM (the propellant blast carrying
+// across the range). Same Web Audio pattern as the chess sound —
+// no external file, lazy AudioContext, silent failure.
+function makeGunshotSoundPlayer() {
+  let ctx: AudioContext | null = null;
+  return function playGunshotSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctx) return;
+      if (!ctx) ctx = new Ctx();
+      if (ctx.state === "suspended") void ctx.resume();
+      const sampleRate = ctx.sampleRate;
+
+      // CRACK — short, high-frequency noise burst with fast decay
+      const crackDur = 0.09;
+      const crackBuf = ctx.createBuffer(
+        1,
+        Math.floor(sampleRate * crackDur),
+        sampleRate
+      );
+      const crackData = crackBuf.getChannelData(0);
+      for (let i = 0; i < crackData.length; i++) {
+        const t = i / sampleRate;
+        const envelope = Math.exp(-t * 55); // fast percussive decay
+        crackData[i] = (Math.random() * 2 - 1) * envelope;
+      }
+      const crackSrc = ctx.createBufferSource();
+      crackSrc.buffer = crackBuf;
+      const crackFilter = ctx.createBiquadFilter();
+      crackFilter.type = "bandpass";
+      crackFilter.frequency.value = 2400;
+      crackFilter.Q.value = 1.1;
+      const crackGain = ctx.createGain();
+      crackGain.gain.value = 0.45;
+      crackSrc.connect(crackFilter);
+      crackFilter.connect(crackGain);
+      crackGain.connect(ctx.destination);
+      crackSrc.start();
+
+      // BOOM — low-frequency rumble with slower decay
+      const boomDur = 0.40;
+      const boomBuf = ctx.createBuffer(
+        1,
+        Math.floor(sampleRate * boomDur),
+        sampleRate
+      );
+      const boomData = boomBuf.getChannelData(0);
+      for (let i = 0; i < boomData.length; i++) {
+        const t = i / sampleRate;
+        const envelope = Math.exp(-t * 7);
+        boomData[i] = (Math.random() * 2 - 1) * envelope;
+      }
+      const boomSrc = ctx.createBufferSource();
+      boomSrc.buffer = boomBuf;
+      const boomFilter = ctx.createBiquadFilter();
+      boomFilter.type = "lowpass";
+      boomFilter.frequency.value = 160;
+      boomFilter.Q.value = 0.7;
+      const boomGain = ctx.createGain();
+      boomGain.gain.value = 0.55;
+      boomSrc.connect(boomFilter);
+      boomFilter.connect(boomGain);
+      boomGain.connect(ctx.destination);
+      boomSrc.start();
     } catch {
       // Silent failure — never break the game over a sound effect.
     }
