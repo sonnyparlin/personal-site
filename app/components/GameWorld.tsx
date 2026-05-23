@@ -206,7 +206,7 @@ const RANGE_CENTER = { x: -3, z: 50 };
 const RANGE_FIRING_LINE = { x: -3, z: 42 }; // where the character stands to shoot
 const RANGE_TARGET = { x: -3, z: 54 };       // centre target stand position
 const RANGE_BERM = { x: -3, z: 60 };          // dirt mound backstop
-const RANGE_DURATION = 6.5; // total seconds: aim → fire → topple → lie → getup → relax
+const RANGE_DURATION = 4.0; // total seconds: aim → fire → topple → off-frame beat → pop up → walk-back
 const RANGE_MIDPOINT = {
   x: RANGE_FIRING_LINE.x,
   z: (RANGE_FIRING_LINE.z + RANGE_TARGET.z) / 2,
@@ -1201,12 +1201,12 @@ function Scene({
       char.x = RANGE_FIRING_LINE.x;
       char.z = RANGE_FIRING_LINE.z;
       char.angle = 0;
-      // Recoil arc: char.y rises briefly during the topple (0.25..0.40)
+      // Recoil arc: char.y rises briefly during the topple (0.30..0.45)
       // so the body appears to lift off the platform as it tips back.
-      // The body rotation (-π/2 by the lying phase) is driven inside
+      // The body rotation (-π/2 by the off-frame beat) is driven inside
       // the Character component reading range.t.
-      if (rt > 0.25 && rt < 0.40) {
-        const p = (rt - 0.25) / 0.15;
+      if (rt > 0.30 && rt < 0.45) {
+        const p = (rt - 0.30) / 0.15;
         // Smoothstep peak ~0.18 (small lift; we want a topple, not a fly-back)
         char.y = Math.sin(p * Math.PI) * 0.18;
       } else {
@@ -5665,13 +5665,18 @@ function FaceBillboard({
       // Scared face through the full balloon sequence (rising →
       // scared → jumping → rolling) and the entire gator chase.
       wantTex = texScared;
-    } else if (c.walking) {
+    } else if (c.walking || c.mode === "shooting") {
       // Back of head when the character is walking AWAY from the
-      // camera. "Away" = the character's facing direction has a
-      // strong positive component along the camera→character vector
-      // (i.e., the camera is roughly behind them). Threshold of
-      // 0.25 keeps the back-of-head only when clearly facing away,
-      // so mostly-sideways angles still show the front face.
+      // camera, OR when in shooting mode with the camera positioned
+      // behind the shooter (otherwise the face billboard does a pure
+      // 180° flip toward the camera = "head on backwards"). The
+      // shooting-mode camera vantage sits north of Sonny while he
+      // faces south, so the dot check fires positive and the back
+      // texture takes over. "Away" = the character's facing
+      // direction has a strong positive component along the
+      // camera→character vector. Threshold of 0.25 keeps the
+      // back-of-head only when clearly facing away, so mostly-
+      // sideways angles still show the front face.
       const camToCharX = c.x - state.camera.position.x;
       const camToCharZ = c.z - state.camera.position.z;
       const ccLen = Math.hypot(camToCharX, camToCharZ);
@@ -5898,30 +5903,42 @@ function Character({
       // south (+Z, toward the target) so a backward fall is exactly
       // what we want.
       //
-      //   aim    (0.00..0.20): upright, slight forward shooter lean
-      //   fire   (0.20..0.25): brace, tiny backward twitch from initial recoil
-      //   topple (0.25..0.40): tip backward all the way to -π/2 (lying)
-      //   lying  (0.40..0.70): flat on back, hold pose
-      //   getup  (0.70..0.88): lerp back up to 0
-      //   relax  (0.88..1.00): upright, arms drop
+      // The camera sits BEHIND the shooter at y=3.5 looking down the
+      // lane at the targets — so when the body tilts to -π/2 (prone),
+      // the head ends up at y=0, z=40.5 (north of firing line) which
+      // is well below the bottom of the frame at this vantage. That's
+      // the "fall out of frame" comedic beat. Then the body snaps
+      // back to upright (no lerp) for the "pop up", and char walks
+      // home as usual.
+      //
+      //   aim       (0.00..0.25): upright, slight forward shooter lean
+      //   fire      (0.25..0.30): brace, tiny backward twitch
+      //   topple    (0.30..0.45): tip backward all the way to -π/2 (prone)
+      //   off-frame (0.45..0.85): body held prone — Sonny is below the
+      //                           camera's frame, so we see only the
+      //                           targets and an empty firing line.
+      //                           Comedic dead-beat.
+      //   pop-up    (0.85..1.00): INSTANT snap back to upright (no lerp).
+      //                           No relax phase — the easter egg ends
+      //                           with mode=idle and walkTo(plaza).
       let bodyTilt = 0;
-      if (rt < 0.20) {
+      if (rt < 0.25) {
         bodyTilt = 0.08; // small forward stance lean
-      } else if (rt < 0.25) {
-        const p = (rt - 0.20) / 0.05;
+      } else if (rt < 0.30) {
+        const p = (rt - 0.25) / 0.05;
         bodyTilt = 0.08 - p * 0.20; // 0.08 → -0.12
-      } else if (rt < 0.40) {
-        const p = (rt - 0.25) / 0.15;
+      } else if (rt < 0.45) {
+        const p = (rt - 0.30) / 0.15;
         // -0.12 → -π/2 with an ease-out so the topple accelerates
         const eased = 1 - (1 - p) * (1 - p);
         bodyTilt = -0.12 + eased * (-Math.PI / 2 + 0.12);
-      } else if (rt < 0.70) {
+      } else if (rt < 0.85) {
+        // Off-frame beat — body prone, Sonny invisible (camera doesn't
+        // follow him below the bottom edge).
         bodyTilt = -Math.PI / 2;
-      } else if (rt < 0.88) {
-        const p = (rt - 0.70) / 0.18;
-        const eased = 1 - (1 - p) * (1 - p);
-        bodyTilt = -Math.PI / 2 * (1 - eased);
       } else {
+        // INSTANT pop-up — body snaps to upright, no lerp. The sudden
+        // reappearance is the punchline of the beat.
         bodyTilt = 0;
       }
       if (bodyRef.current) {
@@ -5931,17 +5948,17 @@ function Character({
 
       // ── Arms (two-handed grip) ─────────────────────────────────
       // Shoulders extended forward + slightly inward so both hands
-      // meet at the body-centre gun. Hold the pose through fire,
-      // topple, lying, and most of getup. Drop only during relax.
+      // meet at the body-centre gun. Hold the pose through aim, fire,
+      // topple, and the off-frame beat. Drop the arms on pop-up so
+      // Sonny looks normal again when he reappears.
       const AIM_X = -Math.PI / 2.3;   // forward extension (~78°)
       const AIM_INWARD = 0.48;        // bring hands together
       let armX = AIM_X;
       let armZ_inward = AIM_INWARD;
-      if (rt > 0.88) {
-        // Relax — lerp arms back to sides
-        const p = (rt - 0.88) / 0.12;
-        armX = AIM_X * (1 - p);
-        armZ_inward = AIM_INWARD * (1 - p);
+      if (rt >= 0.85) {
+        // Pop-up — arms instantly back to sides (matches body snap)
+        armX = 0;
+        armZ_inward = 0;
       }
       if (leftShoulderRef.current) {
         leftShoulderRef.current.rotation.x = armX;
@@ -5953,23 +5970,23 @@ function Character({
       }
       // Gun-holder follows the arms — rotate forward by AIM_X so the
       // barrel ends up pointing south (toward the target) when arms
-      // are up; lerps back when the arms drop.
+      // are up; snaps back when the arms drop.
       if (gunHolderRef.current) {
         gunHolderRef.current.rotation.x = armX;
         gunHolderRef.current.rotation.z = 0;
       }
 
       // ── Legs ───────────────────────────────────────────────────
-      // Straight throughout the shot. During the lying phase the
-      // whole body group rotates so the legs naturally stick out
-      // toward the target — no per-hip rotation needed.
+      // Straight throughout. During the off-frame beat the whole body
+      // group rotates so the legs naturally stick out south — no
+      // per-hip rotation needed.
       if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
       if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
 
       // ── Muzzle flash ───────────────────────────────────────────
       // Brief emissive cone visible only during the fire window.
       if (muzzleFlashRef.current) {
-        muzzleFlashRef.current.visible = rt > 0.20 && rt < 0.25;
+        muzzleFlashRef.current.visible = rt > 0.25 && rt < 0.30;
       }
       return;
     }
@@ -6611,14 +6628,15 @@ function CameraRig({
       wantTZ = GOLF_MIDPOINT.z;
       wantTY = 1;
     } else if (c.mode === "shooting") {
-      // Focus on the SHOOTER + topple bbox, not the target — the joke
-      // is the recoil knockdown, so framing on the lane midpoint left
-      // Sonny at the edge of frame (and sliding off when he toppled
-      // north). Bias the look-at slightly north of the firing line
-      // because the body extends ~1.5u north when prone.
+      // Look down the lane at the target row. With the camera placed
+      // north of the firing line (see wantCam below), this puts the
+      // shooter in the lower half of frame, the gun pointing into the
+      // distance, and the targets centred. When Sonny topples
+      // backward the camera stays fixed on the targets — he falls
+      // off the bottom of the frame, which is the comedic beat.
       wantTX = RANGE_FIRING_LINE.x;
-      wantTZ = RANGE_FIRING_LINE.z - 0.5;
-      wantTY = 1.0;
+      wantTZ = RANGE_TARGET.z;
+      wantTY = 1.5;
     } else if (c.mode === "riding") {
       // Lock the target to the park centre (slightly elevated to
       // include the loop) so the fixed cinematic vantage frames the
@@ -6679,18 +6697,23 @@ function CameraRig({
       };
       camHijackedRef.current = true;
     } else if (c.mode === "shooting") {
-      // Side-on cinematic, tight on the shooter — camera 9u east of
-      // the firing line, slightly south so the topple direction
-      // (backward = north) keeps the prone body well inside the frame
-      // (head ends up ~1.5u north of the firing line). y=2.8 sits
-      // just under the canopy roof (roof at y=3.05) for a covered-
-      // firing-position feel. Targets are out of frame here on
-      // purpose — the joke is the recoil knockdown, not the hit; the
-      // targets are visible from the drone-tour range vantage.
+      // Behind-the-shooter vantage — camera ~5u north of the firing
+      // line (= behind Sonny, who faces south), elevated to y=3.5
+      // so the look-axis aims down the lane at the targets. 1u east
+      // bias breaks the perfect symmetry so the face billboard
+      // doesn't pure-180° flip on the camera (the "head on backwards"
+      // case), and so Sonny ends up slightly right-of-centre.
+      //
+      // Critical to the joke: the camera STAYS HERE during the
+      // topple — it doesn't pan down to follow Sonny when he falls.
+      // The body tipping backward to -π/2 (head ending up at y=0,
+      // z=40.5) lands well below the bottom of the frame at this
+      // vantage, so he disappears for ~1.5s, then "pops" back into
+      // frame upright before walking home.
       wantCam = {
-        x: RANGE_FIRING_LINE.x + 9,
-        y: 2.8,
-        z: RANGE_FIRING_LINE.z - 0.5,
+        x: RANGE_FIRING_LINE.x + 1,
+        y: 3.5,
+        z: RANGE_FIRING_LINE.z - 5,
       };
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
