@@ -6698,21 +6698,22 @@ function CameraRig({
       camHijackedRef.current = true;
     } else if (c.mode === "shooting") {
       // Behind-the-shooter vantage — camera ~5u north of the firing
-      // line (= behind Sonny, who faces south), elevated to y=3.5
-      // so the look-axis aims down the lane at the targets. 1u east
-      // bias breaks the perfect symmetry so the face billboard
-      // doesn't pure-180° flip on the camera (the "head on backwards"
-      // case), and so Sonny ends up slightly right-of-centre.
+      // line (= behind Sonny, who faces south), at y=2.0 so the
+      // line of sight to the target (y=1.05 at z=54) passes UNDER
+      // the canopy roof (y=3.0-3.1, z=39.3-44.7). At y=3.5 the line
+      // intersected the canopy and the targets were occluded; at
+      // y=2.0 the canopy + "RANGE" sign sit cleanly off the top of
+      // frame and the targets are visible dead-center. 1u east bias
+      // breaks the perfect 180° face-billboard flip on the camera.
       //
       // Critical to the joke: the camera STAYS HERE during the
       // topple — it doesn't pan down to follow Sonny when he falls.
-      // The body tipping backward to -π/2 (head ending up at y=0,
-      // z=40.5) lands well below the bottom of the frame at this
-      // vantage, so he disappears for ~1.5s, then "pops" back into
-      // frame upright before walking home.
+      // From y=2 the prone-head depth (~3.6) puts him 126% below
+      // center → comfortably off the bottom edge for the off-frame
+      // beat, then he pops back upright in frame.
       wantCam = {
         x: RANGE_FIRING_LINE.x + 1,
-        y: 3.5,
+        y: 2.0,
         z: RANGE_FIRING_LINE.z - 5,
       };
       camHijackedRef.current = true;
