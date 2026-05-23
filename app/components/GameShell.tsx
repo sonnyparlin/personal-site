@@ -13,6 +13,14 @@ const RESET_CAMERA_EVENT = "reset-camera";
 const CHESS_NEW_GAME_EVENT = "chess-new-game";
 const CHESS_RESIGN_EVENT = "chess-resign";
 
+// Easter-egg discovery tally. Each id is dispatched on
+// `easter-egg-found` (from Scene) when the corresponding
+// choreography completes; the pill listens and persists the
+// found set in localStorage. No in-UI list of egg names — the
+// pill is just a tally so visitors don't get spoilers.
+const EGG_IDS = ["gator", "coaster", "golf", "range", "balloon"] as const;
+const EGG_STORAGE_KEY = "personal-site:eggs-found";
+
 function ResetViewButton() {
   return (
     <button
@@ -265,6 +273,129 @@ function ChessControls() {
   );
 }
 
+// Top-left HUD chip — a no-spoilers tally of how many easter eggs
+// the visitor has found, with a small × on the right that resets
+// the count. Discovery state arrives via the `easter-egg-found`
+// window event Scene dispatches when a choreography completes;
+// the found set is persisted in localStorage so the tally
+// survives reloads.
+function EasterEggTally() {
+  const [found, setFound] = useState<Set<string>>(new Set());
+
+  // Load discovery state on mount.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(EGG_STORAGE_KEY);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setFound(new Set(parsed.filter((x): x is string => typeof x === "string")));
+      }
+    } catch {
+      // Ignore: corrupted JSON, storage disabled, etc. Tally just stays at 0.
+    }
+  }, []);
+
+  // Listen for completions dispatched from Scene.
+  useEffect(() => {
+    function handler(e: Event) {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id) return;
+      setFound((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        try {
+          window.localStorage.setItem(
+            EGG_STORAGE_KEY,
+            JSON.stringify([...next])
+          );
+        } catch {
+          // Storage might be disabled in private mode — tally still
+          // works for the current session.
+        }
+        return next;
+      });
+    }
+    window.addEventListener("easter-egg-found", handler);
+    return () => window.removeEventListener("easter-egg-found", handler);
+  }, []);
+
+  function reset() {
+    setFound(new Set());
+    try {
+      window.localStorage.removeItem(EGG_STORAGE_KEY);
+    } catch {
+      // Storage might be disabled — UI tally still clears.
+    }
+  }
+
+  const total = EGG_IDS.length;
+  const count = found.size;
+
+  // Right padding shrinks when the reset button is present so the
+  // chip stays visually balanced — the button absorbs the gap.
+  const hasFound = count > 0;
+  return (
+    <div
+      className={`
+        absolute top-4 left-4 z-10 select-none
+        h-12 pl-4 ${hasFound ? "pr-1" : "pr-4"}
+        flex items-center gap-2
+        bg-black/60
+        text-white text-sm uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+      `}
+      role="status"
+      aria-label={`${count} of ${total} easter eggs found`}
+    >
+      <span aria-hidden className="text-amber-300 leading-none">★</span>
+      <span className="tabular-nums">
+        {count}/{total}
+      </span>
+      <span className="opacity-80">explored</span>
+      {hasFound && (
+        <button
+          type="button"
+          onClick={reset}
+          aria-label="Reset easter egg progress"
+          title="Reset progress"
+          className="
+            ml-1 w-8 h-8
+            flex items-center justify-center
+            text-white/60 hover:text-white
+            hover:bg-white/15 active:bg-white/25
+            rounded-full
+            transition-colors
+            cursor-pointer
+          "
+        >
+          {/* Circular-arrow "reset" glyph — open at the top, with
+              an arrowhead so it reads as "rewind / start over"
+              rather than "refresh the page". */}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v6h6" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function GameShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const section = getSectionByPath(pathname ?? "/");
@@ -300,6 +431,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
         // children of "/" route render nothing meaningful, but mounting them
         // keeps Next.js happy.
         <>
+          <EasterEggTally />
           <ResetViewButton />
           <div className="hidden">{children}</div>
         </>

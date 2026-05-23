@@ -131,6 +131,7 @@ type SharedRefs = {
     x: number;
     z: number;
     sectionId: SectionId | null;
+    sprint?: boolean;
   } | null>;
   // Remaining waypoints to traverse before the *current* target's arrival
   // handlers fire. Each arrival pops the next waypoint and treats it as the
@@ -155,6 +156,7 @@ type SharedRefs = {
 };
 
 const WALK_SPEED = 2.5; // units/sec
+const SPRINT_SPEED = 5.0; // jog to/from far destinations (gun range)
 const FLEE_SPEED = 5.8; // sprint speed when fleeing the gator
 const GATOR_CHASE_SPEED = 2.2;
 const GATOR_RETURN_SPEED = 1.4;
@@ -382,8 +384,26 @@ function coasterWorldAt(t: number): {
   };
 }
 
+// Decorative obstacles (currently the hills) that the character should
+// neither walk through nor route a path through. Treated as ground
+// circles. Keep the (x, z, r) entries in sync with the `<Hill>` JSX
+// inside Environment — each Hill's footprint radius is `3.5 * scale`
+// (the half-sphere has unscaled radius 3.5, and only Y is squashed).
+const OBSTACLES: { x: number; z: number; r: number }[] = [
+  { x: -22, z: -28, r: 3.5 * 1.4 },
+  { x: -22, z:  28, r: 3.5 * 1.5 },
+  { x:   0, z: -32, r: 3.5 * 1.8 },
+  { x:   0, z:  32, r: 3.5 * 1.4 },
+  { x: -12, z: -34, r: 3.5 * 1.3 },
+  { x:  10, z:  30, r: 3.5 * 1.3 },
+  { x: -22, z:  72, r: 3.5 * 1.4 },
+  { x:  14, z:  73, r: 3.5 * 1.5 },
+  { x:  -3, z:  84, r: 3.5 * 1.6 },
+];
+
 // Resolve building collisions by pushing the character out of any
-// building footprint (rotated rectangle inflated by CHAR_RADIUS).
+// building footprint (rotated rectangle inflated by CHAR_RADIUS), and
+// out of any obstacle circle (hills).
 function resolveCollisions(x: number, z: number): { x: number; z: number } {
   let nx = x;
   let nz = z;
@@ -413,6 +433,22 @@ function resolveCollisions(x: number, z: number): { x: number; z: number } {
       // Rotate the push back to world space
       nx += cos * pushLX - sin * pushLZ;
       nz += sin * pushLX + cos * pushLZ;
+    }
+  }
+  // Hill circles — push radially outward to the boundary.
+  for (const o of OBSTACLES) {
+    const dx = nx - o.x;
+    const dz = nz - o.z;
+    const d = Math.hypot(dx, dz);
+    const minD = o.r + CHAR_RADIUS;
+    if (d < minD) {
+      if (d < 1e-4) {
+        // Degenerate: shove +x by minD so we don't divide by zero.
+        nx = o.x + minD;
+      } else {
+        nx = o.x + (dx / d) * minD;
+        nz = o.z + (dz / d) * minD;
+      }
     }
   }
   return { x: nx, z: nz };
@@ -448,6 +484,42 @@ function lineHitsAnyBuilding(
   return false;
 }
 
+// Closest-point-on-segment-to-circle-center check for the hill
+// obstacles. Cheaper and more accurate than sample-based.
+function lineHitsAnyObstacle(
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number
+): boolean {
+  const lx = x2 - x1;
+  const lz = z2 - z1;
+  const len2 = lx * lx + lz * lz || 1;
+  for (const o of OBSTACLES) {
+    let t = ((o.x - x1) * lx + (o.z - z1) * lz) / len2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const cx = x1 + lx * t;
+    const cz = z1 + lz * t;
+    if (Math.hypot(o.x - cx, o.z - cz) < o.r + CHAR_RADIUS + 0.05) return true;
+  }
+  return false;
+}
+
+// Combined route-blocking check: either a building footprint or a
+// hill circle. Both are obstacles routeTo must navigate around.
+function lineIsBlocked(
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number
+): boolean {
+  return (
+    lineHitsAnyBuilding(x1, z1, x2, z2) ||
+    lineHitsAnyObstacle(x1, z1, x2, z2)
+  );
+}
+
 // Outer-ring waypoints used to bypass the building cluster. Picked so each
 // one is clear of every building from the plaza's perspective. The
 // inner "corridor" waypoints (3, -4) / (-3, -4) thread between HOME and
@@ -463,6 +535,10 @@ const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: 8, z: 0 },     // E
   { x: 3, z: -4 },    // NE corridor between HOME and MUSIC (toward the gator)
   { x: -3, z: -4 },   // NW corridor between HOME and JIU JITSU (toward the park)
+  // Southern hills corridor — threads west of the central hill (0, 32)
+  // and east of the SW hill (-22, 28) so the walk to the gun range
+  // (z=42) doesn't clip the (0, 32) / (10, 30) hill cluster.
+  { x: -9, z: 26 },
 ];
 
 // Return the sequence of waypoints to walk through to get from (fromX, fromZ)
@@ -474,16 +550,16 @@ function routeTo(
   toX: number,
   toZ: number
 ): { x: number; z: number }[] {
-  if (!lineHitsAnyBuilding(fromX, fromZ, toX, toZ)) {
+  if (!lineIsBlocked(fromX, fromZ, toX, toZ)) {
     return [{ x: toX, z: toZ }];
   }
   // Pick the bypass waypoint that minimises total path length while keeping
-  // both legs clear of buildings.
+  // both legs clear of buildings AND hills.
   let best: { x: number; z: number } | null = null;
   let bestCost = Infinity;
   for (const w of BYPASS_WAYPOINTS) {
-    if (lineHitsAnyBuilding(fromX, fromZ, w.x, w.z)) continue;
-    if (lineHitsAnyBuilding(w.x, w.z, toX, toZ)) continue;
+    if (lineIsBlocked(fromX, fromZ, w.x, w.z)) continue;
+    if (lineIsBlocked(w.x, w.z, toX, toZ)) continue;
     const cost =
       Math.hypot(w.x - fromX, w.z - fromZ) +
       Math.hypot(toX - w.x, toZ - w.z);
@@ -795,6 +871,18 @@ function Scene({
   pathname: string;
   camDefault: { x: number; y: number; z: number };
 }) {
+  // Small helper to notify the EasterEggMenu overlay that the user
+  // has completed an easter egg. The menu listens for this on
+  // window and stores discovery state in localStorage. Each
+  // completion site fires this exactly once (the surrounding
+  // `if (rt >= 1)` / `if (gt >= 1)` / `if (laps >= ...)` etc.
+  // guards reset the relevant state, so subsequent frames don't
+  // re-enter the branch).
+  function dispatchFound(id: "gator" | "coaster" | "golf" | "range" | "balloon") {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("easter-egg-found", { detail: id }));
+  }
+
   // Game tick — runs every frame
   useFrame((_, dt) => {
     const clampedDt = Math.min(0.1, dt);
@@ -1068,6 +1156,7 @@ function Scene({
           adv.phase = "kateWalking";
           adv.balloonY = 0;
           k.visible = false;
+          dispatchFound("balloon");
         }
       }
       // Compute the "action" Y the camera should frame this phase.
@@ -1217,11 +1306,14 @@ function Scene({
         refs.range.current.active = false;
         char.mode = "idle";
         char.y = 0;
+        dispatchFound("range");
         // Walk back to the plaza — route via bypass waypoints so the
-        // path home doesn't clip the golf course or south buildings.
+        // path home doesn't clip the golf course, south buildings, or
+        // the southern hill cluster. Sprint home so the long return
+        // doesn't feel like a slog either.
         const path = routeTo(char.x, char.z, 0, 0);
         const first = path[0];
-        refs.target.current = { x: first.x, z: first.z, sectionId: null };
+        refs.target.current = { x: first.x, z: first.z, sectionId: null, sprint: true };
         refs.pathQueue.current = path.slice(1);
         char.walking = true;
       }
@@ -1248,6 +1340,7 @@ function Scene({
         refs.golf.current.active = false;
         char.mode = "idle";
         char.y = 0;
+        dispatchFound("golf");
         // Walk back to the plaza — route via bypass waypoints so the
         // path doesn't clip the CODE building between the tee and the
         // plaza.
@@ -1272,6 +1365,7 @@ function Scene({
           coaster.riding = false;
           char.mode = "idle";
           char.y = 0;
+          dispatchFound("coaster");
           char.x = PARK.x;
           char.z = PARK.z + PARK_ENTRY_WORLD;
           char.angle = Math.atan2(-char.x, -char.z); // face plaza
@@ -1306,6 +1400,7 @@ function Scene({
         // Face the camera (looking at the plaza from +Z) when arriving back
         char.angle = 0;
         gator.chasing = false;
+        dispatchFound("gator");
       } else {
         const step = FLEE_SPEED * clampedDt;
         const proposed = resolveCollisions(
@@ -1337,6 +1432,7 @@ function Scene({
             x: next.x,
             z: next.z,
             sectionId: target.sectionId,
+            sprint: target.sprint,
           };
         } else {
           char.walking = false;
@@ -1399,7 +1495,12 @@ function Scene({
           refs.target.current = null;
         }
       } else {
-        const step = WALK_SPEED * clampedDt;
+        const sprinting = !!target.sprint;
+        const speed = sprinting ? SPRINT_SPEED : WALK_SPEED;
+        // Step cadence: sprint matches the flee gait (4.5 cycles/sec)
+        // so the legs visibly run instead of doing a fast moonwalk.
+        const stepRate = sprinting ? 4.5 : 2.2;
+        const step = speed * clampedDt;
         const proposed = resolveCollisions(
           char.x + (dx / dist) * step,
           char.z + (dz / dist) * step
@@ -1407,7 +1508,7 @@ function Scene({
         char.x = proposed.x;
         char.z = proposed.z;
         char.angle = Math.atan2(dx, dz);
-        char.stepPhase = (char.stepPhase + clampedDt * 2.2) % 1;
+        char.stepPhase = (char.stepPhase + clampedDt * stepRate) % 1;
       }
     } else if (!char.walking) {
       char.stepPhase = 0;
@@ -1538,16 +1639,20 @@ function Scene({
   }
 
   // Helper: set a target and pre-populate the path queue with any waypoints
-  // needed to bypass building corners between here and there.
+  // needed to bypass building corners between here and there. The optional
+  // `sprint` flag plumbs through every waypoint, so the character jogs at
+  // SPRINT_SPEED for the whole route — used for the far-away gun range so
+  // it doesn't feel like a slog to get there.
   function walkTo(
     destX: number,
     destZ: number,
-    sectionId: SectionId | null
+    sectionId: SectionId | null,
+    sprint = false
   ) {
     const c = refs.char.current;
     const path = routeTo(c.x, c.z, destX, destZ);
     const first = path[0];
-    refs.target.current = { x: first.x, z: first.z, sectionId };
+    refs.target.current = { x: first.x, z: first.z, sectionId, sprint };
     refs.pathQueue.current = path.slice(1);
     refs.char.current.walking = true;
   }
@@ -1584,7 +1689,9 @@ function Scene({
 
   function handleRangeClick() {
     if (!isOnHome || isBusy()) return;
-    walkTo(RANGE_FIRING_LINE.x, RANGE_FIRING_LINE.z, null);
+    // Range is 42u south — sprint there so the walk doesn't feel
+    // like a slog.
+    walkTo(RANGE_FIRING_LINE.x, RANGE_FIRING_LINE.z, null, true);
     refs.approachingRange.current = true;
   }
 
@@ -1610,7 +1717,6 @@ function Scene({
     refs.balloonAdventure.current.t = 0;
     refs.balloonAdventure.current.balloonY = 0;
   }
-
 
   // The jiu-jitsu and chess sections are rendered as separate 3D
   // scenes (interior of the academy / chess study) instead of
@@ -2391,6 +2497,33 @@ function GunRange({ onSelect }: { onSelect: () => void }) {
   const LANE_XS = [RANGE_TARGET.x - 4, RANGE_TARGET.x, RANGE_TARGET.x + 4];
   return (
     <group>
+      {/* Invisible click footprint covering the whole range area
+          (firing pad + canopy + target stands + berm + sandbags).
+          R3F raycasts top-down, so this sits just above grass and
+          gets hit by clicks on anything BEHIND a clickable mesh
+          (the meshes above have no handlers, so the event bubbles
+          down to here). The visible concrete pad below has its own
+          handler so it can keep its hover-color affordance. Plane
+          spans x∈[-12, 6], z∈[37, 63]. */}
+      <mesh
+        position={[RANGE_FIRING_LINE.x, 0.01, RANGE_FIRING_LINE.z + 8]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect();
+        }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          document.body.style.cursor = "";
+        }}
+      >
+        <planeGeometry args={[18, 26]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
       {/* Concrete firing pad — clickable. The mesh sits a hair above
           ground at PAD_Y so it doesn't z-fight with the grass plane. */}
       <mesh
