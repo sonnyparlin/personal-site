@@ -273,6 +273,115 @@ function ChessControls() {
   );
 }
 
+// Total stripes hidden in the world during the tiny play-mode demo.
+// When this changes, also update the `STRIPES` array in GameWorld.tsx.
+const PLAY_STRIPE_TOTAL = 5;
+
+// Toggle that flips between portfolio mode (click-to-walk + orbit
+// camera + easter eggs) and play mode (WASD + jump + follow cam +
+// stripe collectibles). The button label and color change with the
+// active mode so the affordance is obvious.
+function PlayToggleButton({
+  playMode,
+  onToggle,
+}: {
+  playMode: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={playMode ? "Exit play mode" : "Enter play mode"}
+      className={`
+        absolute top-4 right-4 z-10 select-none
+        h-12 px-4
+        flex items-center gap-2
+        text-white text-sm uppercase tracking-wider
+        border rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        transition-colors
+        cursor-pointer
+        ${
+          playMode
+            ? "bg-red-600/70 hover:bg-red-600/85 border-red-300/40"
+            : "bg-emerald-600/70 hover:bg-emerald-600/85 border-emerald-300/40"
+        }
+      `}
+    >
+      {playMode ? (
+        <>
+          <span aria-hidden>✕</span>
+          <span>Exit Play</span>
+        </>
+      ) : (
+        <>
+          <span aria-hidden>▶</span>
+          <span>Play</span>
+        </>
+      )}
+    </button>
+  );
+}
+
+// HUD shown only while play mode is active — a running stripe tally
+// the kid can glance at to see how many they have left to grab.
+function StripeHUD({ count }: { count: number }) {
+  return (
+    <div
+      role="status"
+      aria-label={`${count} of ${PLAY_STRIPE_TOTAL} stripes collected`}
+      className="
+        absolute top-20 right-4 z-10 select-none
+        h-12 px-4
+        flex items-center gap-2
+        bg-black/60
+        text-white text-sm uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+      "
+    >
+      <span aria-hidden className="text-amber-300 leading-none">▰</span>
+      <span className="tabular-nums">
+        {count}/{PLAY_STRIPE_TOTAL}
+      </span>
+      <span className="opacity-80">stripes</span>
+    </div>
+  );
+}
+
+// Tiny on-screen hint of the play-mode controls — fades out after
+// a few seconds so it doesn't clutter the screen.
+function PlayControlsHint() {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const id = setTimeout(() => setVisible(false), 5000);
+    return () => clearTimeout(id);
+  }, []);
+  if (!visible) return null;
+  return (
+    <div
+      className="
+        absolute bottom-4 left-1/2 -translate-x-1/2 z-10 select-none
+        px-4 py-2
+        bg-black/60
+        text-white text-xs uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        pointer-events-none
+      "
+    >
+      Move: <span className="text-amber-300">WASD</span> &nbsp;•&nbsp;
+      Jump: <span className="text-amber-300">Space</span>
+    </div>
+  );
+}
+
 // Top-left HUD chip — a no-spoilers tally of how many easter eggs
 // the visitor has found, with a small × on the right that resets
 // the count. Discovery state arrives via the `easter-egg-found`
@@ -408,9 +517,32 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   const isFullScene = isAcademy || isChess;
   const exitLabel = isAcademy ? "the academy" : "chess";
 
+  // Play mode (the Mario-style kid game) only makes sense on the
+  // plaza route. Navigating away auto-exits via the effect below.
+  const [playMode, setPlayMode] = useState(false);
+  const [stripeCount, setStripeCount] = useState(0);
+  useEffect(() => {
+    if (pathname !== "/") setPlayMode(false);
+  }, [pathname]);
+  useEffect(() => {
+    // Reset the count when entering or exiting play mode so each
+    // play session starts at 0/5.
+    setStripeCount(0);
+    // Tell Scene to reset the stripe meshes' collected state.
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("play-mode-reset"));
+  }, [playMode]);
+  useEffect(() => {
+    function onCollect() {
+      setStripeCount((n) => n + 1);
+    }
+    window.addEventListener("stripe-collected", onCollect);
+    return () => window.removeEventListener("stripe-collected", onCollect);
+  }, []);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1a1a2e]">
-      <GameWorld />
+      <GameWorld playMode={playMode} />
       {isFullScene ? (
         <>
           <ExitSceneButton label={exitLabel} />
@@ -431,8 +563,17 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
         // children of "/" route render nothing meaningful, but mounting them
         // keeps Next.js happy.
         <>
-          <EasterEggTally />
-          <ResetViewButton />
+          {/* Hide the tally + reset-view in play mode so the screen
+              isn't cluttered while platforming. The play HUD takes
+              their slots. */}
+          {!playMode && <EasterEggTally />}
+          {!playMode && <ResetViewButton />}
+          <PlayToggleButton
+            playMode={playMode}
+            onToggle={() => setPlayMode((v) => !v)}
+          />
+          {playMode && <StripeHUD count={stripeCount} />}
+          {playMode && <PlayControlsHint />}
           <div className="hidden">{children}</div>
         </>
       )}

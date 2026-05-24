@@ -30,11 +30,16 @@ type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "shootin
 type CharState = {
   x: number;
   z: number;
-  y: number; // off-ground height (only non-zero during the coaster ride)
+  y: number; // off-ground height (coaster ride, balloon, jump in play mode)
   angle: number; // facing angle (Y rotation, radians)
   walking: boolean;
   mode: CharMode;
   stepPhase: number; // 0..1
+  // Play-mode jump physics. Driven only by the play-mode WASD/jump
+  // tick; portfolio mode leaves these alone (y is driven by the
+  // coaster / balloon / golf state machines instead).
+  vy: number;
+  grounded: boolean;
 };
 
 type DoorState = Record<SectionId, number>; // 0..1 (closed..open)
@@ -206,6 +211,67 @@ const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → 
 // ~6 units further south.
 const RANGE_CENTER = { x: -3, z: 50 };
 const RANGE_FIRING_LINE = { x: -3, z: 42 }; // where the character stands to shoot
+
+// Tiny play-mode demo: 5 stripes scattered around the world at
+// ground level. Picked so the kid has to actually wander the map
+// to grab them all (not just spin in place). Positions sit clear
+// of buildings + hills + the existing easter eggs so a stripe
+// never spawns inside something the character can't reach.
+const STRIPES: { x: number; z: number; label: string }[] = [
+  { x:  6,  z:  2,  label: "near-music" },     // plaza edge, MUSIC side
+  { x: -6,  z:  6,  label: "near-code" },      // plaza edge, CODE side
+  { x:  9,  z: -6,  label: "lake-shore" },     // near the gator / lake corner
+  { x: -3,  z: 20,  label: "south-meadow" },   // between plaza and gun range
+  { x: 15,  z:  8,  label: "east-beach" },     // east near the beach
+];
+const STRIPE_BOB_AMP = 0.15;    // vertical wobble amplitude
+const STRIPE_BOB_FREQ = 1.8;    // wobbles/sec
+const STRIPE_SPIN_FREQ = 1.4;   // rotations/sec
+
+// Character selection — the kid picks who they want to play as by
+// clicking a character on the dojo mat. Selection persists to
+// localStorage so it survives reloads. `sonny` is the default. The
+// player Character (rendered above the route conditional in Scene)
+// reads the selected id and swaps face texture + belt color
+// accordingly.
+type CharacterId = "sonny" | "kate" | "travis";
+const ALL_CHARACTERS: CharacterId[] = ["sonny", "kate", "travis"];
+const CHARACTER_STORAGE_KEY = "personal-site:character";
+// Visual data for each option. `face` is the PNG that goes on the
+// billboard plane; for non-Sonny characters we reuse the same image
+// for the front + back-of-head + scared slots (Sonny is the only
+// one with all three textures hand-edited). `belt` matches their
+// in-academy rank — Sonny: black, Kate: brown, Travis: black.
+// `faceScale` multiplies the rendered face plane size to compensate
+// for differences in how much of each PNG canvas the face fills —
+// Travis's photo is cropped tight with almost no padding, so his
+// face would render about 30% larger than Sonny/Kate's if it shared
+// the same plane size. Scaling his plane down brings the apparent
+// head size in line with the rest of the lineup.
+type CharacterMeta = {
+  face: string;
+  belt: string;
+  faceScale: number;
+  // World-Y position of the face plane center on a TrainingPartner.
+  // Tighter-cropped photos (Travis fills 100% of his canvas, no
+  // transparent padding around the chin) need the plane lifted so
+  // the chin clears the torso top — otherwise the bottom of the
+  // face renders inside the body.
+  faceY: number;
+};
+const CHARACTER_DATA: Record<CharacterId, CharacterMeta> = {
+  // faceScale > 1.0 for Sonny + Kate because their PNGs have a lot
+  // of transparent padding above + below the face content (~50% of
+  // each canvas) — at scale 1.0 the rendered face read as smaller
+  // than Travis's tight-cropped photo. Bumping to 1.5 brings the
+  // apparent head size in line with Travis. faceY is the world-Y
+  // of the plane center; Travis's plane sits SLIGHTLY higher than
+  // the others so his chin clears the torso (his face fills 100% of
+  // his canvas with no padding to absorb the lower portion).
+  sonny:  { face: "/face.png",   belt: "#0a0a0a", faceScale: 1.3,  faceY: 1.50 },
+  kate:   { face: "/kate.png",   belt: "#6b4226", faceScale: 1.05, faceY: 1.50 },
+  travis: { face: "/travis.png", belt: "#0a0a0a", faceScale: 0.85, faceY: 1.62 },
+};
 const RANGE_TARGET = { x: -3, z: 54 };       // centre target stand position
 const RANGE_BERM = { x: -3, z: 60 };          // dirt mound backstop
 const RANGE_DURATION = 4.0; // total seconds: aim → fire → topple → off-frame beat → pop up → walk-back
@@ -575,7 +641,7 @@ function routeTo(
 
 // -------------------- entry point --------------------
 
-export default function GameWorld() {
+export default function GameWorld({ playMode = false }: { playMode?: boolean } = {}) {
   const charRef = useRef<CharState>({
     x: 0,
     z: 0,
@@ -584,6 +650,8 @@ export default function GameWorld() {
     walking: false,
     mode: "idle",
     stepPhase: 0,
+    vy: 0,
+    grounded: true,
   });
   const targetRef = useRef<{
     x: number;
@@ -778,6 +846,37 @@ export default function GameWorld() {
 
   const isOnHome = (pathname ?? "/") === "/";
 
+  // Selected playable character. Loaded from localStorage on mount;
+  // updated via the `select-character` window event dispatched from
+  // the academy's clickable TrainingPartners + the player Character.
+  const [characterId, setCharacterId] = useState<CharacterId>("sonny");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = window.localStorage.getItem(CHARACTER_STORAGE_KEY);
+      if (stored && (ALL_CHARACTERS as string[]).includes(stored)) {
+        setCharacterId(stored as CharacterId);
+      }
+    } catch {
+      // Storage might be disabled — defaults to "sonny".
+    }
+  }, []);
+  useEffect(() => {
+    function onSelect(e: Event) {
+      const id = (e as CustomEvent<string>).detail;
+      if (id && (ALL_CHARACTERS as string[]).includes(id)) {
+        setCharacterId(id as CharacterId);
+        try {
+          window.localStorage.setItem(CHARACTER_STORAGE_KEY, id);
+        } catch {
+          // Storage disabled — selection still applies for the session.
+        }
+      }
+    }
+    window.addEventListener("select-character", onSelect);
+    return () => window.removeEventListener("select-character", onSelect);
+  }, []);
+
   // Mobile detection — coarse pointer is the cleanest "this is a
   // touch device" check; matches phones and most tablets, doesn't
   // misfire on touch-screen laptops with a mouse plugged in. SSR-safe
@@ -848,6 +947,8 @@ export default function GameWorld() {
           isOnHome={isOnHome}
           pathname={pathname ?? "/"}
           camDefault={camDefault}
+          playMode={playMode}
+          characterId={characterId}
         />
       </Canvas>
     </div>
@@ -864,13 +965,21 @@ function Scene({
   isOnHome,
   pathname,
   camDefault,
+  playMode,
+  characterId,
 }: {
   refs: SharedRefs;
   router: RouterLike;
   isOnHome: boolean;
   pathname: string;
   camDefault: { x: number; y: number; z: number };
+  playMode: boolean;
+  characterId: CharacterId;
 }) {
+  // Mirror playMode into a ref so the per-frame physics / camera /
+  // input branches can read it without closing over a stale state.
+  const playModeRef = useRef(playMode);
+  playModeRef.current = playMode;
   // Small helper to notify the EasterEggMenu overlay that the user
   // has completed an easter egg. The menu listens for this on
   // window and stores discovery state in localStorage. Each
@@ -883,13 +992,239 @@ function Scene({
     window.dispatchEvent(new CustomEvent("easter-egg-found", { detail: id }));
   }
 
+  // ── Play-mode input + physics constants ──
+  // Tuned for "fun for a 6-year-old," not realistic. Sonny moves
+  // about 1.4x his portfolio sprint speed and jumps roughly his own
+  // height. Numbers feel right in dev; React strict mode runs the
+  // tick 2-3x so production may feel slightly slower (acceptable).
+  const PLAY_MOVE_SPEED = 6.5;       // units/sec horizontal
+  const PLAY_JUMP_VELOCITY = 8.0;    // initial upward velocity
+  const PLAY_GRAVITY = 22.0;         // units/sec² downward
+  const PLAY_TURN_LERP = 0.25;       // how fast the body angle catches up to motion direction
+  const STRIPE_PICKUP_RADIUS = 1.1;  // distance from char to stripe to grab it
+
+  // Key-tracking refs. Refilled by window keydown/keyup listeners in
+  // the effect below. We track WASD + arrows + space; everything
+  // else is ignored so the page's normal hotkeys (cmd+R etc.) still
+  // work. Keys are kept active while pressed even if the user
+  // alt-tabs — that's a minor wart but acceptable.
+  const keysRef = useRef({
+    forward: false,
+    back: false,
+    left: false,
+    right: false,
+    jump: false, // edge-triggered: set true on keydown, cleared after consumed
+  });
+  useEffect(() => {
+    function isJumpKey(e: KeyboardEvent) {
+      return e.code === "Space" || e.key === " ";
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (!playModeRef.current) return;
+      // Don't swallow keystrokes from typing fields (none in play
+      // mode today, but cheap insurance).
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      switch (e.key.toLowerCase()) {
+        case "w": case "arrowup":    keysRef.current.forward = true; e.preventDefault(); return;
+        case "s": case "arrowdown":  keysRef.current.back = true;    e.preventDefault(); return;
+        case "a": case "arrowleft":  keysRef.current.left = true;    e.preventDefault(); return;
+        case "d": case "arrowright": keysRef.current.right = true;   e.preventDefault(); return;
+      }
+      if (isJumpKey(e)) {
+        keysRef.current.jump = true; // consumed by useFrame when grounded
+        e.preventDefault();
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      switch (e.key.toLowerCase()) {
+        case "w": case "arrowup":    keysRef.current.forward = false; return;
+        case "s": case "arrowdown":  keysRef.current.back = false;    return;
+        case "a": case "arrowleft":  keysRef.current.left = false;    return;
+        case "d": case "arrowright": keysRef.current.right = false;   return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  // Reset held-key state + character position on every play-mode
+  // toggle. Without the key reset, a key pressed during the
+  // transition can stay "down" in the ref (no keyup fires after the
+  // listener stops being relevant). Without the position reset,
+  // entering play mode would drop the kid wherever Sonny happened
+  // to be (often miles from the plaza after a previous session).
+  useEffect(() => {
+    function onReset() {
+      const k = keysRef.current;
+      k.forward = k.back = k.left = k.right = k.jump = false;
+      const c = refs.char.current;
+      c.x = 0;
+      c.z = 0;
+      c.y = 0;
+      c.vy = 0;
+      c.grounded = true;
+      c.angle = 0;
+      c.walking = false;
+      c.stepPhase = 0;
+      c.mode = "idle";
+      // Signal the play-mode camera branch to snap directly to the
+      // follow position on the next frame instead of lerping in
+      // from wherever the camera happened to be. Without this, the
+      // entry feels like a confusing 2-second pan across the world.
+      playCamSnapRef.current = true;
+    }
+    window.addEventListener("play-mode-reset", onReset);
+    return () => window.removeEventListener("play-mode-reset", onReset);
+  }, [refs.char]);
+  // Set on every play-mode-reset event; consumed (cleared) on the
+  // first play-mode camera tick after a reset.
+  const playCamSnapRef = useRef(false);
+
+  // Stripes — 5 collectibles scattered around the world for the
+  // tiny play-mode demo. Positions are deliberately *ground-level*
+  // (no platforms to land on yet) but spread far enough apart that
+  // the kid has to actually run around to find them. `STRIPES` is
+  // a module-level constant; `stripeCollectedRef` mirrors its
+  // collected state per-stripe so the meshes can hide themselves
+  // and the per-frame distance check can skip already-grabbed ones.
+  const stripeCollectedRef = useRef<boolean[]>(STRIPES.map(() => false));
+  // GameShell tells us to reset (entering or exiting play mode).
+  useEffect(() => {
+    function onReset() {
+      for (let i = 0; i < stripeCollectedRef.current.length; i++) {
+        stripeCollectedRef.current[i] = false;
+      }
+      // Trigger a re-render of the Stripe meshes via the version bump.
+      setStripeVersion((v) => v + 1);
+    }
+    window.addEventListener("play-mode-reset", onReset);
+    return () => window.removeEventListener("play-mode-reset", onReset);
+  }, []);
+  // Bump this state every time the collected set changes so the
+  // Stripe meshes (which read the ref) actually re-render to hide
+  // the picked-up ones.
+  const [stripeVersion, setStripeVersion] = useState(0);
+
   // Game tick — runs every frame
-  useFrame((_, dt) => {
+  useFrame((state, dt) => {
     const clampedDt = Math.min(0.1, dt);
     const char = refs.char.current;
     const target = refs.target.current;
     const gator = refs.gator.current;
     const coaster = refs.coaster.current;
+
+    // ── PLAY MODE TICK ──
+    // When play mode is active, skip the entire portfolio tick
+    // (easter eggs, walk-to-target, gator chase, etc.) and run the
+    // tiny Mario-style platformer instead: WASD/arrow movement,
+    // gravity + jump, and stripe pickup detection. Click-to-walk
+    // and easter eggs are gated off by the playMode checks in the
+    // handle*Click functions, so the only thing controlling Sonny
+    // is the keyboard.
+    if (playModeRef.current && isOnHome) {
+      const keys = keysRef.current;
+      // Build a unit movement vector from key state. WASD is in
+      // camera-relative space — pressing W walks AWAY from the
+      // camera regardless of which way Sonny is facing — so the
+      // controls feel like SM64 instead of tank controls.
+      let mx = 0;
+      let mz = 0;
+      if (keys.forward) mz -= 1;
+      if (keys.back) mz += 1;
+      if (keys.left) mx -= 1;
+      if (keys.right) mx += 1;
+      const moving = mx !== 0 || mz !== 0;
+      if (moving) {
+        const len = Math.hypot(mx, mz);
+        mx /= len;
+        mz /= len;
+        // Rotate the input vector into world space using the camera's
+        // current Y rotation. atan2(camToChar.x, camToChar.z) gives
+        // the camera→character forward direction.
+        const cam = state.camera;
+        const camForwardX = char.x - cam.position.x;
+        const camForwardZ = char.z - cam.position.z;
+        const camLen = Math.hypot(camForwardX, camForwardZ) || 1;
+        const fx = camForwardX / camLen;
+        const fz = camForwardZ / camLen;
+        // Right vector is forward rotated -90° in XZ: (fz, -fx).
+        const rx = fz;
+        const rz = -fx;
+        // Final world direction: forward * (-mz) + right * mx
+        // (-mz because mz=-1 means "press W = forward")
+        const wx = fx * -mz + rx * mx;
+        const wz = fz * -mz + rz * mx;
+        const wlen = Math.hypot(wx, wz) || 1;
+        const dirX = wx / wlen;
+        const dirZ = wz / wlen;
+        const step = PLAY_MOVE_SPEED * clampedDt;
+        const proposed = resolveCollisions(
+          char.x + dirX * step,
+          char.z + dirZ * step
+        );
+        char.x = proposed.x;
+        char.z = proposed.z;
+        // Smoothly turn the body toward the motion direction.
+        const wantAngle = Math.atan2(dirX, dirZ);
+        let diff = wantAngle - char.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        char.angle += diff * PLAY_TURN_LERP;
+        char.walking = true;
+        char.stepPhase = (char.stepPhase + clampedDt * 4.5) % 1;
+      } else {
+        char.walking = false;
+        char.stepPhase = 0;
+      }
+      // Gravity + jump. char.y is the vertical position above the
+      // ground (y=0 is grounded). Jump key is edge-triggered — set
+      // by keydown, consumed and cleared here so a held SPACE only
+      // fires one jump per landing.
+      if (char.grounded && keys.jump) {
+        char.vy = PLAY_JUMP_VELOCITY;
+        char.grounded = false;
+      }
+      keys.jump = false;
+      char.vy -= PLAY_GRAVITY * clampedDt;
+      char.y += char.vy * clampedDt;
+      if (char.y <= 0) {
+        char.y = 0;
+        char.vy = 0;
+        char.grounded = true;
+      }
+      // Stripe pickup — radial distance check (ignores height so
+      // jumping into a floating stripe also counts).
+      for (let i = 0; i < STRIPES.length; i++) {
+        if (stripeCollectedRef.current[i]) continue;
+        const s = STRIPES[i];
+        const dx = char.x - s.x;
+        const dz = char.z - s.z;
+        if (Math.hypot(dx, dz) < STRIPE_PICKUP_RADIUS) {
+          stripeCollectedRef.current[i] = true;
+          setStripeVersion((v) => v + 1);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("stripe-collected", { detail: i })
+            );
+          }
+        }
+      }
+      // Make sure the play-mode tick fully owns char state — no
+      // portfolio targets / approaches dribble in from a previous
+      // session. Clear them once on entry; the useEffect on the
+      // GameShell side fires play-mode-reset on toggle.
+      // (Done lazily: if any of these are non-null while playMode
+      // is true, zero them out.)
+      if (refs.target.current) refs.target.current = null;
+      if (refs.pathQueue.current.length) refs.pathQueue.current = [];
+      char.mode = "idle";
+      return; // skip the entire portfolio tick below
+    }
 
     // ── 0ab. Travis + Kate balloon adventure ──
     // Multi-phase state machine that runs independently of Sonny.
@@ -1657,14 +1992,17 @@ function Scene({
     refs.char.current.walking = true;
   }
 
+  // All click handlers no-op during play mode so the kid can run
+  // around without accidentally triggering an easter egg or
+  // navigating into a section.
   function handleBuildingClick(section: Section) {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     const t = doorTarget(section);
     walkTo(t.x, t.z, section.id);
   }
 
   function handleGatorClick() {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     // Walk to a spot just in front of the gator (on the line back to plaza)
     const g = refs.gator.current;
     const r = Math.hypot(g.x, g.z);
@@ -1675,20 +2013,20 @@ function Scene({
   }
 
   function handleParkClick() {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     // Walk to the park entrance (south of park, near the ticket booth)
     walkTo(PARK.x, PARK.z + PARK_ENTRY_WORLD, null);
     refs.approachingPark.current = true;
   }
 
   function handleGolfClick() {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     walkTo(GOLF_TEE.x, GOLF_TEE.z, null);
     refs.approachingGolf.current = true;
   }
 
   function handleRangeClick() {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     // Range is 42u south — sprint there so the walk doesn't feel
     // like a slog.
     walkTo(RANGE_FIRING_LINE.x, RANGE_FIRING_LINE.z, null, true);
@@ -1696,7 +2034,7 @@ function Scene({
   }
 
   function handleBalloonClick() {
-    if (!isOnHome || isBusy()) return;
+    if (!isOnHome || isBusy() || playModeRef.current) return;
     // NEW BEHAVIOUR: Sonny does NOT walk to the balloon. He stays on
     // the plaza as a spectator. Trigger the Travis+Kate adventure:
     //   - Kate spawns at the academy door
@@ -1730,7 +2068,7 @@ function Scene({
     <>
       {isAcademy ? (
         <Suspense fallback={null}>
-          <Academy onExit={() => router.push("/")} />
+          <Academy onExit={() => router.push("/")} characterId={characterId} />
         </Suspense>
       ) : isChess ? (
         <Suspense fallback={null}>
@@ -1767,6 +2105,19 @@ function Scene({
             />
           ))}
           <Family familyRef={refs.family} />
+          {/* Stripe collectibles for the tiny play-mode demo. Mounted
+              only when playMode is on so they don't clutter portfolio
+              mode. stripeVersion bumps when any are collected, forcing
+              a re-render so the visibility flag on each Stripe updates. */}
+          {playMode &&
+            STRIPES.map((s, i) => (
+              <Stripe
+                key={`stripe-${i}-${stripeVersion}`}
+                position={s}
+                index={i}
+                collectedRef={stripeCollectedRef}
+              />
+            ))}
         </>
       )}
       <Suspense fallback={null}>
@@ -1775,6 +2126,20 @@ function Scene({
           golfRef={refs.golf}
           rangeRef={refs.range}
           balloonRef={refs.balloon}
+          characterId={
+            // In the chess study Sonny is the visible opponent — he's
+            // baked into the scene framing, so we always render him as
+            // Sonny regardless of the user's selection.
+            isChess ? "sonny" : characterId
+          }
+          visible={true}
+          // Center character is the ALREADY-SELECTED one — no
+          // re-selection needed. Click target is only on the OTHER
+          // two characters (rendered as TrainingPartners on the
+          // sides), which trigger the swap. Leaving Character
+          // unclickable also prevents accidental clicks while
+          // playing on the plaza.
+          onSelect={undefined}
         />
       </Suspense>
       <CameraRig
@@ -1783,6 +2148,8 @@ function Scene({
         balloonAdventureRef={refs.balloonAdventure}
         pathname={pathname}
         camDefault={camDefault}
+        playMode={playMode}
+        playCamSnapRef={playCamSnapRef}
       />
     </>
   );
@@ -3854,6 +4221,74 @@ function Hill({
   );
 }
 
+// Play-mode collectible — a small glowing belt that bobs + spins
+// in place. Reads collected-state from a shared ref so the parent
+// (Scene) can mark it grabbed during the pickup check without a
+// React re-render. Visibility is toggled directly on the mesh
+// each frame. A single stripe is sized like a Mario coin so
+// it's findable from across the plaza.
+function Stripe({
+  position,
+  index,
+  collectedRef,
+}: {
+  position: { x: number; z: number };
+  index: number;
+  collectedRef: React.MutableRefObject<boolean[]>;
+}) {
+  const groupRef = useRef<THREE.Group | null>(null);
+  // Stagger each stripe's bob/spin phase so the cluster doesn't
+  // pulse in lockstep when the kid sees several at once.
+  const phaseOffset = (index * 0.41) % 1;
+  useFrame((state) => {
+    const g = groupRef.current;
+    if (!g) return;
+    const collected = collectedRef.current[index];
+    g.visible = !collected;
+    if (!collected) {
+      const t = state.clock.elapsedTime + phaseOffset * 10;
+      g.position.y =
+        0.9 + Math.sin(t * STRIPE_BOB_FREQ * 2 * Math.PI) * STRIPE_BOB_AMP;
+      g.rotation.y = t * STRIPE_SPIN_FREQ * 2 * Math.PI;
+    }
+  });
+  return (
+    <group ref={groupRef} position={[position.x, 0.9, position.z]}>
+      {/* Belt — black core with a bright stripe band wrapped around */}
+      <mesh castShadow>
+        <boxGeometry args={[0.7, 0.18, 0.22]} />
+        <meshStandardMaterial color="#0a0a0a" />
+      </mesh>
+      {/* Glowing "stripe" — small white tape on one end, the actual
+          BJJ stripe shape. Emissive so it pops against the grass. */}
+      <mesh position={[0.22, 0, 0]} castShadow>
+        <boxGeometry args={[0.12, 0.20, 0.24]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#fde047"
+          emissiveIntensity={0.9}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Soft ground ring so the kid can see WHERE the stripe is
+          floating even when it's behind a hill / tree. Faint
+          additive yellow disc. */}
+      <mesh
+        position={[0, -0.85, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+      >
+        <ringGeometry args={[0.3, 0.55, 24]} />
+        <meshBasicMaterial
+          color="#fde047"
+          transparent
+          opacity={0.35}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 // Classic red barn — boxy body with a gabled roof, white door,
 // hay-loft window, and white eave trim. Roof slopes use rotated
 // box slabs (rotation = ±atan(rise/run) around z so the slab's
@@ -5787,30 +6222,83 @@ const EYE = "#1a1a1a";
 function FaceBillboard({
   charRef,
   balloonRef,
+  characterId,
 }: {
   charRef: React.MutableRefObject<CharState>;
   balloonRef: React.MutableRefObject<BalloonState>;
+  characterId: CharacterId;
 }) {
-  // Three face textures swapped per frame based on game state:
+  // Reference height / scale lifted from PartnerFace so the player
+  // Character's face plane matches the partners' sizing in the
+  // academy lineup. Without this, Sonny's old 0.95×1.27 plane read
+  // as oversized + over-bright next to the smaller side characters
+  // (the bald scalp filled too much of the frame).
+  const faceScale = CHARACTER_DATA[characterId].faceScale;
+  const planeRefH = (0.85 / 0.867) * faceScale; // matches PartnerFace
+  // Three face textures per character swapped per frame based on
+  // game state:
   //   * front  — default
   //   * back   — when walking away from the camera (camera mostly
   //              behind the character; e.g., the follow cam during
   //              a click-driven walk to a building)
   //   * scared — full balloon-ride sequence + the gator chase
-  const [texFront, texBack, texScared] = useTexture([
-    "/face.png",
-    "/face-back.png",
-    "/face-scared.png",
-  ]);
-  // Light color-correction pass on back/scared — the current source
-  // PNGs are uniformly processed and read close to the front face
-  // out of the box, so we only nudge saturation + contrast slightly
-  // for a hair more pop on the billboard. A previous version applied
-  // `saturate(1.2) contrast(1.18) brightness(1.04)` here, which
-  // pushed the new photos' skin tones into a red tint. The current
-  // values are gentle enough to add vibrance without color cast.
+  // Sonny has hand-edited variants for back + scared; other
+  // characters reuse the single front image for all three slots
+  // (the bobblehead + tremor animations don't care which texture
+  // is on the plane, only that one is).
+  const [texSonnyFront, texSonnyBack, texSonnyScared, texKate, texTravis] =
+    useTexture([
+      "/face.png",
+      "/face-back.png",
+      "/face-scared.png",
+      "/kate.png",
+      "/travis.png",
+    ]);
+  // Tag every face texture as sRGB so three.js doesn't apply an
+  // extra brightness boost on top of an already-gamma-encoded photo.
+  // Without this the player Character's face reads as visibly
+  // brighter / washed-out compared to the TrainingPartner rendering
+  // of the same photo (PartnerFace tags its texture; FaceBillboard
+  // previously didn't, so Sonny + Travis looked "blown out" when
+  // selected at centre and natural when on the side slots).
+  texSonnyFront.colorSpace = THREE.SRGBColorSpace;
+  texSonnyBack.colorSpace = THREE.SRGBColorSpace;
+  texSonnyScared.colorSpace = THREE.SRGBColorSpace;
+  texKate.colorSpace = THREE.SRGBColorSpace;
+  texTravis.colorSpace = THREE.SRGBColorSpace;
+  // Per-character texture pack (front / back / scared). Resolved
+  // once per render — cheap; references the already-loaded textures.
+  const facePack = useMemo(() => {
+    if (characterId === "kate") {
+      return { front: texKate, back: texKate, scared: texKate };
+    }
+    if (characterId === "travis") {
+      return { front: texTravis, back: texTravis, scared: texTravis };
+    }
+    return { front: texSonnyFront, back: texSonnyBack, scared: texSonnyScared };
+  }, [characterId, texSonnyFront, texSonnyBack, texSonnyScared, texKate, texTravis]);
+  // Keep the locals named after their semantic role so the rest of
+  // the file reads cleanly. They re-bind on character change.
+  const texFront = facePack.front;
+  const texBack = facePack.back;
+  const texScared = facePack.scared;
+  // Light color-correction pass on Sonny's back/scared sources only.
+  // Tied to the actual Sonny textures (not the per-character pack)
+  // because for Kate/Travis the back/scared slots ARE the same
+  // texture as the front — filtering them would distort the front
+  // too. Sonny's back/scared are separate PNGs that get a tiny
+  // saturation/contrast bump for a hair more pop on the billboard.
+  // A previous version applied `saturate(1.2) contrast(1.18)
+  // brightness(1.04)` here, which pushed the new photos' skin tones
+  // into a red tint. The current values are gentle enough.
   useEffect(() => {
-    for (const tex of [texBack, texScared]) {
+    for (const tex of [texSonnyBack, texSonnyScared]) {
+      // Idempotency tag: same reason as Travis's filter — the
+      // mutation replaces tex.image, so a re-run would re-filter
+      // the already-filtered canvas and push the colors out of
+      // range on repeated mounts.
+      const stamped = (tex as unknown as { __sonnyBackFiltered?: boolean });
+      if (stamped.__sonnyBackFiltered) continue;
       const img = tex.image as HTMLImageElement | undefined;
       if (!img || !img.width || !img.height) continue;
       const canvas = document.createElement("canvas");
@@ -5822,20 +6310,21 @@ function FaceBillboard({
       ctx.drawImage(img, 0, 0);
       tex.image = canvas;
       tex.needsUpdate = true;
+      stamped.__sonnyBackFiltered = true;
     }
-  }, [texBack, texScared]);
+  }, [texSonnyBack, texSonnyScared]);
 
-  // Vertical alignment fix: face-scared.png has its head positioned
-  // higher in its source canvas than face.png does, so without a
-  // shift the scared face hovers noticeably above the shoulders.
-  // texture.offset.y is in UV space (V=0 bottom, V=1 top). Positive
-  // offset shifts the texture content DOWN on the plane — what's
-  // sampled at plane V=0 is actually at texture V=offset.y, so the
-  // head moves down. Tuned by eye against the gator-chase view.
+  // Vertical alignment fix specific to Sonny's scared face PNG —
+  // its head sits higher in the source canvas than face.png does,
+  // so without a shift the scared face hovers above the shoulders.
+  // texture.offset.y in UV space (V=0 bottom, V=1 top). Positive
+  // offset shifts texture content DOWN on the plane. Tuned by eye.
+  // Kate/Travis don't need this — their "scared" slot is the same
+  // image as their front, which is already aligned correctly.
   useEffect(() => {
-    texScared.offset.y = 0.10;
-    texScared.needsUpdate = true;
-  }, [texScared]);
+    texSonnyScared.offset.y = 0.10;
+    texSonnyScared.needsUpdate = true;
+  }, [texSonnyScared]);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   // Scratch vectors so we don't allocate every frame.
@@ -5908,19 +6397,23 @@ function FaceBillboard({
     }
   });
 
+  // Plane width derives from the texture's natural aspect. Sized to
+  // match PartnerFace exactly so the player Character's face appears
+  // at the same physical size as the side TrainingPartners in the
+  // academy lineup. Width per character: sonny 0.735, kate 0.85,
+  // travis 0.506 (faceScale-shrunk because his PNG is tightly
+  // cropped). Bobble + scared-shake Z-rotations pivot around the
+  // plane center regardless of texture content position.
+  const facePack2 = facePack;
+  const facePngImg = (facePack2.front.image as HTMLImageElement | undefined);
+  const aspect2 =
+    facePngImg && facePngImg.width && facePngImg.height
+      ? facePngImg.width / facePngImg.height
+      : 0.75;
+  const planeW = planeRefH * aspect2;
   return (
     <mesh ref={meshRef}>
-      {/* Plane sized to match the source PNGs' 433×577 aspect (≈0.75)
-          with a ~12% scale-up vs the original 0.85×1.13 so the head
-          reads slightly larger / more dominant. The new PNGs have
-          transparent space below the chin, which is why the plane
-          is tall — the empty bottom region sits over the gi
-          (invisibly, since it's all alpha 0). The bobble +
-          scared-shake Z-rotations still pivot around the plane's
-          geometric center, which is fine because the camera
-          billboard logic doesn't care about content position
-          within the texture. */}
-      <planeGeometry args={[0.95, 1.27]} />
+      <planeGeometry args={[planeW, planeRefH]} />
       <meshBasicMaterial
         ref={matRef}
         map={texFront}
@@ -5937,12 +6430,36 @@ function Character({
   golfRef,
   rangeRef,
   balloonRef,
+  characterId,
+  visible = true,
+  onSelect,
 }: {
   charRef: React.MutableRefObject<CharState>;
   golfRef: React.MutableRefObject<GolfState>;
   rangeRef: React.MutableRefObject<RangeState>;
   balloonRef: React.MutableRefObject<BalloonState>;
+  characterId: CharacterId;
+  visible?: boolean;
+  // When provided, the entire player figure becomes clickable. Used
+  // in the academy so the user can click the player Character at
+  // centre to pick "sonny" (the same way clicking a TrainingPartner
+  // picks the other characters).
+  onSelect?: () => void;
 }) {
+  // Per-character visual data — face PNG, belt color, and the y
+  // anchor for the face plane (lifted higher for tight-cropped
+  // photos like Travis's so the chin doesn't sit inside the torso).
+  const charData = CHARACTER_DATA[characterId];
+  const beltColor = charData.belt;
+  const faceY = charData.faceY;
+  // Front-only details (gi V, belt knot, neck/forearm tattoos) are
+  // gated to Sonny. He pairs them with a hand-edited back-of-head
+  // photo so the back of him reads coherently from behind. The
+  // other characters don't have back-of-head art, so showing
+  // front-only details would make the body look "backwards" from
+  // the chase-cam vantage. Hiding them gives Kate/Travis a body
+  // that reads the same from any angle.
+  const showFrontDetails = characterId === "sonny";
   const rootRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Group>(null);
   const leftShoulderRef = useRef<THREE.Group>(null);
@@ -6003,22 +6520,45 @@ function Character({
       rootRef.current.position.y =
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
-          : c.mode === "golfing" || c.mode === "ballooning" || c.mode === "shooting"
-          ? c.y
-          : 0;
-      // Smoothly rotate to face direction. Snap during ride / golf /
-      // ballooning / shooting so we always match the expected heading.
-      const cur = rootRef.current.rotation.y;
-      let diff = c.angle - cur;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      rootRef.current.rotation.y =
+          : c.y; // covers golfing / ballooning / shooting jumps AND play-mode jumps
+      // Show / hide the whole player avatar based on the `visible`
+      // prop — used to hide the player Character in the academy
+      // (where the 3 selectable TrainingPartners take over the mat).
+      rootRef.current.visible = visible;
+      // Pick the body's target facing angle. Default: char's actual
+      // facing direction (set by walking/click handlers etc.). For
+      // non-Sonny characters in normal modes, override to "face the
+      // camera" instead — without a back-of-head texture, the body
+      // showing its rear while the face billboards forward reads as
+      // "head on backwards." With this override, Kate/Travis always
+      // appear front-on (face + V/knot side aligned), even though
+      // they're moving in whatever direction the user pressed. The
+      // movement direction is still communicated by position change.
+      // Special-action modes (ride / golf / ballooning / shooting)
+      // ignore the override because those use scripted camera vantages
+      // tied to the body's actual heading.
+      let wantAngle = c.angle;
+      const isSpecial =
         c.mode === "riding" ||
         c.mode === "golfing" ||
         c.mode === "ballooning" ||
-        c.mode === "shooting"
-          ? c.angle
-          : cur + diff * 0.2;
+        c.mode === "shooting";
+      if (!isSpecial && characterId !== "sonny") {
+        const camToCharX = c.x - state.camera.position.x;
+        const camToCharZ = c.z - state.camera.position.z;
+        if (camToCharX !== 0 || camToCharZ !== 0) {
+          // atan2(-camToChar) flips the camera→char vector to
+          // char→camera, which is the direction the body should
+          // face to point its front at the camera.
+          wantAngle = Math.atan2(-camToCharX, -camToCharZ);
+        }
+      }
+      // Smoothly rotate to that target angle. Snap during special modes.
+      const cur = rootRef.current.rotation.y;
+      let diff = wantAngle - cur;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      rootRef.current.rotation.y = isSpecial ? wantAngle : cur + diff * 0.2;
       // Forward roll: during the rolling phase of the balloon easter
       // egg, tumble the entire character around its local X axis
       // (head-over-heels in the direction of motion). Otherwise clear
@@ -6302,7 +6842,34 @@ function Character({
   });
 
   return (
-    <group ref={rootRef} position={[0, 0, 0]}>
+    <group
+      ref={rootRef}
+      position={[0, 0, 0]}
+      onClick={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              onSelect();
+            }
+          : undefined
+      }
+      onPointerOver={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              document.body.style.cursor = "pointer";
+            }
+          : undefined
+      }
+      onPointerOut={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              document.body.style.cursor = "";
+            }
+          : undefined
+      }
+    >
       <group ref={bodyRef}>
         {/* Torso (gi top) */}
         <mesh position={[0, 1.0, 0]} castShadow>
@@ -6310,63 +6877,121 @@ function Character({
           <meshStandardMaterial color={GI} />
         </mesh>
 
-        {/* Chest V — visible skin in the kimono's neckline opening,
-            framed by the two crossed lapels below. */}
-        <mesh position={[0, 1.18, 0.162]}>
-          <planeGeometry args={[0.14, 0.20]} />
-          <meshStandardMaterial color={SKIN} />
-        </mesh>
+        {/* Front-only chest detail (V-skin + crossed lapels + piping).
+            Skipped for non-Sonny characters who don't have a back-
+            of-head photo to pair with — see `showFrontDetails`. */}
+        {showFrontDetails && (
+          <>
+            {/* Chest V — visible skin in the kimono's neckline opening,
+                framed by the two crossed lapels below. */}
+            <mesh position={[0, 1.18, 0.162]}>
+              <planeGeometry args={[0.14, 0.20]} />
+              <meshStandardMaterial color={SKIN} />
+            </mesh>
 
-        {/* Left lapel — angled from upper-left collar down toward
-            the centre of the waist (where the right lapel meets it,
-            forming the kimono's classic V). Slightly darker than
-            the gi body + raised forward so the lapel reads as a
-            separate piece of fabric. */}
-        <mesh position={[-0.11, 1.04, 0.169]} rotation={[0, 0, 0.4]}>
-          <boxGeometry args={[0.11, 0.46, 0.025]} />
-          <meshStandardMaterial color={GI_SHADE} />
-        </mesh>
-        {/* Right lapel — mirrored, slightly more forward in z so it
-            visibly overlaps the left lapel at the bottom (kimono's
-            "left over right" close at the waist). */}
-        <mesh position={[0.11, 1.04, 0.172]} rotation={[0, 0, -0.4]}>
-          <boxGeometry args={[0.11, 0.46, 0.025]} />
-          <meshStandardMaterial color={GI_SHADE} />
-        </mesh>
+            {/* Left lapel — angled from upper-left collar down toward
+                the centre of the waist (where the right lapel meets it,
+                forming the kimono's classic V). Slightly darker than
+                the gi body + raised forward so the lapel reads as a
+                separate piece of fabric. */}
+            <mesh position={[-0.11, 1.04, 0.169]} rotation={[0, 0, 0.4]}>
+              <boxGeometry args={[0.11, 0.46, 0.025]} />
+              <meshStandardMaterial color={GI_SHADE} />
+            </mesh>
+            {/* Right lapel — mirrored, slightly more forward in z so it
+                visibly overlaps the left lapel at the bottom (kimono's
+                "left over right" close at the waist). */}
+            <mesh position={[0.11, 1.04, 0.172]} rotation={[0, 0, -0.4]}>
+              <boxGeometry args={[0.11, 0.46, 0.025]} />
+              <meshStandardMaterial color={GI_SHADE} />
+            </mesh>
 
-        {/* Dark piping along the inner edge of each lapel — reads as
-            stitched lapel trim, helps separate the lapels from the
-            gi body. */}
-        <mesh position={[-0.06, 1.06, 0.185]} rotation={[0, 0, 0.4]}>
-          <boxGeometry args={[0.018, 0.46, 0.005]} />
-          <meshStandardMaterial color="#9c9580" />
-        </mesh>
-        <mesh position={[0.06, 1.06, 0.187]} rotation={[0, 0, -0.4]}>
-          <boxGeometry args={[0.018, 0.46, 0.005]} />
-          <meshStandardMaterial color="#9c9580" />
-        </mesh>
+            {/* Dark piping along the inner edge of each lapel — reads as
+                stitched lapel trim, helps separate the lapels from the
+                gi body. */}
+            <mesh position={[-0.06, 1.06, 0.185]} rotation={[0, 0, 0.4]}>
+              <boxGeometry args={[0.018, 0.46, 0.005]} />
+              <meshStandardMaterial color="#9c9580" />
+            </mesh>
+            <mesh position={[0.06, 1.06, 0.187]} rotation={[0, 0, -0.4]}>
+              <boxGeometry args={[0.018, 0.46, 0.005]} />
+              <meshStandardMaterial color="#9c9580" />
+            </mesh>
+          </>
+        )}
 
-        {/* Belt */}
+        {/* Belt — color comes from CHARACTER_DATA so it matches the
+            selected character (Sonny: black, Kate: brown, etc.) */}
         <mesh position={[0, 0.71, 0]} castShadow>
           <boxGeometry args={[0.58, 0.10, 0.34]} />
-          <meshStandardMaterial color={BELT} />
+          <meshStandardMaterial color={beltColor} />
         </mesh>
-        {/* Belt knot — slightly raised square at the front centre */}
-        <mesh position={[0, 0.71, 0.18]} castShadow>
-          <boxGeometry args={[0.10, 0.13, 0.05]} />
-          <meshStandardMaterial color={BELT} />
-        </mesh>
-        {/* Belt ends — two short strips hanging from the knot, one
-            angled so it doesn't sit perfectly straight (looks tied
-            rather than glued on). */}
-        <mesh position={[-0.025, 0.55, 0.195]} rotation={[0, 0, 0.08]}>
-          <boxGeometry args={[0.045, 0.20, 0.02]} />
-          <meshStandardMaterial color={BELT} />
-        </mesh>
-        <mesh position={[0.04, 0.56, 0.195]} rotation={[0, 0, -0.15]}>
-          <boxGeometry args={[0.045, 0.18, 0.02]} />
-          <meshStandardMaterial color={BELT} />
-        </mesh>
+        {/* Sonny-style belt knot + ends (front-only, paired with his
+            back-of-head photo so the back of him reads coherently). */}
+        {showFrontDetails && (
+          <>
+            {/* Belt knot — slightly raised square at the front centre */}
+            <mesh position={[0, 0.71, 0.18]} castShadow>
+              <boxGeometry args={[0.10, 0.13, 0.05]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+            {/* Belt ends — two short strips hanging from the knot, one
+                angled so it doesn't sit perfectly straight (looks tied
+                rather than glued on). */}
+            <mesh position={[-0.025, 0.55, 0.195]} rotation={[0, 0, 0.08]}>
+              <boxGeometry args={[0.045, 0.20, 0.02]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+            <mesh position={[0.04, 0.56, 0.195]} rotation={[0, 0, -0.15]}>
+              <boxGeometry args={[0.045, 0.18, 0.02]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+          </>
+        )}
+
+        {/* Non-Sonny: closed-kimono lapels + a small belt knot. Same
+            shapes as TrainingPartner uses for Kate/Travis. Gives the
+            body a clear "this is the front" indication so it doesn't
+            read as backwards when the body is rotated to face the
+            camera. No exposed skin V because these characters' gis
+            are closed (Kate, Travis, etc.). */}
+        {!showFrontDetails && (
+          <>
+            {/* Left lapel */}
+            <mesh position={[-0.09, 1.04, 0.165]} rotation={[0, 0, 0.4]}>
+              <boxGeometry args={[0.10, 0.46, 0.025]} />
+              <meshStandardMaterial color={GI_SHADE} />
+            </mesh>
+            {/* Right lapel — slightly more forward so it overlaps the
+                left at the waist (kimono "left over right" close). */}
+            <mesh position={[0.09, 1.04, 0.168]} rotation={[0, 0, -0.4]}>
+              <boxGeometry args={[0.10, 0.46, 0.025]} />
+              <meshStandardMaterial color={GI_SHADE} />
+            </mesh>
+            {/* Dark piping along the inner edge of each lapel */}
+            <mesh position={[-0.05, 1.06, 0.182]} rotation={[0, 0, 0.4]}>
+              <boxGeometry args={[0.016, 0.46, 0.005]} />
+              <meshStandardMaterial color="#9c9580" />
+            </mesh>
+            <mesh position={[0.05, 1.06, 0.185]} rotation={[0, 0, -0.4]}>
+              <boxGeometry args={[0.016, 0.46, 0.005]} />
+              <meshStandardMaterial color="#9c9580" />
+            </mesh>
+            {/* Belt knot — matches the TrainingPartner build */}
+            <mesh position={[0, 0.71, 0.18]} castShadow>
+              <boxGeometry args={[0.10, 0.13, 0.05]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+            <mesh position={[-0.025, 0.55, 0.193]} rotation={[0, 0, 0.08]}>
+              <boxGeometry args={[0.045, 0.20, 0.02]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+            <mesh position={[0.04, 0.56, 0.193]} rotation={[0, 0, -0.15]}>
+              <boxGeometry args={[0.045, 0.18, 0.02]} />
+              <meshStandardMaterial color={beltColor} />
+            </mesh>
+          </>
+        )}
 
         {/* Face — Sonny's actual photo on a plane positioned where the
             old bald head was. FaceBillboard manages its own rotation
@@ -6381,15 +7006,20 @@ function Character({
             of 1.50 puts the face center near y=1.66 and the chin
             just above the gi collar (y≈1.275). If you swap the
             photos with differently-cropped sources, retune this. */}
-        <group position={[0, 1.5, 0]}>
-          <FaceBillboard charRef={charRef} balloonRef={balloonRef} />
+        <group position={[0, faceY, 0]}>
+          <FaceBillboard charRef={charRef} balloonRef={balloonRef} characterId={characterId} />
         </group>
 
-        {/* Neck tattoo */}
-        <mesh position={[0, 1.28, 0.14]}>
-          <boxGeometry args={[0.1, 0.04, 0.02]} />
-          <meshBasicMaterial color={TATTOO} />
-        </mesh>
+        {/* Neck tattoo — Sonny-specific front detail. Hidden for
+            other characters (none of them have this tattoo IRL and
+            it sits on the front of the body only, so it'd read as
+            "stuck on someone else's neck"). */}
+        {showFrontDetails && (
+          <mesh position={[0, 1.28, 0.14]}>
+            <boxGeometry args={[0.1, 0.04, 0.02]} />
+            <meshBasicMaterial color={TATTOO} />
+          </mesh>
+        )}
 
         {/* Arms — pivot at shoulder for swinging */}
         <group ref={leftShoulderRef} position={[-0.33, 1.22, 0]}>
@@ -6403,15 +7033,19 @@ function Character({
             <boxGeometry args={[0.13, 0.25, 0.15]} />
             <meshStandardMaterial color={SKIN} />
           </mesh>
-          {/* Tattoo bands */}
-          <mesh position={[0, -0.42, 0]}>
-            <boxGeometry args={[0.14, 0.04, 0.16]} />
-            <meshBasicMaterial color={TATTOO} />
-          </mesh>
-          <mesh position={[0, -0.55, 0]}>
-            <boxGeometry args={[0.14, 0.025, 0.16]} />
-            <meshBasicMaterial color={TATTOO} />
-          </mesh>
+          {/* Tattoo bands — Sonny only (his actual ink). */}
+          {showFrontDetails && (
+            <>
+              <mesh position={[0, -0.42, 0]}>
+                <boxGeometry args={[0.14, 0.04, 0.16]} />
+                <meshBasicMaterial color={TATTOO} />
+              </mesh>
+              <mesh position={[0, -0.55, 0]}>
+                <boxGeometry args={[0.14, 0.025, 0.16]} />
+                <meshBasicMaterial color={TATTOO} />
+              </mesh>
+            </>
+          )}
         </group>
 
         <group ref={rightShoulderRef} position={[0.33, 1.22, 0]}>
@@ -6423,15 +7057,18 @@ function Character({
             <boxGeometry args={[0.13, 0.25, 0.15]} />
             <meshStandardMaterial color={SKIN} />
           </mesh>
-          <mesh position={[0, -0.4, 0]}>
-            <boxGeometry args={[0.14, 0.035, 0.16]} />
-            <meshBasicMaterial color={TATTOO} />
-          </mesh>
-          <mesh position={[0, -0.52, 0]}>
-            <boxGeometry args={[0.14, 0.025, 0.16]} />
-            <meshBasicMaterial color={TATTOO} />
-          </mesh>
-
+          {showFrontDetails && (
+            <>
+              <mesh position={[0, -0.4, 0]}>
+                <boxGeometry args={[0.14, 0.035, 0.16]} />
+                <meshBasicMaterial color={TATTOO} />
+              </mesh>
+              <mesh position={[0, -0.52, 0]}>
+                <boxGeometry args={[0.14, 0.025, 0.16]} />
+                <meshBasicMaterial color={TATTOO} />
+              </mesh>
+            </>
+          )}
         </group>
 
         {/* Hand cannon — chunky cartoony .50 cal pistol on a body-centre
@@ -6615,12 +7252,16 @@ function CameraRig({
   balloonAdventureRef,
   pathname,
   camDefault,
+  playMode,
+  playCamSnapRef,
 }: {
   charRef: React.MutableRefObject<CharState>;
   gatorRef: React.MutableRefObject<GatorState>;
   balloonAdventureRef: React.MutableRefObject<BalloonAdventureState>;
   pathname: string;
   camDefault: { x: number; y: number; z: number };
+  playMode: boolean;
+  playCamSnapRef: React.MutableRefObject<boolean>;
 }) {
   const targetVec = useMemo(() => new THREE.Vector3(0, 1, 0), []);
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
@@ -6783,6 +7424,58 @@ function CameraRig({
     if (camAsPersp.fov !== wantFov) {
       camAsPersp.fov = wantFov;
       camAsPersp.updateProjectionMatrix();
+    }
+
+    // ── PLAY MODE CAMERA ──
+    // SM64-style chase cam: always 5.5u behind Sonny's facing
+    // direction at y=4, tracking smoothly. Skips the entire
+    // portfolio camera state machine below (cinematics, drone tour,
+    // manual override, glide-back) — play mode owns the camera
+    // exclusively. OrbitControls' target follows the character
+    // each frame so the camera stays looking at him even if the
+    // user has nudged the orbit (we ignore the manual-override ref
+    // in play mode).
+    if (playMode && pathname === "/") {
+      // Critical: camera Y is PINNED — it does NOT follow c.y. If
+      // it did, jumps would lift the camera 1:1 with the character
+      // and Sonny would appear motionless on screen while the world
+      // dropped (it reads as "the camera jumped, not the character").
+      // Keeping the camera at a fixed height makes the jump visibly
+      // lift Sonny in the frame, the way it should look.
+      const wantCam = {
+        x: c.x - Math.sin(c.angle) * 5.5,
+        y: 4,
+        z: c.z - Math.cos(c.angle) * 5.5,
+      };
+      // On play-mode entry the camera could be anywhere (portfolio
+      // default plaza vantage, drone-tour waypoint, etc.) — a lerp
+      // from there would feel like a confusing 2-second pan before
+      // the kid can actually see where they are. Snap on entry so
+      // the kid lands behind Sonny instantly.
+      const snap = playCamSnapRef.current;
+      if (snap) {
+        state.camera.position.set(wantCam.x, wantCam.y, wantCam.z);
+        playCamSnapRef.current = false;
+      } else {
+        const k = Math.min(1, dt * 4.0);
+        state.camera.position.x += (wantCam.x - state.camera.position.x) * k;
+        state.camera.position.y += (wantCam.y - state.camera.position.y) * k;
+        state.camera.position.z += (wantCam.z - state.camera.position.z) * k;
+      }
+      if (controlsRef.current) {
+        // Look at a fixed torso height (1.5u) — also independent of
+        // c.y so jumps don't tilt the camera up with the character.
+        // The character will visibly leap upward in the screen frame.
+        controlsRef.current.target.set(c.x, 1.5, c.z);
+        controlsRef.current.update();
+      }
+      // Reset hijack / manual flags so exiting play mode lands in
+      // a clean state and the next portfolio frame glides cleanly
+      // back to camDefault.
+      camHijackedRef.current = true;
+      manualOverrideRef.current = false;
+      droneActiveRef.current = false;
+      return;
     }
 
     // Clear the manual-override sticky bit when the character begins
@@ -7695,10 +8388,45 @@ const BROWN_BELT = "#6b4226";
 // head. Same trick as FaceBillboard: aim the plane's local -Z away
 // from the camera so the textured +Z side ends up facing it.
 function PartnerFace({ src, size = 0.85 }: { src: string; size?: number }) {
+  // Treat `size` as a "reference width" for API compat — the actual
+  // plane HEIGHT is fixed at the same height Kate had originally
+  // (size / 0.867, her PNG's aspect), and the width derives from
+  // the texture's own aspect. Result: all characters' heads are the
+  // same vertical size on screen; only the silhouette width differs.
+  const planeHeight = size / 0.867;
   const tex = useTexture(src);
   // sRGB so the photo's colors render correctly (not washed out as
   // if it were a linear-color data texture).
   tex.colorSpace = THREE.SRGBColorSpace;
+  // Per-source colour correction. travis.png has a noticeably warm
+  // orange cast vs the other photos (different lighting / white
+  // balance when shot). We desaturate + dial down brightness a hair
+  // to bring his face into the same neutral tone range as Kate +
+  // Sonny so the three line-up reads consistently. Done once at
+  // load via a canvas filter; replaces the texture image in place,
+  // so it's free per-frame.
+  useEffect(() => {
+    if (src !== "/travis.png") return;
+    // Idempotency tag: the filter mutates tex.image to a canvas, so
+    // re-running on remount would compound the desaturation each
+    // time the user switches characters (Travis would get darker
+    // and darker after every click). Stamp the texture once and
+    // skip subsequent applications.
+    const stamped = (tex as unknown as { __travisFiltered?: boolean });
+    if (stamped.__travisFiltered) return;
+    const img = tex.image as HTMLImageElement | undefined;
+    if (!img || !img.width || !img.height) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.filter = "saturate(0.78) brightness(0.96)";
+    ctx.drawImage(img, 0, 0);
+    tex.image = canvas;
+    tex.needsUpdate = true;
+    stamped.__travisFiltered = true;
+  }, [src, tex]);
   const meshRef = useRef<THREE.Mesh>(null);
   const meshWorld = useMemo(() => new THREE.Vector3(), []);
   const lookTarget = useMemo(() => new THREE.Vector3(), []);
@@ -7709,13 +8437,20 @@ function PartnerFace({ src, size = 0.85 }: { src: string; size?: number }) {
     lookTarget.copy(meshWorld).multiplyScalar(2).sub(state.camera.position);
     m.lookAt(lookTarget);
   });
-  // kate.png is 288×332 (aspect 0.867) — keep the plane in that
-  // aspect so her hair / face don't squish. Width = `size`,
-  // height derived.
-  const h = size / 0.867;
+  // Plane HEIGHT is fixed (planeHeight, derived from size as if it
+  // were Kate's aspect) and width is derived from the texture's
+  // natural aspect. This keeps all characters' heads at the same
+  // vertical size on screen — earlier we computed h from size/aspect,
+  // which gave Travis (narrow 0.717 aspect) a noticeably TALLER plane
+  // than Kate or Sonny, and his face read as "too big and pushed
+  // down" because the same eye-level on each PNG ended up at a
+  // different world y. Fixing height equalises perceived head size.
+  const img = tex.image as HTMLImageElement | undefined;
+  const aspect = img && img.width && img.height ? img.width / img.height : 0.867;
+  const w = planeHeight * aspect;
   return (
     <mesh ref={meshRef}>
-      <planeGeometry args={[size, h]} />
+      <planeGeometry args={[w, planeHeight]} />
       <meshBasicMaterial
         map={tex}
         transparent
@@ -7735,10 +8470,24 @@ function TrainingPartner({
   position,
   beltColor = BROWN_BELT,
   faceSrc,
+  faceScale = 1.0,
+  faceY = 1.45,
+  onSelect,
 }: {
   position: [number, number, number];
   beltColor?: string;
   faceSrc: string;
+  // Per-character scale multiplier for the face plane. Compensates
+  // for source PNGs that fill more (or less) of their canvas than
+  // Kate's reference (see CHARACTER_DATA.faceScale).
+  faceScale?: number;
+  // World-Y of the face plane center. Lifted for tight-cropped photos
+  // so the chin clears the torso top (~y=1.275).
+  faceY?: number;
+  // Optional click handler — when provided, the whole figure becomes
+  // a clickable "character pick" target. Used by the academy to
+  // make every standing partner selectable as the playable avatar.
+  onSelect?: () => void;
 }) {
   // Body-local +Z is the front of the body. Group is rotated by π
   // around Y so the body faces world -Z (south, toward the camera
@@ -7746,7 +8495,34 @@ function TrainingPartner({
   // at local +Z (positive) so they render on the camera-facing side
   // after the rotation flips +Z to world -Z.
   return (
-    <group position={position} rotation={[0, Math.PI, 0]}>
+    <group
+      position={position}
+      rotation={[0, Math.PI, 0]}
+      onClick={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              onSelect();
+            }
+          : undefined
+      }
+      onPointerOver={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              document.body.style.cursor = "pointer";
+            }
+          : undefined
+      }
+      onPointerOut={
+        onSelect
+          ? (e) => {
+              e.stopPropagation();
+              document.body.style.cursor = "";
+            }
+          : undefined
+      }
+    >
       {/* Torso (gi top) — slightly slimmer than Sonny's 0.55 */}
       <mesh position={[0, 1.0, 0]} castShadow>
         <boxGeometry args={[0.48, 0.55, 0.30]} />
@@ -7838,9 +8614,13 @@ function TrainingPartner({
       </group>
 
       {/* Head — photo billboard. Plane rotation is managed inside
-          PartnerFace so the photo always faces the camera. */}
-      <group position={[0, 1.45, 0]}>
-        <PartnerFace src={faceSrc} size={0.85} />
+          PartnerFace so the photo always faces the camera. `faceScale`
+          shrinks (or grows) the plane to compensate for per-character
+          PNG cropping differences — see CHARACTER_DATA. `faceY` lifts
+          the plane higher for tightly-cropped photos so the chin
+          clears the torso. */}
+      <group position={[0, faceY, 0]}>
+        <PartnerFace src={faceSrc} size={0.85 * faceScale} />
       </group>
     </group>
   );
@@ -8340,7 +9120,43 @@ function Heart({
   );
 }
 
-function Academy({ onExit }: { onExit: () => void }) {
+// Glowing yellow ground ring shown under the currently-selected
+// character in the academy. Pure visual confirmation of "this is
+// who you are playing as." Faint additive disc that bobs slightly
+// so the eye catches it.
+function SelectionRing({ position }: { position: [number, number, number] }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  useFrame((state) => {
+    if (!meshRef.current) return;
+    // Tiny pulse in opacity so the ring "breathes."
+    const t = state.clock.elapsedTime;
+    const mat = meshRef.current.material as THREE.MeshBasicMaterial;
+    mat.opacity = 0.35 + Math.sin(t * 2.5) * 0.12;
+  });
+  return (
+    <mesh
+      ref={meshRef}
+      position={position}
+      rotation={[-Math.PI / 2, 0, 0]}
+    >
+      <ringGeometry args={[0.55, 0.78, 32]} />
+      <meshBasicMaterial
+        color="#fde047"
+        transparent
+        opacity={0.4}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
+function Academy({
+  onExit,
+  characterId,
+}: {
+  onExit: () => void;
+  characterId: CharacterId;
+}) {
   // Colours pulled from the user's reference photo.
   const MAT_BLACK = "#1f1f23";
   const TILE_GRAY = "#9a9893";
@@ -8533,14 +9349,39 @@ function Academy({ onExit }: { onExit: () => void }) {
       </group>
 
       {/* ── Training partner — Kate, brown belt ─────────────────── */}
-      {/* Stands on the mat just to Sonny's right side. Sonny spawns
-          at (0, 0) facing south; with his body-local +X (right hand)
-          mapping to world -X after his π rotation, placing her at
-          x=-1.4 puts her on his right. From the academy default
-          vantage (camera at z=-9 looking north), world -X displays
-          on the camera's right side of frame, so she also reads as
-          right-of-Sonny in the broadcast composition. */}
-      <TrainingPartner position={[-1.4, 0, 0]} faceSrc="/kate.png" />
+      {/* Character picker — the academy becomes a 3-character pose
+          line-up. The selected character is the player Character at
+          the centre slot (0,0); the OTHER two characters render as
+          static TrainingPartners on the side slots, clickable to
+          switch the selection. A glowing yellow ring under the
+          centre slot marks "this is who you're playing as." */}
+      {(() => {
+        const others = ALL_CHARACTERS.filter((id) => id !== characterId);
+        const slots: [number, number, number][] = [
+          [-1.4, 0, 0],
+          [1.4, 0, 0],
+        ];
+        return (
+          <>
+            <SelectionRing position={[0, 0.02, 0]} />
+            {others.map((id, i) => (
+              <TrainingPartner
+                key={id}
+                position={slots[i]}
+                faceSrc={CHARACTER_DATA[id].face}
+                beltColor={CHARACTER_DATA[id].belt}
+                faceScale={CHARACTER_DATA[id].faceScale}
+                faceY={CHARACTER_DATA[id].faceY}
+                onSelect={() =>
+                  window.dispatchEvent(
+                    new CustomEvent("select-character", { detail: id })
+                  )
+                }
+              />
+            ))}
+          </>
+        );
+      })()}
 
       {/* ── Sandals lined up at the mat edge ──────────────────── */}
       {/* A signature jiu-jitsu detail — couple of pairs along the
