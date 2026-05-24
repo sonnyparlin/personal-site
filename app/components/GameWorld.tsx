@@ -268,7 +268,7 @@ const CHARACTER_DATA: Record<CharacterId, CharacterMeta> = {
   // of the plane center; Travis's plane sits SLIGHTLY higher than
   // the others so his chin clears the torso (his face fills 100% of
   // his canvas with no padding to absorb the lower portion).
-  sonny:  { face: "/face.png",   belt: "#0a0a0a", faceScale: 1.3,  faceY: 1.50 },
+  sonny:  { face: "/face.png",   belt: "#0a0a0a", faceScale: 1.3,  faceY: 1.58 },
   kate:   { face: "/kate.png",   belt: "#6b4226", faceScale: 1.05, faceY: 1.50 },
   travis: { face: "/travis.png", belt: "#0a0a0a", faceScale: 0.85, faceY: 1.62 },
 };
@@ -1000,7 +1000,14 @@ function Scene({
   const PLAY_MOVE_SPEED = 6.5;       // units/sec horizontal
   const PLAY_JUMP_VELOCITY = 8.0;    // initial upward velocity
   const PLAY_GRAVITY = 22.0;         // units/sec² downward
-  const PLAY_TURN_LERP = 0.25;       // how fast the body angle catches up to motion direction
+  // Tank-style turn rate (radians/sec). Brief key taps produce
+  // small turns (~5° for a 50ms tap); held keys rotate at ~100°/sec.
+  // A press = turn LEFT (CCW from above, the character's own left);
+  // D press = turn RIGHT (CW). W/S translate in the body's facing
+  // direction. This replaced an earlier camera-relative strafe
+  // model that mapped left arrow to a 90° CW rotation per press
+  // ("left turns the character right, and too much per press").
+  const PLAY_TURN_RATE = 1.8;
   const STRIPE_PICKUP_RADIUS = 1.1;  // distance from char to stripe to grab it
 
   // Key-tracking refs. Refilled by window keydown/keyup listeners in
@@ -1128,40 +1135,27 @@ function Scene({
     // is the keyboard.
     if (playModeRef.current && isOnHome) {
       const keys = keysRef.current;
-      // Build a unit movement vector from key state. WASD is in
-      // camera-relative space — pressing W walks AWAY from the
-      // camera regardless of which way Sonny is facing — so the
-      // controls feel like SM64 instead of tank controls.
-      let mx = 0;
+      // Tank controls: A/D rotate the body in place (LEFT = CCW from
+      // above, which is the character's own LEFT; RIGHT = CW). W/S
+      // translate along the body's facing direction. Turn rate is
+      // small per frame so brief taps produce small rotations
+      // (~5° per 50ms tap), while held keys give a continuous
+      // ~100°/sec turn. Earlier this branch was camera-relative
+      // strafe, which read as "left arrow turns the character
+      // right" (the strafe vector pointed world-left but the body
+      // had to rotate 90° CW to face that direction) — fixed by
+      // making A/D do explicit rotation instead.
+      if (keys.left)  char.angle += PLAY_TURN_RATE * clampedDt;
+      if (keys.right) char.angle -= PLAY_TURN_RATE * clampedDt;
+      // Forward / back along the body's facing direction. Press W
+      // to walk forward in whichever way Sonny is currently looking;
+      // press S to back up.
       let mz = 0;
-      if (keys.forward) mz -= 1;
-      if (keys.back) mz += 1;
-      if (keys.left) mx -= 1;
-      if (keys.right) mx += 1;
-      const moving = mx !== 0 || mz !== 0;
-      if (moving) {
-        const len = Math.hypot(mx, mz);
-        mx /= len;
-        mz /= len;
-        // Rotate the input vector into world space using the camera's
-        // current Y rotation. atan2(camToChar.x, camToChar.z) gives
-        // the camera→character forward direction.
-        const cam = state.camera;
-        const camForwardX = char.x - cam.position.x;
-        const camForwardZ = char.z - cam.position.z;
-        const camLen = Math.hypot(camForwardX, camForwardZ) || 1;
-        const fx = camForwardX / camLen;
-        const fz = camForwardZ / camLen;
-        // Right vector is forward rotated -90° in XZ: (fz, -fx).
-        const rx = fz;
-        const rz = -fx;
-        // Final world direction: forward * (-mz) + right * mx
-        // (-mz because mz=-1 means "press W = forward")
-        const wx = fx * -mz + rx * mx;
-        const wz = fz * -mz + rz * mx;
-        const wlen = Math.hypot(wx, wz) || 1;
-        const dirX = wx / wlen;
-        const dirZ = wz / wlen;
+      if (keys.forward) mz = 1;
+      if (keys.back) mz = -1;
+      if (mz !== 0) {
+        const dirX = Math.sin(char.angle) * mz;
+        const dirZ = Math.cos(char.angle) * mz;
         const step = PLAY_MOVE_SPEED * clampedDt;
         const proposed = resolveCollisions(
           char.x + dirX * step,
@@ -1169,12 +1163,6 @@ function Scene({
         );
         char.x = proposed.x;
         char.z = proposed.z;
-        // Smoothly turn the body toward the motion direction.
-        const wantAngle = Math.atan2(dirX, dirZ);
-        let diff = wantAngle - char.angle;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        char.angle += diff * PLAY_TURN_LERP;
         char.walking = true;
         char.stepPhase = (char.stepPhase + clampedDt * 4.5) % 1;
       } else {
@@ -6336,34 +6324,22 @@ function FaceBillboard({
     if (!mesh) return;
     const c = charRef.current;
 
-    // Pick which face texture to show this frame.
+    // Pick which face texture to show this frame. Simplified to
+    // three cases since the body-rotation override now always
+    // points the body's front at the camera (see Character):
+    //   - flee / ballooning: scared face
+    //   - shooting: back of head (camera vantage is behind the
+    //     shooter, who faces the target south; body angle is set
+    //     by the shooting state machine, NOT the camera-facing
+    //     override — so back-of-head is the matching texture)
+    //   - otherwise: front face
+    // For non-Sonny characters, texBack === texFront so the
+    // shooting case still produces a recognisable face.
     let wantTex: THREE.Texture = texFront;
     if (c.mode === "ballooning" || c.mode === "flee") {
-      // Scared face through the full balloon sequence (rising →
-      // scared → jumping → rolling) and the entire gator chase.
       wantTex = texScared;
-    } else if (c.walking || c.mode === "shooting") {
-      // Back of head when the character is walking AWAY from the
-      // camera, OR when in shooting mode with the camera positioned
-      // behind the shooter (otherwise the face billboard does a pure
-      // 180° flip toward the camera = "head on backwards"). The
-      // shooting-mode camera vantage sits north of Sonny while he
-      // faces south, so the dot check fires positive and the back
-      // texture takes over. "Away" = the character's facing
-      // direction has a strong positive component along the
-      // camera→character vector. Threshold of 0.25 keeps the
-      // back-of-head only when clearly facing away, so mostly-
-      // sideways angles still show the front face.
-      const camToCharX = c.x - state.camera.position.x;
-      const camToCharZ = c.z - state.camera.position.z;
-      const ccLen = Math.hypot(camToCharX, camToCharZ);
-      if (ccLen > 0.001) {
-        const dot =
-          (Math.sin(c.angle) * camToCharX +
-            Math.cos(c.angle) * camToCharZ) /
-          ccLen;
-        if (dot > 0.25) wantTex = texBack;
-      }
+    } else if (c.mode === "shooting") {
+      wantTex = texBack;
     }
     if (matRef.current && matRef.current.map !== wantTex) {
       matRef.current.map = wantTex;
@@ -6525,25 +6501,27 @@ function Character({
       // prop — used to hide the player Character in the academy
       // (where the 3 selectable TrainingPartners take over the mat).
       rootRef.current.visible = visible;
-      // Pick the body's target facing angle. Default: char's actual
-      // facing direction (set by walking/click handlers etc.). For
-      // non-Sonny characters in normal modes, override to "face the
-      // camera" instead — without a back-of-head texture, the body
-      // showing its rear while the face billboards forward reads as
-      // "head on backwards." With this override, Kate/Travis always
-      // appear front-on (face + V/knot side aligned), even though
-      // they're moving in whatever direction the user pressed. The
-      // movement direction is still communicated by position change.
+      // Pick the body's target facing angle. UNIFIED behavior:
+      // every character's body always faces the camera (regardless
+      // of which character is selected). For 4-8-year-olds the kid
+      // audience this trades a touch of "realism" (you don't see
+      // your character's back) for huge UX wins: identity always
+      // visible, consistent across characters, no "head on backwards"
+      // edge cases, simpler code. Movement direction is still
+      // communicated by position change + footstep animation.
       // Special-action modes (ride / golf / ballooning / shooting)
-      // ignore the override because those use scripted camera vantages
-      // tied to the body's actual heading.
+      // ignore the override because they use scripted camera
+      // vantages tied to the body's actual heading (e.g., shooting
+      // body faces the target south while camera is behind the
+      // shooter — Sonny's `texBack` photo handles the back-of-head
+      // for those vantages).
       let wantAngle = c.angle;
       const isSpecial =
         c.mode === "riding" ||
         c.mode === "golfing" ||
         c.mode === "ballooning" ||
         c.mode === "shooting";
-      if (!isSpecial && characterId !== "sonny") {
+      if (!isSpecial) {
         const camToCharX = c.x - state.camera.position.x;
         const camToCharZ = c.z - state.camera.position.z;
         if (camToCharX !== 0 || camToCharZ !== 0) {
