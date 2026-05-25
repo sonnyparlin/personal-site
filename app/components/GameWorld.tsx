@@ -246,12 +246,21 @@ const GOLF_HOLE = { x: -9, z: 28 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
 // Play-mode interactive putt — separate from the easter-egg
-// choreography above. When the kid walks within PUTT_TRIGGER_RADIUS
-// of GOLF_TEE in play mode, they auto-board into putting mode and
-// can aim + charge + putt with A/D + Space. Tuned so a full-power
-// shot at the cup (distance ≈ 1.5u from tee → ball start) gives the
-// kid a decent chance of sinking but isn't trivial.
-const PUTT_TRIGGER_RADIUS = 2.5;
+// choreography above. Stepping ANYWHERE onto the green bounding
+// box snaps the kid back to the tee and starts putting mode. The
+// box matches the green plane in `GolfCourse` (14×30 centered at
+// world (-15, 17) — see the local→world conversion notes there).
+// Using a bbox instead of a radial trigger means the cup-side
+// belt is unreachable by walking, you HAVE to sink the putt.
+const PUTT_GREEN_X_MIN = -22;
+const PUTT_GREEN_X_MAX = -8;
+const PUTT_GREEN_Z_MIN = 2;
+const PUTT_GREEN_Z_MAX = 32;
+// After tapping DONE in the putt HUD, the kid is teleported here
+// — outside the green bbox so the auto-board doesn't immediately
+// re-fire on the next play-mode tick. Chosen as 4u south of the
+// green's south edge, on the tee's x-line for a natural egress.
+const PUTT_DONE_EXIT = { x: GOLF_TEE.x, z: PUTT_GREEN_Z_MIN - 4 };
 // Max launch speed (units/sec) at full power. Tuned so the ball
 // JUST BARELY reaches the cup at 100% power — meaning the kid has
 // to commit close to full strength AND a near-perfect aim line.
@@ -1627,10 +1636,14 @@ function Scene({
       p.ballVz = 0;
       p.ballX = GOLF_BALL_START.x;
       p.ballZ = GOLF_BALL_START.z;
-      // Snap NORTH of the green so the next play-mode tick doesn't
-      // immediately re-trigger the proximity auto-board.
-      c.x = GOLF_TEE.x;
-      c.z = GOLF_TEE.z - 4;
+      // Snap SOUTH of the green's south edge so the next
+      // play-mode tick doesn't immediately re-trigger the bbox
+      // auto-board. Anywhere outside the PUTT_GREEN_* bounds is
+      // safe; PUTT_DONE_EXIT puts the kid 4u south of the south
+      // edge on the tee's x-line — a natural place to step away
+      // from the course.
+      c.x = PUTT_DONE_EXIT.x;
+      c.z = PUTT_DONE_EXIT.z;
       c.mode = "idle";
       if (typeof window !== "undefined") {
         window.dispatchEvent(
@@ -1806,13 +1819,20 @@ function Scene({
           );
         }
       } else if (
-        // Auto-board into the play-mode putt — same proximity
-        // pattern as the river. Pins the kid at the tee, faces
-        // them south by default (toward the cup), and resets the
-        // ball + putting state. The portfolio putting branch below
-        // drives aim/charge/release from keysRef each frame.
+        // Auto-board into the play-mode putt — fires the moment
+        // the kid steps onto the green (bounding box matches the
+        // green plane in GolfCourse). Wider than a radial trigger
+        // around the tee so the cup-side belt is unreachable by
+        // walking — the ONLY way to claim it is to sink the putt.
+        // Snaps the kid back to the tee, faces them at the cup,
+        // and resets the ball + putting state. The portfolio
+        // putting branch below drives aim/charge/release from
+        // keysRef each frame.
         !refs.putting.current.active &&
-        Math.hypot(char.x - GOLF_TEE.x, char.z - GOLF_TEE.z) < PUTT_TRIGGER_RADIUS
+        char.x >= PUTT_GREEN_X_MIN &&
+        char.x <= PUTT_GREEN_X_MAX &&
+        char.z >= PUTT_GREEN_Z_MIN &&
+        char.z <= PUTT_GREEN_Z_MAX
       ) {
         const p = refs.putting.current;
         p.active = true;
