@@ -650,29 +650,51 @@ type Bridge = {
 };
 const RIVER_BRIDGES: Bridge[] = [
   // North bridge — direct path from plaza to the NW carnival.
-  { x: -3, z: -25, axis: "z", length: 8, width: 3 },
+  { x: -3, z: -25, axis: "z", length: 11, width: 3 },
   // East bridge — onto the beach + ocean side.
-  { x: 19, z: 5, axis: "x", length: 8, width: 3 },
+  { x: 19, z: 5, axis: "x", length: 11, width: 3 },
   // West bridge — onto the road + cityscape side.
-  { x: -25, z: 5, axis: "x", length: 8, width: 3 },
+  { x: -25, z: 5, axis: "x", length: 11, width: 3 },
 ];
 // Arch-bridge geometry: each bridge is a flat-deck stone bridge with
-// an arched opening underneath the deck. The kid walks ON the flat
-// deck at y = BRIDGE_DECK_Y; the tube floats UNDER the deck through
-// the arch opening (apex of arch at y = BRIDGE_ARCH_TOP_Y). Kept
-// modest so the kid's head doesn't rise above the play-mode chase
-// cam's pinned y=4.
-const BRIDGE_DECK_Y = 2.0;     // flat deck top — kid feet on this
+// an arched opening underneath the deck AND sloped ramps on both
+// ends so the kid can walk up onto the deck instead of teleporting
+// 2u vertically. Cross-section: trapezoid with arched hole.
+//
+// - bridge.length covers the WHOLE bridge: BRIDGE_RAMP_LEN +
+//   deck-length + BRIDGE_RAMP_LEN. The flat-deck portion in the
+//   middle is `length - 2 × BRIDGE_RAMP_LEN`, which must be wide
+//   enough to span the river channel (6u = 2 × RIVER_HALF_WIDTH).
+//   Current bridge length=11, ramps=2.5 → deck=6 = channel width.
+// - Kid's foot y while on the bridge: flat at BRIDGE_DECK_Y over
+//   the deck portion, linearly interpolated 0 → BRIDGE_DECK_Y over
+//   each ramp. See bridgeYAt() below.
+const BRIDGE_DECK_Y = 2.0;     // top of flat deck
 const BRIDGE_DECK_THICKNESS = 0.25;
-const BRIDGE_ARCH_TOP_Y = 1.6; // apex of the arch opening underneath
+const BRIDGE_RAMP_LEN = 2.5;   // horizontal length of each end ramp
 const BRIDGE_ARCH_RADIUS = 1.6;
 
-// Bridge deck top y at a given world position, ASSUMING (x, z) is
-// already on a bridge (callers should onBridge-check first). The
-// deck is a flat plank — kid feet sit on it at BRIDGE_DECK_Y. Tube
-// passes under through the arched opening below the deck.
+// Foot-of-kid y at a given world position. Returns 0 if not on a
+// bridge. Otherwise: the flat deck height BRIDGE_DECK_Y when over
+// the middle of the bridge, and a linear ramp interpolating to 0
+// at the bridge's ends. This way the kid walks UP the ramp from
+// the ground, across the deck, and back DOWN the other ramp.
 function bridgeYAt(x: number, z: number): number {
-  if (onBridge(x, z)) return BRIDGE_DECK_Y;
+  for (const b of RIVER_BRIDGES) {
+    const halfL = b.length / 2;
+    const halfW = b.width / 2;
+    const along = b.axis === "z" ? z - b.z : x - b.x;
+    const across = b.axis === "z" ? x - b.x : z - b.z;
+    if (Math.abs(across) >= halfW) continue;
+    if (Math.abs(along) >= halfL) continue;
+    // Flat-deck portion: |along| ≤ halfL - BRIDGE_RAMP_LEN
+    const deckHalf = halfL - BRIDGE_RAMP_LEN;
+    if (Math.abs(along) <= deckHalf) return BRIDGE_DECK_Y;
+    // Ramp portion: linearly drop from BRIDGE_DECK_Y at deckHalf
+    // edge down to 0 at the bridge end.
+    const overshoot = Math.abs(along) - deckHalf;
+    return BRIDGE_DECK_Y * (1 - overshoot / BRIDGE_RAMP_LEN);
+  }
   return 0;
 }
 
@@ -3814,20 +3836,22 @@ function RiverBridge({ bridge }: { bridge: Bridge }) {
   const halfW = width / 2;
 
   // Build the stone-arch cross-section shape (in XY). The shape is
+  // a trapezoid (ramped sides) with an arched hole in the middle,
   // then extruded along Z to give it depth. For axis="z" bridges we
   // rotate the whole group 90° around Y so the long axis lines up.
+  const deckHalfL = halfL - BRIDGE_RAMP_LEN;
   const bridgeShape = useMemo(() => {
     const outer = new THREE.Shape();
-    // Outer rectangle from (-halfL, 0) up to (halfL, BRIDGE_DECK_Y)
+    // Bottom-left → up the left ramp → across the deck → down the
+    // right ramp → close along the ground.
     outer.moveTo(-halfL, 0);
-    outer.lineTo(-halfL, BRIDGE_DECK_Y);
-    outer.lineTo(halfL, BRIDGE_DECK_Y);
+    outer.lineTo(-deckHalfL, BRIDGE_DECK_Y);
+    outer.lineTo(deckHalfL, BRIDGE_DECK_Y);
     outer.lineTo(halfL, 0);
     outer.lineTo(-halfL, 0);
     // Arched hole through the middle, semicircle of radius
-    // BRIDGE_ARCH_RADIUS centred at origin. Path runs CW (the hole
-    // direction is opposite the outer outline) so the geometry
-    // engine treats it as a cut.
+    // BRIDGE_ARCH_RADIUS centred at origin. Path runs CCW so the
+    // geometry engine treats it as a cut.
     const hole = new THREE.Path();
     const N = 32;
     for (let i = 0; i <= N; i++) {
@@ -3842,7 +3866,7 @@ function RiverBridge({ bridge }: { bridge: Bridge }) {
     hole.lineTo(-BRIDGE_ARCH_RADIUS, 0);
     outer.holes.push(hole);
     return outer;
-  }, [halfL]);
+  }, [halfL, deckHalfL]);
 
   // Extrude the shape by `width` along Z, then centre it on Z = 0.
   const extrudeOpts = useMemo(
@@ -3864,33 +3888,36 @@ function RiverBridge({ bridge }: { bridge: Bridge }) {
         <extrudeGeometry args={[bridgeShape, extrudeOpts]} />
         <meshStandardMaterial color={STONE_COLOR} roughness={0.9} />
       </mesh>
-      {/* Wooden plank deck on top — slightly above the stone for
-          contrast + so the seam between deck and stone walls reads
-          cleanly. */}
+      {/* Wooden plank deck on top of the FLAT portion only (the
+          ramps stay bare stone). Slightly above the stone for
+          contrast so the deck/stone seam reads cleanly. */}
       <mesh
         position={[0, BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS / 2, 0]}
         castShadow
         receiveShadow
       >
-        <boxGeometry args={[length + 0.1, BRIDGE_DECK_THICKNESS, width + 0.1]} />
+        <boxGeometry
+          args={[deckHalfL * 2 + 0.1, BRIDGE_DECK_THICKNESS, width + 0.1]}
+        />
         <meshStandardMaterial color={DECK_COLOR} roughness={0.85} />
       </mesh>
-      {/* Two side railings along the long sides, sitting on the
-          deck. Top rail + a pair of vertical balusters per end for
-          the classic footbridge look. */}
+      {/* Two side railings along the long sides of the flat deck.
+          Top rail + balusters at each deck corner + a middle one
+          for the classic footbridge look. Railings stop where the
+          ramps begin. */}
       {[-halfW + 0.08, halfW - 0.08].map((rz, i) => (
         <group key={i} position={[0, BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS, rz]}>
-          {/* Top rail */}
+          {/* Top rail across the deck */}
           <mesh position={[0, 0.45, 0]} castShadow>
-            <boxGeometry args={[length, 0.08, 0.08]} />
+            <boxGeometry args={[deckHalfL * 2, 0.08, 0.08]} />
             <meshStandardMaterial color={RAIL_COLOR} />
           </mesh>
-          {/* Corner balusters */}
-          <mesh position={[-halfL + 0.12, 0.25, 0]} castShadow>
+          {/* Deck-edge balusters (where the ramp meets the deck) */}
+          <mesh position={[-deckHalfL + 0.12, 0.25, 0]} castShadow>
             <boxGeometry args={[0.1, 0.5, 0.1]} />
             <meshStandardMaterial color={POST_COLOR} />
           </mesh>
-          <mesh position={[halfL - 0.12, 0.25, 0]} castShadow>
+          <mesh position={[deckHalfL - 0.12, 0.25, 0]} castShadow>
             <boxGeometry args={[0.1, 0.5, 0.1]} />
             <meshStandardMaterial color={POST_COLOR} />
           </mesh>
