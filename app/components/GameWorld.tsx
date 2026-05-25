@@ -25,7 +25,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "shooting";
+type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "tubing";
 
 type CharState = {
   x: number;
@@ -67,9 +67,25 @@ type GolfState = {
   t: number; // 0..1 progress of the golf easter-egg animation
 };
 
-type RangeState = {
+// Lazy-river ride. The tube auto-floats along RIVER_CURVE at a
+// constant slow current; A/D (play mode) or touch ←/→ drifts the
+// tube sideways within the river width. Easter-egg mode auto-exits
+// after one full loop; play mode rides indefinitely until the EXIT
+// button is tapped.
+type RiverState = {
   active: boolean;
-  t: number; // 0..1 progress of the gun-range easter-egg animation
+  riding: boolean;
+  // 0..1 position around the river loop (CatmullRomCurve3 parameter).
+  t: number;
+  // Sideways drift within the river width, -1 = left edge, +1 = right edge.
+  offset: number;
+  // How many full loops the rider has done this ride. Easter-egg
+  // mode auto-exits at >= 1; play mode keeps going.
+  laps: number;
+  // 'play' = ride forever (until EXIT button); 'egg' = auto-exit after one loop.
+  mode: "play" | "egg";
+  // Flips true when EXIT is requested via the river-exit window event.
+  exitPending: boolean;
 };
 
 type BalloonState = {
@@ -151,8 +167,8 @@ type SharedRefs = {
   family: React.MutableRefObject<FamilyState>;
   golf: React.MutableRefObject<GolfState>;
   approachingGolf: React.MutableRefObject<boolean>;
-  range: React.MutableRefObject<RangeState>;
-  approachingRange: React.MutableRefObject<boolean>;
+  river: React.MutableRefObject<RiverState>;
+  approachingRiver: React.MutableRefObject<boolean>;
   balloon: React.MutableRefObject<BalloonState>;
   approachingBalloon: React.MutableRefObject<boolean>;
   balloonAdventure: React.MutableRefObject<BalloonAdventureState>;
@@ -161,7 +177,7 @@ type SharedRefs = {
 };
 
 const WALK_SPEED = 2.5; // units/sec
-const SPRINT_SPEED = 5.0; // jog to/from far destinations (gun range)
+const SPRINT_SPEED = 5.0; // jog to/from far destinations (lazy river)
 const FLEE_SPEED = 5.8; // sprint speed when fleeing the gator
 const GATOR_CHASE_SPEED = 2.2;
 const GATOR_RETURN_SPEED = 1.4;
@@ -203,27 +219,42 @@ const GOLF_BALL_START = { x: -17.0, z: 8.7 };
 const GOLF_HOLE = { x: -18, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
-// Outdoor gun range easter egg (south side, replaces the old farm).
-// Character walks to the firing line, fires a .50 cal hand cannon at
-// the downrange target, the recoil topples him onto his back, he gets
-// up and walks home. Layout: shooter stands at the firing line,
-// targets sit ~12 units south, dirt berm backstops them another
-// ~6 units further south.
-const RANGE_CENTER = { x: -3, z: 50 };
-const RANGE_FIRING_LINE = { x: -3, z: 42 }; // where the character stands to shoot
+// Lazy-river easter egg (south side, replaces the old gun range
+// which replaced the old farm). A curved oval river loops around
+// the south footprint; the character walks to the boarding spot,
+// climbs into a Gracie-red inner tube, and floats around. Steering
+// is sideways drift via A/D in play mode or the touch arrows.
+//
+// Centre of the river loop in world coords. The curve is defined
+// in local units (relative to this centre) and translated through
+// at render / sample time, matching the convention used by the
+// amusement-park coaster.
+const RIVER_CENTER = { x: -3, z: 50 };
+// Boarding spot — north side of the river, on grass, just outside
+// the water so the walk-up doesn't try to step on a tube.
+const RIVER_ENTRY = { x: -3, z: 40.5 };
+// Ride physics. Current speed is in "parameter units" per second
+// (t advances by RIVER_CURRENT_SPEED * dt). A medium current of
+// 0.10 gives a 10-second lap, slow enough for kids to grab belts.
+const RIVER_CURRENT_SPEED = 0.10;
+// Sideways drift rate when the kid holds A/D — in offset units per
+// second. Clamped to [-1, +1] (river half-width).
+const RIVER_DRIFT_SPEED = 0.9;
+// Visual half-width of the river channel (how far the tube can drift
+// before clamping). World units.
+const RIVER_HALF_WIDTH = 2.5;
 
-// Tiny play-mode demo: 5 black belts scattered around the world
-// at ground level. Picked so the kid has to actually wander the
-// map to grab them all (not just spin in place). Positions sit
-// clear of buildings + hills + the existing easter eggs so a
-// belt never spawns inside something the character can't reach.
-// The 3 additional belts that come with the lazy river bring the
-// total tally to 8 — see PLAY_BELT_TOTAL in GameShell.
+// Tiny play-mode demo: 5 plaza-area black belts scattered around
+// the world at ground level, plus 3 more that float in the lazy
+// river (RIVER_BELT_PICKUPS below) — total 8, matching PLAY_BELT_TOTAL
+// in GameShell. Plaza belts are findable just by wandering; the
+// river belts require actively boarding the tube and steering to
+// the right offset to grab them mid-float.
 const BELT_PICKUPS: { x: number; z: number; label: string }[] = [
   { x:  6,  z:  2,  label: "near-music" },     // plaza edge, MUSIC side
   { x: -6,  z:  6,  label: "near-code" },      // plaza edge, CODE side
   { x:  9,  z: -6,  label: "lake-shore" },     // near the gator / lake corner
-  { x: -3,  z: 20,  label: "south-meadow" },   // between plaza and gun range
+  { x: -3,  z: 20,  label: "south-meadow" },   // between plaza and the river
   { x: 15,  z:  8,  label: "east-beach" },     // east near the beach
 ];
 const BELT_BOB_AMP = 0.15;    // vertical wobble amplitude
@@ -274,13 +305,45 @@ const CHARACTER_DATA: Record<CharacterId, CharacterMeta> = {
   kate:   { face: "/kate.png",   belt: "#6b4226", faceScale: 1.05, faceY: 1.50 },
   travis: { face: "/travis.png", belt: "#0a0a0a", faceScale: 0.85, faceY: 1.62 },
 };
-const RANGE_TARGET = { x: -3, z: 54 };       // centre target stand position
-const RANGE_BERM = { x: -3, z: 60 };          // dirt mound backstop
-const RANGE_DURATION = 4.0; // total seconds: aim → fire → topple → off-frame beat → pop up → walk-back
-const RANGE_MIDPOINT = {
-  x: RANGE_FIRING_LINE.x,
-  z: (RANGE_FIRING_LINE.z + RANGE_TARGET.z) / 2,
-};
+// Lazy-river loop. Defined in LOCAL units relative to RIVER_CENTER;
+// renderers and samplers translate into world space. Oval shape
+// (wider east-west than north-south) so the river footprint covers
+// the same southern area the gun range used to. Sampled at N points
+// and fed into a closed CatmullRomCurve3 so the tube can move along
+// it smoothly.
+const RIVER_RX = 11; // x half-width (oval east-west extent)
+const RIVER_RZ = 7.5; // z half-depth (oval north-south extent)
+const RIVER_CURVE = (() => {
+  const N = 96;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    // Start at the south side so t=0 is opposite the boarding spot
+    // — the tube enters the river heading east and loops around.
+    // angle 0 = south; advance CCW so we head east first.
+    const a = Math.PI / 2 + t * Math.PI * 2;
+    pts.push(
+      new THREE.Vector3(
+        Math.cos(a) * RIVER_RX,
+        0.04, // sit on the water plane
+        Math.sin(a) * RIVER_RZ
+      )
+    );
+  }
+  return new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
+})();
+
+// 3 black belts floating in the river, staggered across the channel
+// width (left edge → centre → right edge) at different points around
+// the loop. Kid has to actively steer left/right with the tube
+// controls to grab all three. Belt sample t and offset are paired
+// so the pickup geometry's world position can be computed from the
+// curve sample without remounting the meshes each frame.
+const RIVER_BELT_PICKUPS: { t: number; offset: number; label: string }[] = [
+  { t: 0.18, offset: -0.7, label: "river-1-left" },   // east leg, near left bank
+  { t: 0.50, offset:  0.0, label: "river-2-mid" },    // far side, centre
+  { t: 0.82, offset:  0.7, label: "river-3-right" },  // west leg, near right bank
+];
 
 // Hot-air balloon easter egg (SE quadrant — south of the gator, right
 // of the golf course, away from the building cluster).
@@ -452,6 +515,37 @@ function coasterWorldAt(t: number): {
   };
 }
 
+// Sample the lazy-river curve at a normalised position `t ∈ [0, 1]`
+// with a sideways drift `offset ∈ [-1, +1]`. Returns the tube's world
+// position + the curve tangent angle (used to orient the tube along
+// the direction of flow). The offset is applied perpendicular to the
+// tangent in the XZ plane, scaled by RIVER_HALF_WIDTH.
+function riverWorldAt(t: number, offset: number): {
+  x: number;
+  z: number;
+  angle: number;
+  tangentX: number;
+  tangentZ: number;
+} {
+  const p = RIVER_CURVE.getPointAt(t);
+  const tan = RIVER_CURVE.getTangentAt(t);
+  // Perpendicular to the tangent in the XZ plane. The chase cam sits
+  // BEHIND the rider along the negative tangent, so camera-right (= the
+  // rider's visual right when looking forward) is `(-tan.z, +tan.x)`
+  // — derived from forward × up. We define +offset as CAMERA-RIGHT so
+  // pressing D / → drifts the tube right on screen, A / ← drifts left.
+  const perpX = -tan.z;
+  const perpZ = tan.x;
+  const o = offset * RIVER_HALF_WIDTH;
+  return {
+    x: RIVER_CENTER.x + p.x + perpX * o,
+    z: RIVER_CENTER.z + p.z + perpZ * o,
+    angle: Math.atan2(tan.x, tan.z),
+    tangentX: tan.x,
+    tangentZ: tan.z,
+  };
+}
+
 // Decorative obstacles (currently the hills) that the character should
 // neither walk through nor route a path through. Treated as ground
 // circles. Keep the (x, z, r) entries in sync with the `<Hill>` JSX
@@ -604,8 +698,8 @@ const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: 3, z: -4 },    // NE corridor between HOME and MUSIC (toward the gator)
   { x: -3, z: -4 },   // NW corridor between HOME and JIU JITSU (toward the park)
   // Southern hills corridor — threads west of the central hill (0, 32)
-  // and east of the SW hill (-22, 28) so the walk to the gun range
-  // (z=42) doesn't clip the (0, 32) / (10, 30) hill cluster.
+  // and east of the SW hill (-22, 28) so the walk to the lazy river
+  // (z=40+) doesn't clip the (0, 32) / (10, 30) hill cluster.
   { x: -9, z: 26 },
 ];
 
@@ -681,8 +775,16 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
   const familyRef = useRef<FamilyState>({ active: false, t: 0 });
   const golfRef = useRef<GolfState>({ active: false, t: 0 });
   const approachingGolfRef = useRef(false);
-  const rangeRef = useRef<RangeState>({ active: false, t: 0 });
-  const approachingRangeRef = useRef(false);
+  const riverRef = useRef<RiverState>({
+    active: false,
+    riding: false,
+    t: 0,
+    offset: 0,
+    laps: 0,
+    mode: "egg",
+    exitPending: false,
+  });
+  const approachingRiverRef = useRef(false);
   const balloonRef = useRef<BalloonState>({
     active: false,
     phase: "rising",
@@ -795,9 +897,13 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
-      rangeRef.current.active = false;
-      rangeRef.current.t = 0;
-      approachingRangeRef.current = false;
+      riverRef.current.active = false;
+      riverRef.current.riding = false;
+      riverRef.current.t = 0;
+      riverRef.current.offset = 0;
+      riverRef.current.laps = 0;
+      riverRef.current.exitPending = false;
+      approachingRiverRef.current = false;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -811,9 +917,13 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       golfRef.current.active = false;
       golfRef.current.t = 0;
       approachingGolfRef.current = false;
-      rangeRef.current.active = false;
-      rangeRef.current.t = 0;
-      approachingRangeRef.current = false;
+      riverRef.current.active = false;
+      riverRef.current.riding = false;
+      riverRef.current.t = 0;
+      riverRef.current.offset = 0;
+      riverRef.current.laps = 0;
+      riverRef.current.exitPending = false;
+      approachingRiverRef.current = false;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -835,8 +945,8 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       family: familyRef,
       golf: golfRef,
       approachingGolf: approachingGolfRef,
-      range: rangeRef,
-      approachingRange: approachingRangeRef,
+      river: riverRef,
+      approachingRiver: approachingRiverRef,
       balloon: balloonRef,
       approachingBalloon: approachingBalloonRef,
       balloonAdventure: balloonAdventureRef,
@@ -989,7 +1099,7 @@ function Scene({
   // `if (rt >= 1)` / `if (gt >= 1)` / `if (laps >= ...)` etc.
   // guards reset the relevant state, so subsequent frames don't
   // re-enter the branch).
-  function dispatchFound(id: "gator" | "coaster" | "golf" | "range" | "balloon") {
+  function dispatchFound(id: "gator" | "coaster" | "golf" | "river" | "balloon") {
     if (typeof window === "undefined") return;
     window.dispatchEvent(new CustomEvent("easter-egg-found", { detail: id }));
   }
@@ -1119,6 +1229,39 @@ function Scene({
   // hide the picked-up ones.
   const [beltVersion, setBeltVersion] = useState(0);
 
+  // Lazy-river belts — same tally / dispatch pattern as the plaza
+  // belts. Tracked separately so they can persist across plaza belt
+  // resets (river belts are mounted in BOTH play and portfolio mode
+  // since the river is also a portfolio easter egg).
+  const riverBeltCollectedRef = useRef<boolean[]>(
+    RIVER_BELT_PICKUPS.map(() => false)
+  );
+  const [riverBeltVersion, setRiverBeltVersion] = useState(0);
+  useEffect(() => {
+    function onReset() {
+      for (let i = 0; i < riverBeltCollectedRef.current.length; i++) {
+        riverBeltCollectedRef.current[i] = false;
+      }
+      setRiverBeltVersion((v) => v + 1);
+    }
+    window.addEventListener("play-mode-reset", onReset);
+    return () => window.removeEventListener("play-mode-reset", onReset);
+  }, []);
+
+  // EXIT-the-ride request from GameShell's overlay button. Pause-
+  // sets exitPending; the tubing tick consumes it on the next frame
+  // and runs the exit path (walk back to plaza, etc.).
+  useEffect(() => {
+    function onExit() {
+      const r = refs.river.current;
+      if (r.active) r.exitPending = true;
+    }
+    window.addEventListener("river-exit", onExit);
+    return () => window.removeEventListener("river-exit", onExit);
+  }, [refs.river]);
+
+
+
   // Game tick — runs every frame
   useFrame((state, dt) => {
     const clampedDt = Math.min(0.1, dt);
@@ -1136,6 +1279,15 @@ function Scene({
     // handle*Click functions, so the only thing controlling Sonny
     // is the keyboard.
     if (playModeRef.current && isOnHome) {
+      // If the kid is already on the lazy-river tube (entered by
+      // walking onto the boarding platform below), skip the play-mode
+      // movement / gravity / pickup code and let the portfolio
+      // tubing branch drive char this frame. The portfolio tick
+      // re-reads keysRef each frame for A/D drift steering, so the
+      // tank-control keys map naturally to "drift left / right".
+      if (char.mode === "tubing") {
+        // fall through to the portfolio tick below
+      } else {
       const keys = keysRef.current;
       // Tank controls: A/D rotate the body in place (LEFT = CCW from
       // above, which is the character's own LEFT; RIGHT = CW). W/S
@@ -1212,8 +1364,38 @@ function Scene({
       // is true, zero them out.)
       if (refs.target.current) refs.target.current = null;
       if (refs.pathQueue.current.length) refs.pathQueue.current = [];
-      char.mode = "idle";
+
+      // Auto-board the lazy-river tube — if the kid walks anywhere
+      // near the river footprint (within ~4 units of the boarding
+      // deck, which covers most of the north bank of the loop), hop
+      // in the tube and start floating. Easter-egg-mode-style click
+      // boarding is still available in portfolio mode; play mode has
+      // no clicks so proximity is the trigger. r.mode = "play" →
+      // ride forever until the EXIT button is tapped.
+      if (
+        !refs.river.current.active &&
+        Math.hypot(char.x - RIVER_ENTRY.x, char.z - RIVER_ENTRY.z) < 4.0
+      ) {
+        const r = refs.river.current;
+        r.active = true;
+        r.riding = true;
+        r.mode = "play";
+        r.t = 0;
+        r.offset = 0;
+        r.laps = 0;
+        r.exitPending = false;
+        char.mode = "tubing";
+        char.walking = false;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("river-active", { detail: true })
+          );
+        }
+      } else {
+        char.mode = "idle";
+      }
       return; // skip the entire portfolio tick below
+      }
     }
 
     // ── 0ab. Travis + Kate balloon adventure ──
@@ -1606,36 +1788,90 @@ function Scene({
       }
     }
 
-    // ── 0aa. Gun range — fire, recoil topple, lie, getup ──
-    if (char.mode === "shooting") {
-      refs.range.current.t += clampedDt / RANGE_DURATION;
-      const rt = refs.range.current.t;
-      // Pin to firing line facing south (toward target). char.angle = 0
-      // means face +Z (south), matching the golf convention.
-      char.x = RANGE_FIRING_LINE.x;
-      char.z = RANGE_FIRING_LINE.z;
-      char.angle = 0;
-      // Recoil arc: char.y rises briefly during the topple (0.30..0.45)
-      // so the body appears to lift off the platform as it tips back.
-      // The body rotation (-π/2 by the off-frame beat) is driven inside
-      // the Character component reading range.t.
-      if (rt > 0.30 && rt < 0.45) {
-        const p = (rt - 0.30) / 0.15;
-        // Smoothstep peak ~0.18 (small lift; we want a topple, not a fly-back)
-        char.y = Math.sin(p * Math.PI) * 0.18;
-      } else {
-        char.y = 0;
+    // ── 0aa. Lazy river — float along the loop in a Gracie-red tube ──
+    // Tube advances along RIVER_CURVE at RIVER_CURRENT_SPEED. In play
+    // mode the kid steers sideways via the same A/D keys used for
+    // tank-turning on land — they're parked in keysRef regardless of
+    // mode so we just read them. In easter-egg mode the offset stays
+    // at 0 (centre channel) and the ride auto-exits after one loop.
+    if (char.mode === "tubing") {
+      const r = refs.river.current;
+      // Advance around the loop. Wrap t into [0, 1) and bump the lap
+      // count whenever we cross t=0 going forward.
+      const prevT = r.t;
+      r.t = (r.t + RIVER_CURRENT_SPEED * clampedDt) % 1;
+      if (r.t < prevT) r.laps += 1;
+      // Steering — only in play mode. left key = drift left (-offset),
+      // right key = drift right (+offset). Clamped to [-1, +1].
+      if (r.mode === "play") {
+        const k = keysRef.current;
+        const dir = (k.right ? 1 : 0) + (k.left ? -1 : 0);
+        if (dir !== 0) {
+          r.offset = Math.max(
+            -1,
+            Math.min(1, r.offset + dir * RIVER_DRIFT_SPEED * clampedDt)
+          );
+        }
       }
-      if (rt >= 1) {
-        refs.range.current.t = 0;
-        refs.range.current.active = false;
+      // Sample the curve and position the character. char.y is set
+      // so the hips (body-local y=0.66) sit on the tube's top
+      // surface (tube center y=0.16, radius 0.22 → top y=0.38).
+      // The Character useFrame reads c.y straight into root.y for
+      // tubing mode, so the kid's torso lands inside the donut.
+      const pos = riverWorldAt(r.t, r.offset);
+      char.x = pos.x;
+      char.z = pos.z;
+      char.y = -0.28;
+      char.angle = pos.angle;
+      // Belt pickup while floating — staggered across the channel
+      // width so the kid has to actively steer. Same window event
+      // as the plaza belts so the HUD tally counts them uniformly.
+      for (let i = 0; i < RIVER_BELT_PICKUPS.length; i++) {
+        if (riverBeltCollectedRef.current[i]) continue;
+        const b = RIVER_BELT_PICKUPS[i];
+        const bp = riverWorldAt(b.t, b.offset);
+        const dx = char.x - bp.x;
+        const dz = char.z - bp.z;
+        if (Math.hypot(dx, dz) < 1.0) {
+          riverBeltCollectedRef.current[i] = true;
+          setRiverBeltVersion((v) => v + 1);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("belt-collected", { detail: `river-${i}` })
+            );
+          }
+        }
+      }
+      // Exit conditions: easter-egg auto-exits after 1 lap; play mode
+      // exits when the EXIT overlay button dispatches river-exit.
+      const shouldExit =
+        r.exitPending || (r.mode === "egg" && r.laps >= 1);
+      if (shouldExit) {
+        const finishedEggRide = r.mode === "egg" && !r.exitPending;
+        r.active = false;
+        r.riding = false;
+        r.exitPending = false;
+        r.laps = 0;
+        r.t = 0;
+        r.offset = 0;
         char.mode = "idle";
         char.y = 0;
-        dispatchFound("range");
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("river-active", { detail: false })
+          );
+        }
+        if (finishedEggRide) dispatchFound("river");
+        // Snap onto grass just NORTH of the boarding deck so the
+        // walk home doesn't start with the character standing on
+        // the water plane. Pulled north of the 4u auto-board zone
+        // so a play-mode exit doesn't instantly re-board the kid
+        // before they get to walk anywhere.
+        char.x = RIVER_ENTRY.x;
+        char.z = RIVER_ENTRY.z - 5;
         // Walk back to the plaza — route via bypass waypoints so the
-        // path home doesn't clip the golf course, south buildings, or
-        // the southern hill cluster. Sprint home so the long return
-        // doesn't feel like a slog either.
+        // path home doesn't clip the southern hill cluster. Sprint
+        // home so the long return doesn't feel like a slog.
         const path = routeTo(char.x, char.z, 0, 0);
         const first = path[0];
         refs.target.current = { x: first.x, z: first.z, sectionId: null, sprint: true };
@@ -1791,16 +2027,26 @@ function Scene({
             char.angle = 0;
             refs.golf.current.active = true;
             refs.golf.current.t = 0;
-          } else if (refs.approachingRange.current) {
-            // Step up to the firing line — start the gun-range sequence.
-            // Face SOUTH (toward the target). The shooting state machine
-            // (0aa above) drives the rest from here.
-            refs.approachingRange.current = false;
-            char.mode = "shooting";
+          } else if (refs.approachingRiver.current) {
+            // Climb into the tube — start the lazy-river ride in
+            // easter-egg mode (one loop then auto-exit). The tubing
+            // state machine drives char position from here on out.
+            refs.approachingRiver.current = false;
+            char.mode = "tubing";
             char.walking = false;
-            char.angle = 0;
-            refs.range.current.active = true;
-            refs.range.current.t = 0;
+            const r = refs.river.current;
+            r.active = true;
+            r.riding = true;
+            r.mode = "egg";
+            r.t = 0;
+            r.offset = 0;
+            r.laps = 0;
+            r.exitPending = false;
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("river-active", { detail: true })
+              );
+            }
           } else if (refs.approachingBalloon.current) {
             // Climb in! Balloon starts its ascent.
             refs.approachingBalloon.current = false;
@@ -1952,12 +2198,12 @@ function Scene({
       refs.char.current.mode === "riding" ||
       refs.char.current.mode === "golfing" ||
       refs.char.current.mode === "ballooning" ||
-      refs.char.current.mode === "shooting" ||
+      refs.char.current.mode === "tubing" ||
       refs.gator.current.chasing ||
       refs.coaster.current.riding ||
       refs.family.current.active ||
       refs.golf.current.active ||
-      refs.range.current.active ||
+      refs.river.current.active ||
       refs.balloon.current.active ||
       refs.balloonAdventure.current.active
     );
@@ -1966,7 +2212,7 @@ function Scene({
   // Helper: set a target and pre-populate the path queue with any waypoints
   // needed to bypass building corners between here and there. The optional
   // `sprint` flag plumbs through every waypoint, so the character jogs at
-  // SPRINT_SPEED for the whole route — used for the far-away gun range so
+  // SPRINT_SPEED for the whole route — used for the far-away lazy river so
   // it doesn't feel like a slog to get there.
   function walkTo(
     destX: number,
@@ -2015,12 +2261,12 @@ function Scene({
     refs.approachingGolf.current = true;
   }
 
-  function handleRangeClick() {
+  function handleRiverClick() {
     if (!isOnHome || isBusy() || playModeRef.current) return;
-    // Range is 42u south — sprint there so the walk doesn't feel
-    // like a slog.
-    walkTo(RANGE_FIRING_LINE.x, RANGE_FIRING_LINE.z, null, true);
-    refs.approachingRange.current = true;
+    // River is ~40u south — sprint there so the walk doesn't feel
+    // like a slog. Easter-egg mode rides one full loop then exits.
+    walkTo(RIVER_ENTRY.x, RIVER_ENTRY.z, null, true);
+    refs.approachingRiver.current = true;
   }
 
   function handleBalloonClick() {
@@ -2078,8 +2324,10 @@ function Scene({
             onParkClick={handleParkClick}
             golfRef={refs.golf}
             onGolfClick={handleGolfClick}
-            rangeRef={refs.range}
-            onRangeClick={handleRangeClick}
+            riverRef={refs.river}
+            riverBeltCollectedRef={riverBeltCollectedRef}
+            riverBeltVersion={riverBeltVersion}
+            onRiverClick={handleRiverClick}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
             travisRef={refs.travis}
@@ -2115,7 +2363,6 @@ function Scene({
         <Character
           charRef={refs.char}
           golfRef={refs.golf}
-          rangeRef={refs.range}
           balloonRef={refs.balloon}
           characterId={
             // In the chess study Sonny is the visible opponent — he's
@@ -2224,8 +2471,10 @@ function Environment({
   onParkClick,
   golfRef,
   onGolfClick,
-  rangeRef,
-  onRangeClick,
+  riverRef,
+  riverBeltCollectedRef,
+  riverBeltVersion,
+  onRiverClick,
   balloonRef,
   onBalloonClick,
   travisRef,
@@ -2238,8 +2487,10 @@ function Environment({
   onParkClick: () => void;
   golfRef: React.MutableRefObject<GolfState>;
   onGolfClick: () => void;
-  rangeRef: React.MutableRefObject<RangeState>;
-  onRangeClick: () => void;
+  riverRef: React.MutableRefObject<RiverState>;
+  riverBeltCollectedRef: React.MutableRefObject<boolean[]>;
+  riverBeltVersion: number;
+  onRiverClick: () => void;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
   travisRef: React.MutableRefObject<AvatarState>;
@@ -2353,19 +2604,32 @@ function Environment({
       <Mountain x={-5} z={-68} height={28} baseRadius={15} snow color="#42523f" />
       <Mountain x={4} z={-58} height={20} baseRadius={10} snow color="#4a5a48" />
 
-      {/* Outdoor gun range to the south — covered firing platform,
-          three target stands downrange, dirt berm backstop, perimeter
-          fencing. Replaces the old farm. Click anywhere on the
-          concrete pad to send the character to the firing line. */}
-      <GunRange onSelect={onRangeClick} />
-      {/* Tracer bullet — flies from muzzle to centre target during
-          the fire phase of the shooting easter egg. Hidden outside
-          that ~0.5s window. */}
-      <Bullet rangeRef={rangeRef} />
+      {/* Outdoor lazy river to the south — curved oval water loop,
+          sandy beach edges, palm trees + bushes for flavor. Click
+          anywhere on the water to send the character to the boarding
+          spot and start a one-loop tubing ride. Replaces the gun
+          range (which replaced the old farm). */}
+      <LazyRiver onSelect={onRiverClick} />
+      {/* Tube — visible only while the character is riding. Sized
+          like a Gracie-red inner tube; child Character is drawn at
+          the right XYZ by the tubing state machine. */}
+      <Tube riverRef={riverRef} />
+      {/* 3 floating belts in the river — staggered across the
+          channel width so the kid has to actively steer with
+          A/D to grab each one. Rendered in both portfolio + play
+          modes so the easter-egg ride is also belt-collecting. */}
+      {RIVER_BELT_PICKUPS.map((b, i) => (
+        <RiverBeltPickup
+          key={`river-belt-${i}-${riverBeltVersion}`}
+          index={i}
+          spec={b}
+          collectedRef={riverBeltCollectedRef}
+        />
+      ))}
 
-      {/* Distant pine backdrop south of the range — softens the
+      {/* Distant pine backdrop south of the river — softens the
           horizon so the world doesn't end at a grass edge when the
-          camera looks south past the berm. */}
+          camera looks south past the river. */}
       <Hill position={[-22, 0, 72]} scale={1.4} color="#3d6824" />
       <Hill position={[14, 0, 73]} scale={1.5} color="#446e2a" />
       <Hill position={[-3, 0, 84]} scale={1.6} color="#4a7a30" />
@@ -2831,62 +3095,84 @@ const PARK_LANE_X = ROAD_CENTER_X + 2.0; // parked cars on the east shoulder
 // Four stacked semi-transparent planes (sky horizon color) build up
 // a soft gradient — the near plane is sparse, the far one is nearly
 // opaque so anything past the edge is fully hidden.
-// GunRange — outdoor pistol range south of the plaza. Concrete firing
-// platform with a wooden shade canopy, three downrange target stands
-// (paper bullseye on a wooden frame), a long curved dirt berm behind
-// the targets as a backstop, and perimeter fencing. The concrete pad
-// is the click target: anywhere on it routes the character to the
-// firing line and triggers the shooting easter egg.
-function GunRange({ onSelect }: { onSelect: () => void }) {
+// LazyRiver — outdoor curved-oval lazy-river loop south of the plaza.
+// Replaces the gun range that replaced the old farm. Blue water inside
+// a sandy beach ring, with foam strips animating around the channel.
+// The water plane is the click target — anywhere on the water routes
+// the character to the boarding spot and starts the tubing ride.
+function LazyRiver({ onSelect }: { onSelect: () => void }) {
   const [hover, setHover] = useState(false);
-  const PAD_W = 14;
-  const PAD_D = 5;
-  const PAD_Y = 0.04; // sit just above the grass to avoid z-fighting
-  const PAD_COLOR = "#7c7c84";
-  const PAD_HOVER = "#94949e";
-  const ROOF_Y = 3.0;
-  const POST_COLOR = "#4a3422";
-  const ROOF_COLOR = "#3a2818";
-  const TARGET_FRAME = "#5a3c20";
-  const TARGET_PAPER = "#f0ead8";
-  const BERM_COLOR = "#7a5a32";
-  const FENCE_COLOR = "#b89868";
-  // Three lanes — each gets a target at z = RANGE_TARGET.z.
-  const LANE_XS = [RANGE_TARGET.x - 4, RANGE_TARGET.x, RANGE_TARGET.x + 4];
+
+  // Build the water shape as a Shape with a hole for the centre
+  // island, then extrude into a flat plane. Done as one big ring
+  // so the click target covers the entire water surface.
+  const waterShape = useMemo(() => {
+    const outer = new THREE.Shape();
+    const N = 64;
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const x = Math.cos(a) * (RIVER_RX + RIVER_HALF_WIDTH);
+      const z = Math.sin(a) * (RIVER_RZ + RIVER_HALF_WIDTH);
+      if (i === 0) outer.moveTo(x, z);
+      else outer.lineTo(x, z);
+    }
+    // Inner hole — the island in the middle of the loop.
+    const hole = new THREE.Path();
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const x = Math.cos(a) * (RIVER_RX - RIVER_HALF_WIDTH);
+      const z = Math.sin(a) * (RIVER_RZ - RIVER_HALF_WIDTH);
+      if (i === 0) hole.moveTo(x, z);
+      else hole.lineTo(x, z);
+    }
+    outer.holes.push(hole);
+    return outer;
+  }, []);
+
+  // Sand beach — same shape but slightly wider, sitting underneath.
+  const sandShape = useMemo(() => {
+    const outer = new THREE.Shape();
+    const N = 64;
+    const SAND_W = 1.6;
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const x = Math.cos(a) * (RIVER_RX + RIVER_HALF_WIDTH + SAND_W);
+      const z = Math.sin(a) * (RIVER_RZ + RIVER_HALF_WIDTH + SAND_W);
+      if (i === 0) outer.moveTo(x, z);
+      else outer.lineTo(x, z);
+    }
+    // Inner hole inside the centre island so the sand doesn't bleed
+    // INTO the island (the island is grass, not sand).
+    const hole = new THREE.Path();
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const x = Math.cos(a) * (RIVER_RX - RIVER_HALF_WIDTH - SAND_W);
+      const z = Math.sin(a) * (RIVER_RZ - RIVER_HALF_WIDTH - SAND_W);
+      if (i === 0) hole.moveTo(x, z);
+      else hole.lineTo(x, z);
+    }
+    outer.holes.push(hole);
+    return outer;
+  }, []);
+
   return (
-    <group>
-      {/* Invisible click footprint covering the whole range area
-          (firing pad + canopy + target stands + berm + sandbags).
-          R3F raycasts top-down, so this sits just above grass and
-          gets hit by clicks on anything BEHIND a clickable mesh
-          (the meshes above have no handlers, so the event bubbles
-          down to here). The visible concrete pad below has its own
-          handler so it can keep its hover-color affordance. Plane
-          spans x∈[-12, 6], z∈[37, 63]. */}
+    <group position={[RIVER_CENTER.x, 0, RIVER_CENTER.z]}>
+      {/* Sandy beach ring under the water — peeks out beyond the
+          water edge on both inner + outer rims. */}
       <mesh
-        position={[RANGE_FIRING_LINE.x, 0.01, RANGE_FIRING_LINE.z + 8]}
         rotation={[-Math.PI / 2, 0, 0]}
-        onClick={(e) => {
-          e.stopPropagation();
-          onSelect();
-        }}
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          document.body.style.cursor = "pointer";
-        }}
-        onPointerOut={(e) => {
-          e.stopPropagation();
-          document.body.style.cursor = "";
-        }}
+        position={[0, 0.015, 0]}
+        receiveShadow
       >
-        <planeGeometry args={[18, 26]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <shapeGeometry args={[sandShape]} />
+        <meshStandardMaterial color="#d9c590" />
       </mesh>
-      {/* Concrete firing pad — clickable. The mesh sits a hair above
-          ground at PAD_Y so it doesn't z-fight with the grass plane. */}
+      {/* Water ring — clickable. Slight elevation above the sand
+          to avoid z-fighting; tone-mapped off keeps the blue vivid
+          even under the warm sun light. */}
       <mesh
-        position={[RANGE_FIRING_LINE.x, PAD_Y, RANGE_FIRING_LINE.z]}
         rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.03, 0]}
         receiveShadow
         onClick={(e) => {
           e.stopPropagation();
@@ -2903,238 +3189,177 @@ function GunRange({ onSelect }: { onSelect: () => void }) {
           document.body.style.cursor = "";
         }}
       >
-        <planeGeometry args={[PAD_W, PAD_D]} />
-        <meshStandardMaterial color={hover ? PAD_HOVER : PAD_COLOR} />
+        <shapeGeometry args={[waterShape]} />
+        <meshStandardMaterial
+          color={hover ? "#5ab0d0" : "#4a9fc8"}
+          roughness={0.3}
+          metalness={0.1}
+        />
       </mesh>
-      {/* Yellow firing-line stripe along the southern edge of the pad */}
-      <mesh
-        position={[RANGE_FIRING_LINE.x, PAD_Y + 0.001, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.25]}
-        rotation={[-Math.PI / 2, 0, 0]}
+      {/* Boarding platform on the north bank — small wooden deck
+          where the character stands before climbing in. */}
+      <mesh position={[RIVER_ENTRY.x - RIVER_CENTER.x, 0.08, RIVER_ENTRY.z - RIVER_CENTER.z]} receiveShadow>
+        <boxGeometry args={[3.2, 0.16, 1.4]} />
+        <meshStandardMaterial color="#8b6644" />
+      </mesh>
+      {/* "LAZY RIVER" sign hanging over the boarding platform */}
+      <Billboard
+        position={[
+          RIVER_ENTRY.x - RIVER_CENTER.x,
+          3.0,
+          RIVER_ENTRY.z - RIVER_CENTER.z - 0.5,
+        ]}
       >
-        <planeGeometry args={[PAD_W - 1, 0.18]} />
-        <meshStandardMaterial color="#e8c84a" />
-      </mesh>
-
-      {/* Wooden shade canopy — four posts + flat roof above the pad */}
-      {[
-        [-PAD_W / 2 + 0.3, RANGE_FIRING_LINE.z - PAD_D / 2 + 0.3],
-        [PAD_W / 2 - 0.3, RANGE_FIRING_LINE.z - PAD_D / 2 + 0.3],
-        [-PAD_W / 2 + 0.3, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.3],
-        [PAD_W / 2 - 0.3, RANGE_FIRING_LINE.z + PAD_D / 2 - 0.3],
-      ].map(([px, pz], i) => (
-        <mesh
-          key={i}
-          position={[RANGE_FIRING_LINE.x + px, ROOF_Y / 2, pz]}
-          castShadow
-        >
-          <boxGeometry args={[0.2, ROOF_Y, 0.2]} />
-          <meshStandardMaterial color={POST_COLOR} />
-        </mesh>
-      ))}
-      <mesh
-        position={[RANGE_FIRING_LINE.x, ROOF_Y + 0.05, RANGE_FIRING_LINE.z]}
-        castShadow
-      >
-        <boxGeometry args={[PAD_W + 0.4, 0.1, PAD_D + 0.4]} />
-        <meshStandardMaterial color={ROOF_COLOR} />
-      </mesh>
-      {/* Roof beam trim on the front edge (south-facing) */}
-      <mesh
-        position={[RANGE_FIRING_LINE.x, ROOF_Y - 0.15, RANGE_FIRING_LINE.z + PAD_D / 2 + 0.2]}
-        castShadow
-      >
-        <boxGeometry args={[PAD_W + 0.4, 0.18, 0.1]} />
-        <meshStandardMaterial color="#2a1810" />
-      </mesh>
-      {/* "RANGE" sign hanging from the roof beam, facing the plaza (north) */}
-      <Billboard position={[RANGE_FIRING_LINE.x, ROOF_Y + 0.7, RANGE_FIRING_LINE.z - PAD_D / 2 - 0.3]}>
         <Text
-          fontSize={0.55}
+          fontSize={0.5}
           color="#f4f1de"
           outlineColor="#1a0e08"
-          outlineWidth={0.045}
+          outlineWidth={0.04}
           outlineOpacity={1}
           anchorY="middle"
         >
-          RANGE
+          LAZY RIVER
         </Text>
       </Billboard>
-
-      {/* Three downrange target stands — wooden frame holding a paper
-          bullseye. Each frame is two vertical posts + a top bar, with
-          the paper plane mounted across them. Slightly varied x so the
-          row reads naturally. */}
-      {LANE_XS.map((x, i) => (
-        <group key={i} position={[x, 0, RANGE_TARGET.z]}>
-          {/* Left post */}
-          <mesh position={[-0.55, 0.9, 0]} castShadow>
-            <boxGeometry args={[0.1, 1.8, 0.1]} />
-            <meshStandardMaterial color={TARGET_FRAME} />
-          </mesh>
-          {/* Right post */}
-          <mesh position={[0.55, 0.9, 0]} castShadow>
-            <boxGeometry args={[0.1, 1.8, 0.1]} />
-            <meshStandardMaterial color={TARGET_FRAME} />
-          </mesh>
-          {/* Top crossbar */}
-          <mesh position={[0, 1.85, 0]} castShadow>
-            <boxGeometry args={[1.3, 0.1, 0.1]} />
-            <meshStandardMaterial color={TARGET_FRAME} />
-          </mesh>
-          {/* Paper (front side faces north, toward shooter) */}
-          <mesh position={[0, 1.05, 0.06]} rotation={[0, Math.PI, 0]}>
-            <planeGeometry args={[0.9, 1.2]} />
-            <meshStandardMaterial color={TARGET_PAPER} side={THREE.DoubleSide} />
-          </mesh>
-          {/* Bullseye rings — three concentric circles on the front */}
-          <mesh position={[0, 1.05, 0.062]} rotation={[0, Math.PI, 0]}>
-            <circleGeometry args={[0.32, 24]} />
-            <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} />
-          </mesh>
-          <mesh position={[0, 1.05, 0.063]} rotation={[0, Math.PI, 0]}>
-            <circleGeometry args={[0.22, 24]} />
-            <meshStandardMaterial color="#d04a30" side={THREE.DoubleSide} />
-          </mesh>
-          <mesh position={[0, 1.05, 0.064]} rotation={[0, Math.PI, 0]}>
-            <circleGeometry args={[0.10, 24]} />
-            <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* Dirt berm — long mound just south of the targets, acts as the
-          backstop. Two stacked half-spheres of decreasing height + a
-          rear ridge so the silhouette reads as a proper backstop. */}
-      <mesh position={[RANGE_BERM.x, 0, RANGE_BERM.z]} castShadow receiveShadow>
-        <sphereGeometry args={[6, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color={BERM_COLOR} />
+      {/* Two sign posts beside the boarding platform — bumped out
+          to match the wider deck. */}
+      <mesh position={[RIVER_ENTRY.x - RIVER_CENTER.x - 1.5, 1.4, RIVER_ENTRY.z - RIVER_CENTER.z - 0.5]} castShadow>
+        <boxGeometry args={[0.12, 2.8, 0.12]} />
+        <meshStandardMaterial color="#5a3c20" />
       </mesh>
-      <mesh position={[RANGE_BERM.x - 7, 0, RANGE_BERM.z + 0.5]} castShadow receiveShadow>
-        <sphereGeometry args={[4.5, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color={BERM_COLOR} />
-      </mesh>
-      <mesh position={[RANGE_BERM.x + 7, 0, RANGE_BERM.z + 0.5]} castShadow receiveShadow>
-        <sphereGeometry args={[4.5, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color={BERM_COLOR} />
+      <mesh position={[RIVER_ENTRY.x - RIVER_CENTER.x + 1.5, 1.4, RIVER_ENTRY.z - RIVER_CENTER.z - 0.5]} castShadow>
+        <boxGeometry args={[0.12, 2.8, 0.12]} />
+        <meshStandardMaterial color="#5a3c20" />
       </mesh>
 
-      {/* Perimeter fence — west, east, and north (entrance) sides.
-          South side is the berm. Simple post-and-rail style. */}
-      {[
-        // west side — runs N/S along x = RANGE_CENTER.x - 9
-        { x: RANGE_CENTER.x - 9, z: RANGE_FIRING_LINE.z - 2, rotY: Math.PI / 2, len: 4 },
-        { x: RANGE_CENTER.x - 9, z: RANGE_FIRING_LINE.z + 4, rotY: Math.PI / 2, len: 8 },
-        // east side
-        { x: RANGE_CENTER.x + 9, z: RANGE_FIRING_LINE.z - 2, rotY: Math.PI / 2, len: 4 },
-        { x: RANGE_CENTER.x + 9, z: RANGE_FIRING_LINE.z + 4, rotY: Math.PI / 2, len: 8 },
-        // north side (behind firing line)
-        { x: RANGE_CENTER.x - 5, z: RANGE_FIRING_LINE.z - 4, rotY: 0, len: 8 },
-        { x: RANGE_CENTER.x + 5, z: RANGE_FIRING_LINE.z - 4, rotY: 0, len: 8 },
-      ].map(({ x, z, rotY, len }, i) => (
-        <group key={i} position={[x, 0, z]} rotation={[0, rotY, 0]}>
-          {/* Top rail */}
-          <mesh position={[0, 0.85, 0]}>
-            <boxGeometry args={[len, 0.08, 0.05]} />
-            <meshStandardMaterial color={FENCE_COLOR} />
-          </mesh>
-          {/* Middle rail */}
-          <mesh position={[0, 0.55, 0]}>
-            <boxGeometry args={[len, 0.08, 0.05]} />
-            <meshStandardMaterial color={FENCE_COLOR} />
-          </mesh>
-          {/* Posts every ~2 units */}
-          {Array.from({ length: Math.floor(len / 2) + 1 }).map((_, j) => {
-            const px = -len / 2 + j * 2;
-            return (
-              <mesh key={j} position={[px, 0.5, 0]} castShadow>
-                <boxGeometry args={[0.1, 1.0, 0.1]} />
-                <meshStandardMaterial color={POST_COLOR} />
-              </mesh>
-            );
-          })}
-        </group>
-      ))}
-
-      {/* Sandbag stack in front of the firing line — three rows */}
-      {[
-        [-1.2, 0],
-        [-0.6, 0],
-        [0, 0],
-        [0.6, 0],
-        [1.2, 0],
-        [-0.9, 0.3],
-        [-0.3, 0.3],
-        [0.3, 0.3],
-        [0.9, 0.3],
-        [-0.6, 0.6],
-        [0, 0.6],
-        [0.6, 0.6],
-      ].map(([dx, dy], i) => (
-        <mesh
-          key={i}
-          position={[
-            RANGE_FIRING_LINE.x + 4 + dx,
-            0.15 + dy,
-            RANGE_FIRING_LINE.z + PAD_D / 2 + 0.4,
-          ]}
-          castShadow
-        >
-          <boxGeometry args={[0.55, 0.28, 0.4]} />
-          <meshStandardMaterial color="#8a7048" />
-        </mesh>
-      ))}
+      {/* Palms scattered around the river for tropical flavor. Local
+          positions, so they ride along with the group translation. */}
+      <PalmTree position={[-RIVER_RX - 2.2, 0, -3]} scale={1.0} />
+      <PalmTree position={[-RIVER_RX - 2.5, 0, 3]} scale={1.15} />
+      <PalmTree position={[RIVER_RX + 2.2, 0, -2.5]} scale={1.05} />
+      <PalmTree position={[RIVER_RX + 2.4, 0, 3.5]} scale={1.0} />
+      {/* Small palm on the centre island for the "tropical paradise"
+          read — the island gets the trees instead of just being
+          empty grass. */}
+      <PalmTree position={[0, 0, 0]} scale={1.1} />
+      <PalmTree position={[-2, 0, 1.5]} scale={0.85} />
+      <PalmTree position={[2.2, 0, -1]} scale={0.9} />
+      {/* Bushes around the outer beach */}
+      <Bush position={[-RIVER_RX - 1.5, 0, -5]} scale={0.85} />
+      <Bush position={[RIVER_RX + 1.5, 0, 5]} scale={0.95} />
+      <Bush position={[-3, 0, RIVER_RZ + 2]} scale={1.0} />
+      <Bush position={[4, 0, -RIVER_RZ - 2]} scale={0.9} />
     </group>
   );
 }
 
-// Bullet — a glowing tracer that flies from the gun muzzle to the
-// centre target during the fire phase. Stretched cylinder oriented
-// along the lane axis so it reads as a streak in motion, not a ball.
-// Visible only during a brief window inside the shooting sequence;
-// hidden the rest of the time.
-function Bullet({ rangeRef }: { rangeRef: React.MutableRefObject<RangeState> }) {
-  const ref = useRef<THREE.Mesh>(null);
-  // Approximate world positions: the muzzle ends up at this point
-  // once the gun-holder rotates forward to firing position (~1u in
-  // front of the firing line at y≈1.1). HIT is the centre target's
-  // bullseye position. If you tune AIM_X on Character or move the
-  // gun mesh inside the holder, retune MUZZLE here so the tracer
-  // starts from where the barrel actually points in world space.
-  const MUZZLE = { x: RANGE_FIRING_LINE.x, y: 1.1, z: RANGE_FIRING_LINE.z + 1.0 };
-  const HIT = { x: RANGE_TARGET.x, y: 1.05, z: RANGE_TARGET.z };
-  // Visible just after the muzzle flash starts (rt=0.27) until
-  // shortly into the topple (rt=0.40). ~0.5s of flight in real
-  // time — slow enough to read as motion, fast enough to feel
-  // like a tracer.
-  const FLIGHT_START = 0.27;
-  const FLIGHT_END = 0.40;
+// Tube — Gracie-red inner tube, visible only while the character is
+// riding. Positioned each frame based on the river state machine's
+// (t, offset). The character mesh is positioned by the tubing state
+// machine; this just draws the tube ring around their seated body.
+function Tube({ riverRef }: { riverRef: React.MutableRefObject<RiverState> }) {
+  const ref = useRef<THREE.Group>(null);
   useFrame(() => {
-    if (!ref.current) return;
-    const r = rangeRef.current;
-    const rt = r.t;
-    if (!r.active || rt < FLIGHT_START || rt > FLIGHT_END) {
-      ref.current.visible = false;
-      return;
-    }
-    ref.current.visible = true;
-    const p = (rt - FLIGHT_START) / (FLIGHT_END - FLIGHT_START);
-    ref.current.position.set(
-      MUZZLE.x + (HIT.x - MUZZLE.x) * p,
-      MUZZLE.y + (HIT.y - MUZZLE.y) * p,
-      MUZZLE.z + (HIT.z - MUZZLE.z) * p
-    );
+    const g = ref.current;
+    if (!g) return;
+    const r = riverRef.current;
+    g.visible = r.active && r.riding;
+    if (!g.visible) return;
+    const pos = riverWorldAt(r.t, r.offset);
+    g.position.x = pos.x;
+    g.position.z = pos.z;
+    // Sit on the water plane.
+    g.position.y = 0.16;
+    // Align the tube's "front" with the curve tangent so the donut
+    // reads as drifting along the flow direction (not pointing
+    // sideways across it).
+    g.rotation.y = pos.angle;
   });
   return (
-    // Cylinder oriented along Z (lane axis) via rotation.x = π/2 so
-    // its long axis runs in the direction of travel — reads as a
-    // tracer streak rather than a sphere.
-    <mesh ref={ref} visible={false} rotation={[Math.PI / 2, 0, 0]}>
-      <cylinderGeometry args={[0.06, 0.06, 0.5, 8]} />
-      <meshBasicMaterial color="#ffe060" toneMapped={false} />
-    </mesh>
+    <group ref={ref} visible={false}>
+      {/* Donut — torus laid flat. Gracie red. */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <torusGeometry args={[0.65, 0.22, 12, 24]} />
+        <meshStandardMaterial color="#c4262e" roughness={0.6} />
+      </mesh>
+      {/* Small white "G" decal on top of the tube, oriented toward
+          the camera-facing side (the rider sits inside this ring). */}
+      <mesh position={[0, 0.23, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.12, 16]} />
+        <meshBasicMaterial color="#ffffff" toneMapped={false} />
+      </mesh>
+    </group>
   );
 }
 
+// RiverBeltPickup — same pickup behaviour as the plaza BeltPickup,
+// but its world position is derived from a (t, offset) sample of
+// the river curve so the belt sits exactly where the tube physics
+// will reach if the kid steers correctly. Bobs + spins like the
+// plaza belts.
+function RiverBeltPickup({
+  index,
+  spec,
+  collectedRef,
+}: {
+  index: number;
+  spec: { t: number; offset: number; label: string };
+  collectedRef: React.MutableRefObject<boolean[]>;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  const phaseOffset = (index * 0.41) % 1;
+  // Precompute world position from the curve sample — it never
+  // changes once the curve is built.
+  const pos = useMemo(() => riverWorldAt(spec.t, spec.offset), [spec.t, spec.offset]);
+  useFrame((state) => {
+    const g = ref.current;
+    if (!g) return;
+    const collected = collectedRef.current[index];
+    g.visible = !collected;
+    if (!collected) {
+      const t = state.clock.elapsedTime + phaseOffset * 10;
+      g.position.y =
+        0.55 + Math.sin(t * BELT_BOB_FREQ * 2 * Math.PI) * BELT_BOB_AMP;
+      g.rotation.y = t * BELT_SPIN_FREQ * 2 * Math.PI;
+    }
+  });
+  return (
+    <group ref={ref} position={[pos.x, 0.55, pos.z]}>
+      <mesh castShadow>
+        <boxGeometry args={[0.7, 0.18, 0.22]} />
+        <meshStandardMaterial color="#0a0a0a" />
+      </mesh>
+      <mesh position={[0.22, 0, 0]} castShadow>
+        <boxGeometry args={[0.12, 0.20, 0.24]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#fde047"
+          emissiveIntensity={0.9}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Soft ring above water for visibility */}
+      <mesh
+        position={[0, -0.5, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+      >
+        <ringGeometry args={[0.3, 0.55, 24]} />
+        <meshBasicMaterial
+          color="#fde047"
+          transparent
+          opacity={0.45}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+
+
+// Atmospheric haze wall at the southern horizon (formerly behind
+// the gun range, formerly behind the farm) — softens the abrupt
+// grass-edge into a sky fade. Now sits behind the lazy river.
 function FarmMist({ z }: { z: number }) {
   return (
     <group position={[-10, 0, z]}>
@@ -4282,898 +4507,6 @@ function BeltPickup({
   );
 }
 
-// Classic red barn — boxy body with a gabled roof, white door,
-// hay-loft window, and white eave trim. Roof slopes use rotated
-// box slabs (rotation = ±atan(rise/run) around z so the slab's
-// normal aligns with the slope).
-function Barn({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  // Body: 4 wide × 3 tall × 5 deep. Roof rises 1.5 above the walls
-  // to a ridge running along the z axis.
-  const RISE = 1.5;
-  const RUN = 2;
-  const SLOPE_LEN = Math.sqrt(RISE * RISE + RUN * RUN); // 2.5
-  const SLOPE_ANGLE = Math.atan(RISE / RUN); // ~36.87°
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Main wall body */}
-      <mesh position={[0, 1.5, 0]} castShadow receiveShadow>
-        <boxGeometry args={[4, 3, 5]} />
-        <meshStandardMaterial color="#a73a2a" />
-      </mesh>
-      {/* Roof — gabled, made of two rotated slabs meeting at the ridge */}
-      <mesh
-        position={[1, 3 + RISE / 2, 0]}
-        rotation={[0, 0, -SLOPE_ANGLE]}
-        castShadow
-      >
-        <boxGeometry args={[SLOPE_LEN, 0.15, 5.2]} />
-        <meshStandardMaterial color="#5a2a20" />
-      </mesh>
-      <mesh
-        position={[-1, 3 + RISE / 2, 0]}
-        rotation={[0, 0, SLOPE_ANGLE]}
-        castShadow
-      >
-        <boxGeometry args={[SLOPE_LEN, 0.15, 5.2]} />
-        <meshStandardMaterial color="#5a2a20" />
-      </mesh>
-      {/* Gable triangle fills (the triangular wall at each end under the
-          roof). Just two flat-shaded triangles via plane geometry won't
-          be triangular — use a coneGeometry with 3 segments would also
-          be wrong. Instead use a small triangular `Shape`? Simpler:
-          stack two thin angled boxes that emulate a triangle. For the
-          first pass, leave the gable ends open — at this distance the
-          eye reads the barn shape from the roof + body alone. */}
-      {/* White door (sliding-barn style) */}
-      <mesh position={[0, 0.95, 2.51]}>
-        <boxGeometry args={[1.4, 1.9, 0.04]} />
-        <meshStandardMaterial color="#e8e0d0" />
-      </mesh>
-      {/* Door X-cross trim — two thin diagonals */}
-      <mesh
-        position={[0, 0.95, 2.53]}
-        rotation={[0, 0, Math.atan2(1.9, 1.4)]}
-      >
-        <boxGeometry args={[Math.hypot(1.4, 1.9), 0.06, 0.01]} />
-        <meshStandardMaterial color="#5a4030" />
-      </mesh>
-      <mesh
-        position={[0, 0.95, 2.53]}
-        rotation={[0, 0, -Math.atan2(1.9, 1.4)]}
-      >
-        <boxGeometry args={[Math.hypot(1.4, 1.9), 0.06, 0.01]} />
-        <meshStandardMaterial color="#5a4030" />
-      </mesh>
-      {/* Hay-loft window above the door */}
-      <mesh position={[0, 2.55, 2.51]}>
-        <boxGeometry args={[0.7, 0.55, 0.04]} />
-        <meshStandardMaterial color="#e8e0d0" />
-      </mesh>
-      {/* White eave trim along the front and back */}
-      <mesh position={[0, 3, 2.55]}>
-        <boxGeometry args={[4.05, 0.18, 0.05]} />
-        <meshStandardMaterial color="#e8e0d0" />
-      </mesh>
-      <mesh position={[0, 3, -2.55]}>
-        <boxGeometry args={[4.05, 0.18, 0.05]} />
-        <meshStandardMaterial color="#e8e0d0" />
-      </mesh>
-    </group>
-  );
-}
-
-// Tall grain silo — light-grey cylinder with a darker conical cap.
-function Silo({ x, z, scale = 1 }: { x: number; z: number; scale?: number }) {
-  return (
-    <group position={[x, 0, z]} scale={scale}>
-      <mesh position={[0, 2.5, 0]} castShadow receiveShadow>
-        <cylinderGeometry args={[1.2, 1.2, 5, 14]} />
-        <meshStandardMaterial color="#b8b6a8" />
-      </mesh>
-      {/* Cap */}
-      <mesh position={[0, 5.4, 0]} castShadow>
-        <coneGeometry args={[1.25, 0.9, 14]} />
-        <meshStandardMaterial color="#6a6458" />
-      </mesh>
-      {/* Horizontal band partway up — gives the silo some detail */}
-      <mesh position={[0, 3.6, 0]}>
-        <cylinderGeometry args={[1.22, 1.22, 0.12, 14]} />
-        <meshStandardMaterial color="#7a7468" />
-      </mesh>
-    </group>
-  );
-}
-
-// Small cream farmhouse with a red pyramid roof and a dark door.
-function Farmhouse({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      <mesh position={[0, 1.25, 0]} castShadow receiveShadow>
-        <boxGeometry args={[3, 2.5, 3]} />
-        <meshStandardMaterial color="#eee0c8" />
-      </mesh>
-      <mesh position={[0, 3.0, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-        <coneGeometry args={[2.3, 1.5, 4]} />
-        <meshStandardMaterial color="#a64b3a" />
-      </mesh>
-      <mesh position={[0, 0.75, 1.51]}>
-        <boxGeometry args={[0.55, 1.1, 0.04]} />
-        <meshStandardMaterial color="#4a3220" />
-      </mesh>
-      {/* Two tiny windows flanking the door */}
-      <mesh position={[-0.95, 1.3, 1.51]}>
-        <boxGeometry args={[0.45, 0.45, 0.04]} />
-        <meshStandardMaterial color="#9ab4c8" />
-      </mesh>
-      <mesh position={[0.95, 1.3, 1.51]}>
-        <boxGeometry args={[0.45, 0.45, 0.04]} />
-        <meshStandardMaterial color="#9ab4c8" />
-      </mesh>
-    </group>
-  );
-}
-
-// Crop field — a flat colored plane laid over the grass. Row stripes
-// add a hint of tilled rows without modeling individual plants.
-function CropField({
-  x,
-  z,
-  w,
-  d,
-  color,
-  rowColor,
-}: {
-  x: number;
-  z: number;
-  w: number;
-  d: number;
-  color: string;
-  rowColor?: string;
-}) {
-  return (
-    <group>
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[x, 0.013, z]}
-        receiveShadow
-      >
-        <planeGeometry args={[w, d]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      {/* Row stripes running along z — thin slightly-darker strips */}
-      {rowColor &&
-        Array.from({ length: Math.floor(w / 0.8) }).map((_, i) => (
-          <mesh
-            key={i}
-            rotation={[-Math.PI / 2, 0, 0]}
-            position={[
-              x - w / 2 + 0.4 + i * 0.8,
-              0.014,
-              z,
-            ]}
-          >
-            <planeGeometry args={[0.08, d * 0.95]} />
-            <meshStandardMaterial color={rowColor} />
-          </mesh>
-        ))}
-    </group>
-  );
-}
-
-// Round hay bale lying on its side — short cylinder rotated so its
-// axis runs horizontally.
-function HayBale({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <mesh
-      position={[x, 0.4, z]}
-      rotation={[Math.PI / 2, 0, rotation]}
-      castShadow
-      receiveShadow
-    >
-      <cylinderGeometry args={[0.42, 0.42, 0.8, 12]} />
-      <meshStandardMaterial color="#d4b878" />
-    </mesh>
-  );
-}
-
-// Classic red farm tractor — boxy body, big rear wheels, smaller
-// front wheels, exhaust pipe, sloped hood. Faces +x by default;
-// rotate via `rotation` prop.
-function Tractor({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Hood / engine — sloped front, narrow */}
-      <mesh position={[0.5, 0.55, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.7, 0.45, 0.7]} />
-        <meshStandardMaterial color="#b8302a" />
-      </mesh>
-      {/* Cab / seat area — taller boxy section behind hood */}
-      <mesh position={[-0.15, 0.75, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.6, 0.6, 0.8]} />
-        <meshStandardMaterial color="#b8302a" />
-      </mesh>
-      {/* Roll cage roof — small rectangle on top */}
-      <mesh position={[-0.15, 1.15, 0]} castShadow>
-        <boxGeometry args={[0.65, 0.08, 0.85]} />
-        <meshStandardMaterial color="#2a2a2a" />
-      </mesh>
-      {/* Steering wheel — small ring up front of the cab */}
-      <mesh position={[0.15, 0.95, 0]} rotation={[Math.PI / 2 - 0.3, 0, 0]}>
-        <torusGeometry args={[0.08, 0.012, 6, 12]} />
-        <meshStandardMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Exhaust pipe — vertical chimney on the hood */}
-      <mesh position={[0.55, 1.05, 0.15]} castShadow>
-        <cylinderGeometry args={[0.04, 0.04, 0.5, 8]} />
-        <meshStandardMaterial color="#3a3a3a" metalness={0.5} />
-      </mesh>
-      {/* Big rear wheels */}
-      {[-0.45, 0.45].map((zoff, i) => (
-        <mesh
-          key={`rw${i}`}
-          position={[-0.35, 0.4, zoff]}
-          rotation={[0, 0, Math.PI / 2]}
-          castShadow
-        >
-          <cylinderGeometry args={[0.4, 0.4, 0.16, 14]} />
-          <meshStandardMaterial color="#1a1a1a" />
-        </mesh>
-      ))}
-      {/* Smaller front wheels */}
-      {[-0.4, 0.4].map((zoff, i) => (
-        <mesh
-          key={`fw${i}`}
-          position={[0.55, 0.25, zoff]}
-          rotation={[0, 0, Math.PI / 2]}
-          castShadow
-        >
-          <cylinderGeometry args={[0.22, 0.22, 0.12, 12]} />
-          <meshStandardMaterial color="#1a1a1a" />
-        </mesh>
-      ))}
-      {/* Headlights — small yellow blocks on the front */}
-      <mesh position={[0.86, 0.6, -0.22]}>
-        <boxGeometry args={[0.04, 0.08, 0.08]} />
-        <meshStandardMaterial color="#fff4c0" emissive="#fff4c0" emissiveIntensity={0.4} />
-      </mesh>
-      <mesh position={[0.86, 0.6, 0.22]}>
-        <boxGeometry args={[0.04, 0.08, 0.08]} />
-        <meshStandardMaterial color="#fff4c0" emissive="#fff4c0" emissiveIntensity={0.4} />
-      </mesh>
-    </group>
-  );
-}
-
-// Cow — boxy white body with black patches, head with small horns,
-// four short legs, tail.
-function Cow({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.55, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.95, 0.55, 0.45]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      {/* Black patches — two darker boxes overlaid on the body */}
-      <mesh position={[0.15, 0.6, 0.226]}>
-        <boxGeometry args={[0.28, 0.30, 0.01]} />
-        <meshStandardMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[-0.3, 0.5, -0.226]}>
-        <boxGeometry args={[0.32, 0.32, 0.01]} />
-        <meshStandardMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Head */}
-      <mesh position={[0.55, 0.65, 0]} castShadow>
-        <boxGeometry args={[0.3, 0.32, 0.35]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      {/* Snout — slightly pink */}
-      <mesh position={[0.72, 0.6, 0]}>
-        <boxGeometry args={[0.06, 0.18, 0.22]} />
-        <meshStandardMaterial color="#e8b8b0" />
-      </mesh>
-      {/* Eyes */}
-      <mesh position={[0.71, 0.74, 0.11]}>
-        <sphereGeometry args={[0.03, 6, 6]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.71, 0.74, -0.11]}>
-        <sphereGeometry args={[0.03, 6, 6]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Ears */}
-      <mesh position={[0.55, 0.85, 0.18]} rotation={[0.3, 0, 0]}>
-        <boxGeometry args={[0.08, 0.08, 0.04]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      <mesh position={[0.55, 0.85, -0.18]} rotation={[-0.3, 0, 0]}>
-        <boxGeometry args={[0.08, 0.08, 0.04]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      {/* Horns — small white nubs */}
-      <mesh position={[0.5, 0.92, 0.10]}>
-        <coneGeometry args={[0.025, 0.10, 5]} />
-        <meshStandardMaterial color="#dcd0a8" />
-      </mesh>
-      <mesh position={[0.5, 0.92, -0.10]}>
-        <coneGeometry args={[0.025, 0.10, 5]} />
-        <meshStandardMaterial color="#dcd0a8" />
-      </mesh>
-      {/* Four legs */}
-      {[
-        [-0.35, 0.18],
-        [-0.35, -0.18],
-        [0.30, 0.18],
-        [0.30, -0.18],
-      ].map(([lx, lz], i) => (
-        <mesh key={i} position={[lx, 0.15, lz]} castShadow>
-          <boxGeometry args={[0.12, 0.30, 0.12]} />
-          <meshStandardMaterial color="#1a1a1a" />
-        </mesh>
-      ))}
-      {/* Tail */}
-      <mesh position={[-0.5, 0.55, 0]} rotation={[0, 0, -0.3]}>
-        <boxGeometry args={[0.05, 0.32, 0.05]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      <mesh position={[-0.58, 0.38, 0]}>
-        <sphereGeometry args={[0.04, 6, 6]} />
-        <meshStandardMaterial color="#1a1a1a" />
-      </mesh>
-    </group>
-  );
-}
-
-// Chicken — small body, red comb, beak, two legs.
-function Chicken({
-  x,
-  z,
-  rotation = 0,
-  color = "#f4f1de",
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-  color?: string;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.22, 0]} castShadow>
-        <sphereGeometry args={[0.16, 10, 8]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      {/* Tail feathers */}
-      <mesh position={[-0.15, 0.28, 0]} rotation={[0, 0, 0.5]}>
-        <coneGeometry args={[0.08, 0.16, 6]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      {/* Head */}
-      <mesh position={[0.13, 0.35, 0]} castShadow>
-        <sphereGeometry args={[0.09, 8, 6]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      {/* Comb — red ridges on top */}
-      <mesh position={[0.13, 0.44, 0]}>
-        <boxGeometry args={[0.06, 0.05, 0.03]} />
-        <meshStandardMaterial color="#d83a3a" />
-      </mesh>
-      {/* Beak */}
-      <mesh position={[0.21, 0.34, 0]} rotation={[0, 0, -Math.PI / 2]}>
-        <coneGeometry args={[0.022, 0.06, 6]} />
-        <meshStandardMaterial color="#e8a050" />
-      </mesh>
-      {/* Wattle — small red dangle under beak */}
-      <mesh position={[0.20, 0.27, 0]}>
-        <sphereGeometry args={[0.025, 6, 6]} />
-        <meshStandardMaterial color="#d83a3a" />
-      </mesh>
-      {/* Eye */}
-      <mesh position={[0.16, 0.38, 0.07]}>
-        <sphereGeometry args={[0.012, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.16, 0.38, -0.07]}>
-        <sphereGeometry args={[0.012, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Legs */}
-      <mesh position={[0.02, 0.06, 0.05]}>
-        <cylinderGeometry args={[0.015, 0.015, 0.12, 5]} />
-        <meshStandardMaterial color="#e8a050" />
-      </mesh>
-      <mesh position={[0.02, 0.06, -0.05]}>
-        <cylinderGeometry args={[0.015, 0.015, 0.12, 5]} />
-        <meshStandardMaterial color="#e8a050" />
-      </mesh>
-    </group>
-  );
-}
-
-// Turkey — bigger than chicken, with a tan body and a fanned tail
-// of darker brown feathers.
-function Turkey({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.3, 0]} castShadow>
-        <sphereGeometry args={[0.22, 10, 8]} />
-        <meshStandardMaterial color="#7a4a2a" />
-      </mesh>
-      {/* Fanned tail — large flat fan behind the body */}
-      <mesh position={[-0.2, 0.4, 0]} rotation={[0, 0, 0.3]}>
-        <cylinderGeometry args={[0.32, 0.32, 0.04, 14, 1, false, -Math.PI / 2, Math.PI]} />
-        <meshStandardMaterial color="#5a3a18" side={THREE.DoubleSide} />
-      </mesh>
-      {/* Tail feather ribs — lighter colour stripes */}
-      {[-0.5, -0.2, 0.1, 0.4, 0.7].map((a, i) => (
-        <mesh
-          key={i}
-          position={[-0.2 + Math.cos(Math.PI + a) * 0.18, 0.4 + Math.sin(Math.PI + a) * 0.18, 0]}
-          rotation={[0, 0, Math.PI + a]}
-        >
-          <boxGeometry args={[0.18, 0.02, 0.03]} />
-          <meshStandardMaterial color="#a8783a" />
-        </mesh>
-      ))}
-      {/* Neck */}
-      <mesh position={[0.15, 0.42, 0]} rotation={[0, 0, -0.4]}>
-        <cylinderGeometry args={[0.05, 0.07, 0.18, 8]} />
-        <meshStandardMaterial color="#7a4a2a" />
-      </mesh>
-      {/* Head */}
-      <mesh position={[0.27, 0.50, 0]} castShadow>
-        <sphereGeometry args={[0.08, 8, 6]} />
-        <meshStandardMaterial color="#9a5a3a" />
-      </mesh>
-      {/* Beak */}
-      <mesh position={[0.36, 0.49, 0]} rotation={[0, 0, -Math.PI / 2]}>
-        <coneGeometry args={[0.022, 0.06, 6]} />
-        <meshStandardMaterial color="#e8c050" />
-      </mesh>
-      {/* Snood — red dangle on the head */}
-      <mesh position={[0.34, 0.44, 0]}>
-        <sphereGeometry args={[0.025, 6, 6]} />
-        <meshStandardMaterial color="#d83a3a" />
-      </mesh>
-      {/* Eyes */}
-      <mesh position={[0.30, 0.53, 0.06]}>
-        <sphereGeometry args={[0.012, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.30, 0.53, -0.06]}>
-        <sphereGeometry args={[0.012, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Legs */}
-      <mesh position={[0, 0.07, 0.06]}>
-        <cylinderGeometry args={[0.02, 0.02, 0.14, 5]} />
-        <meshStandardMaterial color="#e8a050" />
-      </mesh>
-      <mesh position={[0, 0.07, -0.06]}>
-        <cylinderGeometry args={[0.02, 0.02, 0.14, 5]} />
-        <meshStandardMaterial color="#e8a050" />
-      </mesh>
-    </group>
-  );
-}
-
-// Goat — smaller than cow, light-grey body, horns, beard.
-function Goat({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.42, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.6, 0.36, 0.3]} />
-        <meshStandardMaterial color="#c8c0b0" />
-      </mesh>
-      {/* Head */}
-      <mesh position={[0.35, 0.55, 0]} castShadow>
-        <boxGeometry args={[0.22, 0.24, 0.22]} />
-        <meshStandardMaterial color="#c8c0b0" />
-      </mesh>
-      {/* Snout */}
-      <mesh position={[0.48, 0.5, 0]}>
-        <boxGeometry args={[0.06, 0.10, 0.14]} />
-        <meshStandardMaterial color="#a8a090" />
-      </mesh>
-      {/* Beard — small dangle below chin */}
-      <mesh position={[0.48, 0.41, 0]}>
-        <boxGeometry args={[0.03, 0.08, 0.04]} />
-        <meshStandardMaterial color="#f4f1de" />
-      </mesh>
-      {/* Horns — curved back */}
-      <mesh position={[0.32, 0.72, 0.08]} rotation={[0, 0, -0.5]}>
-        <coneGeometry args={[0.025, 0.16, 6]} />
-        <meshStandardMaterial color="#3a2a18" />
-      </mesh>
-      <mesh position={[0.32, 0.72, -0.08]} rotation={[0, 0, -0.5]}>
-        <coneGeometry args={[0.025, 0.16, 6]} />
-        <meshStandardMaterial color="#3a2a18" />
-      </mesh>
-      {/* Ears */}
-      <mesh position={[0.30, 0.68, 0.14]} rotation={[0, 0, 0.2]}>
-        <boxGeometry args={[0.04, 0.08, 0.03]} />
-        <meshStandardMaterial color="#c8c0b0" />
-      </mesh>
-      <mesh position={[0.30, 0.68, -0.14]} rotation={[0, 0, 0.2]}>
-        <boxGeometry args={[0.04, 0.08, 0.03]} />
-        <meshStandardMaterial color="#c8c0b0" />
-      </mesh>
-      {/* Eyes */}
-      <mesh position={[0.42, 0.59, 0.075]}>
-        <sphereGeometry args={[0.018, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.42, 0.59, -0.075]}>
-        <sphereGeometry args={[0.018, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Four legs */}
-      {[
-        [-0.20, 0.12],
-        [-0.20, -0.12],
-        [0.20, 0.12],
-        [0.20, -0.12],
-      ].map(([lx, lz], i) => (
-        <mesh key={i} position={[lx, 0.12, lz]} castShadow>
-          <boxGeometry args={[0.07, 0.24, 0.07]} />
-          <meshStandardMaterial color="#3a2a18" />
-        </mesh>
-      ))}
-      {/* Short tail */}
-      <mesh position={[-0.34, 0.46, 0]} rotation={[0, 0, 0.3]}>
-        <boxGeometry args={[0.05, 0.08, 0.05]} />
-        <meshStandardMaterial color="#c8c0b0" />
-      </mesh>
-    </group>
-  );
-}
-
-// Pig — pink body, four short legs, curly tail, big snout.
-function Pig({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.32, 0]} castShadow receiveShadow>
-        <boxGeometry args={[0.7, 0.4, 0.4]} />
-        <meshStandardMaterial color="#e8a090" />
-      </mesh>
-      {/* Head */}
-      <mesh position={[0.40, 0.36, 0]} castShadow>
-        <boxGeometry args={[0.22, 0.30, 0.32]} />
-        <meshStandardMaterial color="#e8a090" />
-      </mesh>
-      {/* Snout — flat pink disc */}
-      <mesh position={[0.52, 0.32, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <cylinderGeometry args={[0.09, 0.08, 0.05, 10]} />
-        <meshStandardMaterial color="#d88078" />
-      </mesh>
-      {/* Snout nostrils — two small dark dots */}
-      <mesh position={[0.555, 0.33, 0.04]}>
-        <sphereGeometry args={[0.013, 5, 5]} />
-        <meshBasicMaterial color="#5a3030" />
-      </mesh>
-      <mesh position={[0.555, 0.33, -0.04]}>
-        <sphereGeometry args={[0.013, 5, 5]} />
-        <meshBasicMaterial color="#5a3030" />
-      </mesh>
-      {/* Ears */}
-      <mesh position={[0.36, 0.52, 0.14]} rotation={[0, 0, 0.3]}>
-        <boxGeometry args={[0.04, 0.10, 0.05]} />
-        <meshStandardMaterial color="#d88078" />
-      </mesh>
-      <mesh position={[0.36, 0.52, -0.14]} rotation={[0, 0, 0.3]}>
-        <boxGeometry args={[0.04, 0.10, 0.05]} />
-        <meshStandardMaterial color="#d88078" />
-      </mesh>
-      {/* Eyes */}
-      <mesh position={[0.48, 0.42, 0.08]}>
-        <sphereGeometry args={[0.018, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.48, 0.42, -0.08]}>
-        <sphereGeometry args={[0.018, 5, 5]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Four short legs */}
-      {[
-        [-0.22, 0.14],
-        [-0.22, -0.14],
-        [0.20, 0.14],
-        [0.20, -0.14],
-      ].map(([lx, lz], i) => (
-        <mesh key={i} position={[lx, 0.08, lz]} castShadow>
-          <boxGeometry args={[0.08, 0.16, 0.08]} />
-          <meshStandardMaterial color="#d88078" />
-        </mesh>
-      ))}
-      {/* Curly tail */}
-      <mesh position={[-0.38, 0.42, 0]} rotation={[0, 0, 1.2]}>
-        <torusGeometry args={[0.05, 0.018, 5, 10]} />
-        <meshStandardMaterial color="#d88078" />
-      </mesh>
-    </group>
-  );
-}
-
-// Scarecrow — cross-shaped wooden post with straw-stuffed clothes
-// and a wide hat. Belongs in the cornfield.
-function Scarecrow({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Vertical post */}
-      <mesh position={[0, 0.9, 0]} castShadow>
-        <boxGeometry args={[0.06, 1.8, 0.06]} />
-        <meshStandardMaterial color="#6b4a2a" />
-      </mesh>
-      {/* Horizontal cross-arm */}
-      <mesh position={[0, 1.2, 0]} castShadow>
-        <boxGeometry args={[1.0, 0.05, 0.05]} />
-        <meshStandardMaterial color="#6b4a2a" />
-      </mesh>
-      {/* Shirt — plaid (use a dull red) */}
-      <mesh position={[0, 1.15, 0]} castShadow>
-        <boxGeometry args={[0.9, 0.45, 0.18]} />
-        <meshStandardMaterial color="#a83a3a" />
-      </mesh>
-      {/* Pants */}
-      <mesh position={[0, 0.78, 0]} castShadow>
-        <boxGeometry args={[0.35, 0.45, 0.18]} />
-        <meshStandardMaterial color="#5a4a2a" />
-      </mesh>
-      {/* Straw hands poking out the ends of the cross-arm */}
-      <mesh position={[-0.5, 1.20, 0]}>
-        <sphereGeometry args={[0.07, 8, 6]} />
-        <meshStandardMaterial color="#d4b878" />
-      </mesh>
-      <mesh position={[0.5, 1.20, 0]}>
-        <sphereGeometry args={[0.07, 8, 6]} />
-        <meshStandardMaterial color="#d4b878" />
-      </mesh>
-      {/* Head — burlap sack */}
-      <mesh position={[0, 1.55, 0]} castShadow>
-        <sphereGeometry args={[0.16, 10, 8]} />
-        <meshStandardMaterial color="#d4b878" />
-      </mesh>
-      {/* Face — two button eyes + stitched mouth */}
-      <mesh position={[-0.05, 1.58, 0.14]}>
-        <boxGeometry args={[0.025, 0.025, 0.01]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0.05, 1.58, 0.14]}>
-        <boxGeometry args={[0.025, 0.025, 0.01]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      <mesh position={[0, 1.48, 0.14]}>
-        <boxGeometry args={[0.06, 0.012, 0.01]} />
-        <meshBasicMaterial color="#1a1a1a" />
-      </mesh>
-      {/* Hat — wide brim + crown (straw colour) */}
-      <mesh position={[0, 1.75, 0]} castShadow>
-        <cylinderGeometry args={[0.30, 0.30, 0.025, 12]} />
-        <meshStandardMaterial color="#b89060" />
-      </mesh>
-      <mesh position={[0, 1.83, 0]} castShadow>
-        <cylinderGeometry args={[0.13, 0.16, 0.14, 12]} />
-        <meshStandardMaterial color="#b89060" />
-      </mesh>
-      {/* Hat band */}
-      <mesh position={[0, 1.78, 0]}>
-        <cylinderGeometry args={[0.165, 0.165, 0.025, 12]} />
-        <meshStandardMaterial color="#3a2a18" />
-      </mesh>
-    </group>
-  );
-}
-
-// Corn stalk — vertical stick with leaves and a yellow cob.
-// Cheap to draw, used many times in the corn field.
-function CornStalk({
-  x,
-  z,
-  scale = 1,
-}: {
-  x: number;
-  z: number;
-  scale?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} scale={scale}>
-      {/* Stalk */}
-      <mesh position={[0, 0.55, 0]} castShadow>
-        <cylinderGeometry args={[0.03, 0.035, 1.1, 5]} />
-        <meshStandardMaterial color="#5fa838" />
-      </mesh>
-      {/* Two leaves */}
-      <mesh position={[0.10, 0.7, 0]} rotation={[0, 0, -0.5]}>
-        <boxGeometry args={[0.22, 0.05, 0.03]} />
-        <meshStandardMaterial color="#5fa838" />
-      </mesh>
-      <mesh position={[-0.10, 0.5, 0.05]} rotation={[0.3, 0, 0.6]}>
-        <boxGeometry args={[0.20, 0.04, 0.03]} />
-        <meshStandardMaterial color="#5fa838" />
-      </mesh>
-      {/* Corn cob — bright yellow at the top */}
-      <mesh position={[0.06, 0.85, 0]} rotation={[0, 0, -0.3]}>
-        <cylinderGeometry args={[0.04, 0.05, 0.16, 6]} />
-        <meshStandardMaterial color="#f4d83a" />
-      </mesh>
-      {/* Tassel — small spike on top */}
-      <mesh position={[0, 1.14, 0]} castShadow>
-        <coneGeometry args={[0.03, 0.12, 5]} />
-        <meshStandardMaterial color="#c8b878" />
-      </mesh>
-    </group>
-  );
-}
-
-// Small windmill (well-pump style) — tall tower + rotating blades.
-function Windmill({
-  x,
-  z,
-  rotation = 0,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-}) {
-  const bladesRef = useRef<THREE.Group>(null);
-  useFrame((_, dt) => {
-    if (bladesRef.current) bladesRef.current.rotation.z += dt * 0.6;
-  });
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Tower — four-legged steel frame, drawn as a tapered cone */}
-      <mesh position={[0, 1.6, 0]} castShadow>
-        <cylinderGeometry args={[0.05, 0.32, 3.2, 4]} />
-        <meshStandardMaterial color="#6e6a5e" wireframe />
-      </mesh>
-      {/* Solid centre pole for the rotor to mount on */}
-      <mesh position={[0, 1.6, 0]} castShadow>
-        <cylinderGeometry args={[0.04, 0.04, 3.2, 6]} />
-        <meshStandardMaterial color="#6e6a5e" />
-      </mesh>
-      {/* Hub — the rotor body at the top */}
-      <mesh position={[0, 3.3, 0]} castShadow>
-        <cylinderGeometry args={[0.08, 0.08, 0.2, 12]} />
-        <meshStandardMaterial color="#3e3a30" />
-      </mesh>
-      {/* Tail vane — points to wind direction */}
-      <mesh position={[-0.4, 3.3, 0]}>
-        <boxGeometry args={[0.45, 0.25, 0.02]} />
-        <meshStandardMaterial color="#a83a3a" side={THREE.DoubleSide} />
-      </mesh>
-      {/* Rotating blade assembly */}
-      <group ref={bladesRef} position={[0, 3.3, 0.12]}>
-        {Array.from({ length: 8 }).map((_, i) => {
-          const a = (i / 8) * Math.PI * 2;
-          return (
-            <mesh
-              key={i}
-              position={[Math.cos(a) * 0.24, Math.sin(a) * 0.24, 0]}
-              rotation={[0, 0, a + Math.PI / 2]}
-              castShadow
-            >
-              <boxGeometry args={[0.10, 0.42, 0.02]} />
-              <meshStandardMaterial color="#dcd0a8" />
-            </mesh>
-          );
-        })}
-      </group>
-    </group>
-  );
-}
-
-// Single rail-fence section — two horizontal rails on two posts.
-// Length is along x; rotate via prop to lay it east-west, etc.
-function FenceSection({
-  x,
-  z,
-  rotation = 0,
-  length = 2,
-}: {
-  x: number;
-  z: number;
-  rotation?: number;
-  length?: number;
-}) {
-  return (
-    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
-      {/* Two posts at the ends */}
-      <mesh position={[-length / 2, 0.36, 0]} castShadow>
-        <boxGeometry args={[0.07, 0.72, 0.07]} />
-        <meshStandardMaterial color="#6b4a2a" />
-      </mesh>
-      <mesh position={[length / 2, 0.36, 0]} castShadow>
-        <boxGeometry args={[0.07, 0.72, 0.07]} />
-        <meshStandardMaterial color="#6b4a2a" />
-      </mesh>
-      {/* Two rails between them */}
-      <mesh position={[0, 0.55, 0]} castShadow>
-        <boxGeometry args={[length, 0.05, 0.04]} />
-        <meshStandardMaterial color="#8a6a3a" />
-      </mesh>
-      <mesh position={[0, 0.28, 0]} castShadow>
-        <boxGeometry args={[length, 0.05, 0.04]} />
-        <meshStandardMaterial color="#8a6a3a" />
-      </mesh>
-    </group>
-  );
-}
 
 // Single low-poly mountain — a flat-shaded cone with an optional
 // snow cap. The snow cap covers the top ~35% of the peak and
@@ -6329,23 +5662,17 @@ function FaceBillboard({
     if (!mesh) return;
     const c = charRef.current;
 
-    // Pick which face texture to show this frame. Simplified to
-    // three cases since the body-rotation override now always
-    // points the body's front at the camera (see Character):
-    //   - flee / ballooning: scared face
-    //   - shooting: back of head (camera vantage is behind the
-    //     shooter, who faces the target south; body angle is set
-    //     by the shooting state machine, NOT the camera-facing
-    //     override — so back-of-head is the matching texture)
-    //   - otherwise: front face
-    // For non-Sonny characters, texBack === texFront so the
-    // shooting case still produces a recognisable face.
+    // Pick which face texture to show this frame. With the gun-range
+    // shooting easter egg removed and the body-rotation override
+    // pointing the body's front at the camera in every other mode
+    // (see Character), back-of-head is no longer reachable — the
+    // face only needs front vs scared. The texBack texture is still
+    // loaded (kept for any future behind-camera modes) but unused.
     let wantTex: THREE.Texture = texFront;
     if (c.mode === "ballooning" || c.mode === "flee") {
       wantTex = texScared;
-    } else if (c.mode === "shooting") {
-      wantTex = texBack;
     }
+    void texBack;
     if (matRef.current && matRef.current.map !== wantTex) {
       matRef.current.map = wantTex;
       matRef.current.needsUpdate = true;
@@ -6409,7 +5736,6 @@ function FaceBillboard({
 function Character({
   charRef,
   golfRef,
-  rangeRef,
   balloonRef,
   characterId,
   visible = true,
@@ -6417,7 +5743,6 @@ function Character({
 }: {
   charRef: React.MutableRefObject<CharState>;
   golfRef: React.MutableRefObject<GolfState>;
-  rangeRef: React.MutableRefObject<RangeState>;
   balloonRef: React.MutableRefObject<BalloonState>;
   characterId: CharacterId;
   visible?: boolean;
@@ -6452,18 +5777,6 @@ function Character({
   // (not the right shoulder) so both hands appear to grip a centered club.
   // Rotates in sync with the shoulders during the golf swing.
   const clubHolderRef = useRef<THREE.Group>(null);
-  // Hand-cannon holder — body-centred pivot at shoulder height, the
-  // gun is parented here so both hands appear to grip it (shoulders
-  // tilt inward during shooting). Rotates with the arm pose.
-  const gunHolderRef = useRef<THREE.Group>(null);
-  const gunRef = useRef<THREE.Group>(null);
-  const muzzleFlashRef = useRef<THREE.Group>(null);
-  // Gunshot sound — fires once on the rising edge of the fire window.
-  // The closure owns its own AudioContext, lazily created on first
-  // call (the first click on the range is a user gesture, so the
-  // context resumes cleanly).
-  const playGunshotRef = useRef(makeGunshotSoundPlayer());
-  const prevMuzzleVisibleRef = useRef(false);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -6472,36 +5785,19 @@ function Character({
     if (clubRef.current) {
       clubRef.current.visible = c.mode === "golfing";
     }
-    if (gunRef.current) {
-      gunRef.current.visible = c.mode === "shooting";
-    }
-
-    // Gunshot sound trigger — fire ONCE on the rising edge of the
-    // muzzle-flash visibility window (rt crosses 0.25 going up).
-    // Evaluated every frame regardless of mode so that prevMuzzleVisible
-    // resets cleanly outside the shooting sequence and the next
-    // session re-triggers correctly.
-    const muzzleVisibleNow =
-      c.mode === "shooting" &&
-      rangeRef.current.t > 0.25 &&
-      rangeRef.current.t < 0.30;
-    if (muzzleVisibleNow && !prevMuzzleVisibleRef.current) {
-      playGunshotRef.current();
-    }
-    prevMuzzleVisibleRef.current = muzzleVisibleNow;
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
       rootRef.current.position.z = c.z;
       // y is driven by the game tick for ride (track height), golf
-      // (celebration jumps), ballooning (rising / falling), and shooting
-      // (recoil topple arc); zero on foot otherwise. While riding, lower
-      // the character so the hips (at body-local y=0.66) sit on the
-      // cart's top surface (cart-local y=0.36 × PARK_SCALE) rather than
-      // standing on top.
+      // (celebration jumps), ballooning (rising / falling), and tubing
+      // (rider seat height on the tube); zero on foot otherwise. While
+      // riding the coaster, lower the character so the hips (at
+      // body-local y=0.66) sit on the cart's top surface (cart-local
+      // y=0.36 × PARK_SCALE) rather than standing on top.
       rootRef.current.position.y =
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
-          : c.y; // covers golfing / ballooning / shooting jumps AND play-mode jumps
+          : c.y; // covers golfing / ballooning / tubing AND play-mode jumps
       // Show / hide the whole player avatar based on the `visible`
       // prop — used to hide the player Character in the academy
       // (where the 3 selectable TrainingPartners take over the mat).
@@ -6514,18 +5810,17 @@ function Character({
       // visible, consistent across characters, no "head on backwards"
       // edge cases, simpler code. Movement direction is still
       // communicated by position change + footstep animation.
-      // Special-action modes (ride / golf / ballooning / shooting)
+      // Special-action modes (ride / golf / ballooning / tubing)
       // ignore the override because they use scripted camera
-      // vantages tied to the body's actual heading (e.g., shooting
-      // body faces the target south while camera is behind the
-      // shooter — Sonny's `texBack` photo handles the back-of-head
-      // for those vantages).
+      // vantages tied to the body's actual heading (e.g., the
+      // tube auto-rotates to face the curve tangent so the rider
+      // points down the river).
       let wantAngle = c.angle;
       const isSpecial =
         c.mode === "riding" ||
         c.mode === "golfing" ||
         c.mode === "ballooning" ||
-        c.mode === "shooting";
+        c.mode === "tubing";
       if (!isSpecial) {
         const camToCharX = c.x - state.camera.position.x;
         const camToCharZ = c.z - state.camera.position.z;
@@ -6625,99 +5920,24 @@ function Character({
       return;
     }
 
-    if (c.mode === "shooting") {
-      const rt = rangeRef.current.t;
-      // ── Body tilt (the topple) ─────────────────────────────────
-      // Positive rotation.x = forward bend (head moves in +Z, the
-      // facing direction). Negative = backward fall (head moves in
-      // -Z, away from facing direction = north). The character faces
-      // south (+Z, toward the target) so a backward fall is exactly
-      // what we want.
-      //
-      // The camera sits BEHIND the shooter at y=3.5 looking down the
-      // lane at the targets — so when the body tilts to -π/2 (prone),
-      // the head ends up at y=0, z=40.5 (north of firing line) which
-      // is well below the bottom of the frame at this vantage. That's
-      // the "fall out of frame" comedic beat. Then the body snaps
-      // back to upright (no lerp) for the "pop up", and char walks
-      // home as usual.
-      //
-      //   aim       (0.00..0.25): upright, slight forward shooter lean
-      //   fire      (0.25..0.30): brace, tiny backward twitch
-      //   topple    (0.30..0.45): tip backward all the way to -π/2 (prone)
-      //   off-frame (0.45..0.85): body held prone — Sonny is below the
-      //                           camera's frame, so we see only the
-      //                           targets and an empty firing line.
-      //                           Comedic dead-beat.
-      //   pop-up    (0.85..1.00): INSTANT snap back to upright (no lerp).
-      //                           No relax phase — the easter egg ends
-      //                           with mode=idle and walkTo(plaza).
-      let bodyTilt = 0;
-      if (rt < 0.25) {
-        bodyTilt = 0.08; // small forward stance lean
-      } else if (rt < 0.30) {
-        const p = (rt - 0.25) / 0.05;
-        bodyTilt = 0.08 - p * 0.20; // 0.08 → -0.12
-      } else if (rt < 0.45) {
-        const p = (rt - 0.30) / 0.15;
-        // -0.12 → -π/2 with an ease-out so the topple accelerates
-        const eased = 1 - (1 - p) * (1 - p);
-        bodyTilt = -0.12 + eased * (-Math.PI / 2 + 0.12);
-      } else if (rt < 0.85) {
-        // Off-frame beat — body prone, Sonny invisible (camera doesn't
-        // follow him below the bottom edge).
-        bodyTilt = -Math.PI / 2;
-      } else {
-        // INSTANT pop-up — body snaps to upright, no lerp. The sudden
-        // reappearance is the punchline of the beat.
-        bodyTilt = 0;
-      }
-      if (bodyRef.current) {
-        bodyRef.current.rotation.x = bodyTilt;
-        bodyRef.current.position.y = 0;
-      }
-
-      // ── Arms (two-handed grip) ─────────────────────────────────
-      // Shoulders extended forward + slightly inward so both hands
-      // meet at the body-centre gun. Hold the pose through aim, fire,
-      // topple, and the off-frame beat. Drop the arms on pop-up so
-      // Sonny looks normal again when he reappears.
-      const AIM_X = -Math.PI / 2.3;   // forward extension (~78°)
-      const AIM_INWARD = 0.48;        // bring hands together
-      let armX = AIM_X;
-      let armZ_inward = AIM_INWARD;
-      if (rt >= 0.85) {
-        // Pop-up — arms instantly back to sides (matches body snap)
-        armX = 0;
-        armZ_inward = 0;
-      }
+    if (c.mode === "tubing") {
+      // Seated-on-tube pose: legs stick out forward (sitting in the
+      // donut), arms down/relaxed at sides, body upright. A small
+      // sine wave drives a gentle bob to suggest the river current.
+      const bob = Math.sin(t * 1.8) * 0.04;
+      if (leftHipRef.current) leftHipRef.current.rotation.x = -Math.PI / 2;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = -Math.PI / 2;
       if (leftShoulderRef.current) {
-        leftShoulderRef.current.rotation.x = armX;
-        leftShoulderRef.current.rotation.z = armZ_inward;
+        leftShoulderRef.current.rotation.x = -0.15;
+        leftShoulderRef.current.rotation.z = 0;
       }
       if (rightShoulderRef.current) {
-        rightShoulderRef.current.rotation.x = armX;
-        rightShoulderRef.current.rotation.z = -armZ_inward;
+        rightShoulderRef.current.rotation.x = -0.15;
+        rightShoulderRef.current.rotation.z = 0;
       }
-      // Gun-holder follows the arms — rotate forward by AIM_X so the
-      // barrel ends up pointing south (toward the target) when arms
-      // are up; snaps back when the arms drop.
-      if (gunHolderRef.current) {
-        gunHolderRef.current.rotation.x = armX;
-        gunHolderRef.current.rotation.z = 0;
-      }
-
-      // ── Legs ───────────────────────────────────────────────────
-      // Straight throughout. During the off-frame beat the whole body
-      // group rotates so the legs naturally stick out south — no
-      // per-hip rotation needed.
-      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
-      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
-
-      // ── Muzzle flash ───────────────────────────────────────────
-      // Brief emissive cone visible only during the fire window.
-      if (muzzleFlashRef.current) {
-        muzzleFlashRef.current.visible = rt > 0.25 && rt < 0.30;
+      if (bodyRef.current) {
+        bodyRef.current.rotation.x = 0;
+        bodyRef.current.position.y = bob;
       }
       return;
     }
@@ -7054,59 +6274,6 @@ function Character({
           )}
         </group>
 
-        {/* Hand cannon — chunky cartoony .50 cal pistol on a body-centre
-            holder, same shoulder-height pivot trick as the golf club so
-            it appears to be gripped two-handed. When the gunHolderRef
-            rotates forward (AIM_X ≈ -π/2.3), the gun lifts to firing
-            position with the barrel pointing south (toward the target).
-            Hidden outside shooting mode. */}
-        <group ref={gunHolderRef} position={[0, 1.22, 0.05]}>
-          <group ref={gunRef} visible={false} position={[0, -0.6, 0.02]}>
-            {/* Barrel — thick cylinder. Oriented along local -Y (default
-                cylinderGeometry axis) so when the holder is rotated
-                forward by AIM_X, the barrel ends up pointing forward
-                in world space (matches the club shaft convention). */}
-            <mesh position={[0, -0.18, 0]} castShadow>
-              <cylinderGeometry args={[0.045, 0.045, 0.42, 14]} />
-              <meshStandardMaterial color="#26262c" metalness={0.65} roughness={0.4} />
-            </mesh>
-            {/* Frame / slide — boxy top above the grip */}
-            <mesh position={[0, -0.04, 0]} castShadow>
-              <boxGeometry args={[0.07, 0.18, 0.10]} />
-              <meshStandardMaterial color="#2a2a30" metalness={0.6} roughness={0.4} />
-            </mesh>
-            {/* Front sight — tiny block on the muzzle end */}
-            <mesh position={[0, -0.38, 0.05]}>
-              <boxGeometry args={[0.025, 0.04, 0.03]} />
-              <meshStandardMaterial color="#1a1a1a" />
-            </mesh>
-            {/* Grip — angled back & down from the frame */}
-            <mesh position={[0, 0.06, -0.07]} rotation={[Math.PI * 0.12, 0, 0]} castShadow>
-              <boxGeometry args={[0.075, 0.22, 0.08]} />
-              <meshStandardMaterial color="#3a2818" roughness={0.85} />
-            </mesh>
-            {/* Trigger guard — small loop under the frame */}
-            <mesh position={[0, 0.02, -0.005]} rotation={[Math.PI / 2, 0, 0]}>
-              <torusGeometry args={[0.045, 0.008, 8, 16, Math.PI]} />
-              <meshStandardMaterial color="#1a1a1a" />
-            </mesh>
-            {/* Muzzle flash — brief emissive cone at the barrel tip.
-                Visibility is toggled per-frame by the shooting pose
-                block (rt > 0.20 && rt < 0.25). */}
-            <group ref={muzzleFlashRef} visible={false} position={[0, -0.40, 0]}>
-              <mesh>
-                <coneGeometry args={[0.12, 0.28, 14]} />
-                <meshBasicMaterial color="#fff1a8" toneMapped={false} transparent opacity={0.9} />
-              </mesh>
-              {/* Inner brighter core */}
-              <mesh>
-                <sphereGeometry args={[0.09, 12, 8]} />
-                <meshBasicMaterial color="#ffffff" toneMapped={false} transparent opacity={0.85} />
-              </mesh>
-            </group>
-          </group>
-        </group>
-
         {/* Golf club — child of a body-centered pivot so it appears to be
             gripped by BOTH hands meeting in front of the body (the shoulders
             tilt inward during golf so the hands meet near x=0). The pivot
@@ -7210,11 +6377,10 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
   // Hot-air balloon
   { name: "balloon", target: new THREE.Vector3(10, 4, 6), camOffset: new THREE.Vector3(7, 5, 8) },
-  // Gun range — covered firing platform + three targets + dirt berm.
-  // Vantage from the north-east, slightly elevated, looking south-
-  // west across the lanes so the canopy, target row, and berm all
-  // fit in frame at once.
-  { name: "range", target: new THREE.Vector3(RANGE_CENTER.x, 2.5, (RANGE_FIRING_LINE.z + RANGE_TARGET.z) / 2), camOffset: new THREE.Vector3(12, 9, -12) },
+  // Lazy river — curved oval loop with sandy beach + palms. Vantage
+  // from the north-east, slightly elevated, looking south-west
+  // across the water so the full loop + boarding deck fit in frame.
+  { name: "river", target: new THREE.Vector3(RIVER_CENTER.x, 1.5, RIVER_CENTER.z), camOffset: new THREE.Vector3(14, 12, -14) },
   // Golf course
   { name: "golf", target: new THREE.Vector3(-14, 2, 17), camOffset: new THREE.Vector3(10, 8, 12) },
 ];
@@ -7511,16 +6677,14 @@ function CameraRig({
       wantTX = GOLF_MIDPOINT.x;
       wantTZ = GOLF_MIDPOINT.z;
       wantTY = 1;
-    } else if (c.mode === "shooting") {
-      // Look down the lane at the target row. With the camera placed
-      // north of the firing line (see wantCam below), this puts the
-      // shooter in the lower half of frame, the gun pointing into the
-      // distance, and the targets centred. When Sonny topples
-      // backward the camera stays fixed on the targets — he falls
-      // off the bottom of the frame, which is the comedic beat.
-      wantTX = RANGE_FIRING_LINE.x;
-      wantTZ = RANGE_TARGET.z;
-      wantTY = 1.5;
+    } else if (c.mode === "tubing") {
+      // Chase the tube around the river: target lerps to char (the
+      // rider's seat) so they stay framed regardless of where on
+      // the loop they are. Y is bumped slightly above water so the
+      // camera tilts down a hair to catch the foam and palms.
+      wantTX = c.x;
+      wantTZ = c.z;
+      wantTY = 1.2;
     } else if (c.mode === "riding") {
       // Lock the target to the park centre (slightly elevated to
       // include the loop) so the fixed cinematic vantage frames the
@@ -7580,26 +6744,20 @@ function CameraRig({
         z: GOLF_MIDPOINT.z + 3.2,
       };
       camHijackedRef.current = true;
-    } else if (c.mode === "shooting") {
-      // Behind-the-shooter vantage — camera ~5u north of the firing
-      // line (= behind Sonny, who faces south), at y=2.0 so the
-      // line of sight to the target (y=1.05 at z=54) passes UNDER
-      // the canopy roof (y=3.0-3.1, z=39.3-44.7). At y=3.5 the line
-      // intersected the canopy and the targets were occluded; at
-      // y=2.0 the canopy + "RANGE" sign sit cleanly off the top of
-      // frame and the targets are visible dead-center. 1u east bias
-      // breaks the perfect 180° face-billboard flip on the camera.
-      //
-      // Critical to the joke: the camera STAYS HERE during the
-      // topple — it doesn't pan down to follow Sonny when he falls.
-      // From y=2 the prone-head depth (~3.6) puts him 126% below
-      // center → comfortably off the bottom edge for the off-frame
-      // beat, then he pops back upright in frame.
+    } else if (c.mode === "tubing") {
+      // Chase cam behind the tube — position 4.5u BEHIND the rider
+      // along their current direction of travel, lifted to y=3.0 so
+      // the camera looks slightly down at the water + tube + palms.
+      // Tangent is derived from the body angle (already set to the
+      // curve's tangent direction by the tubing tick), so the cam
+      // tracks the tube smoothly around every bend without snapping.
+      const ang = c.angle;
       wantCam = {
-        x: RANGE_FIRING_LINE.x + 1,
-        y: 2.0,
-        z: RANGE_FIRING_LINE.z - 5,
+        x: c.x - Math.sin(ang) * 4.5,
+        y: 3.0,
+        z: c.z - Math.cos(ang) * 4.5,
       };
+      camLerpSpeed = 3.5;
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
       // Fixed wide vantage south-east of the park, framing the
@@ -9530,81 +8688,6 @@ function makeMoveSoundPlayer() {
   };
 }
 
-// Synthesized .50 cal hand-cannon shot. Two noise bursts layered:
-// a fast high-frequency CRACK (the initial bang / supersonic snap)
-// and a slower low-frequency BOOM (the propellant blast carrying
-// across the range). Same Web Audio pattern as the chess sound —
-// no external file, lazy AudioContext, silent failure.
-function makeGunshotSoundPlayer() {
-  let ctx: AudioContext | null = null;
-  return function playGunshotSound() {
-    if (typeof window === "undefined") return;
-    try {
-      const Ctx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-      if (!Ctx) return;
-      if (!ctx) ctx = new Ctx();
-      if (ctx.state === "suspended") void ctx.resume();
-      const sampleRate = ctx.sampleRate;
-
-      // CRACK — short, high-frequency noise burst with fast decay
-      const crackDur = 0.09;
-      const crackBuf = ctx.createBuffer(
-        1,
-        Math.floor(sampleRate * crackDur),
-        sampleRate
-      );
-      const crackData = crackBuf.getChannelData(0);
-      for (let i = 0; i < crackData.length; i++) {
-        const t = i / sampleRate;
-        const envelope = Math.exp(-t * 55); // fast percussive decay
-        crackData[i] = (Math.random() * 2 - 1) * envelope;
-      }
-      const crackSrc = ctx.createBufferSource();
-      crackSrc.buffer = crackBuf;
-      const crackFilter = ctx.createBiquadFilter();
-      crackFilter.type = "bandpass";
-      crackFilter.frequency.value = 2400;
-      crackFilter.Q.value = 1.1;
-      const crackGain = ctx.createGain();
-      crackGain.gain.value = 0.45;
-      crackSrc.connect(crackFilter);
-      crackFilter.connect(crackGain);
-      crackGain.connect(ctx.destination);
-      crackSrc.start();
-
-      // BOOM — low-frequency rumble with slower decay
-      const boomDur = 0.40;
-      const boomBuf = ctx.createBuffer(
-        1,
-        Math.floor(sampleRate * boomDur),
-        sampleRate
-      );
-      const boomData = boomBuf.getChannelData(0);
-      for (let i = 0; i < boomData.length; i++) {
-        const t = i / sampleRate;
-        const envelope = Math.exp(-t * 7);
-        boomData[i] = (Math.random() * 2 - 1) * envelope;
-      }
-      const boomSrc = ctx.createBufferSource();
-      boomSrc.buffer = boomBuf;
-      const boomFilter = ctx.createBiquadFilter();
-      boomFilter.type = "lowpass";
-      boomFilter.frequency.value = 160;
-      boomFilter.Q.value = 0.7;
-      const boomGain = ctx.createGain();
-      boomGain.gain.value = 0.55;
-      boomSrc.connect(boomFilter);
-      boomFilter.connect(boomGain);
-      boomGain.connect(ctx.destination);
-      boomSrc.start();
-    } catch {
-      // Silent failure — never break the game over a sound effect.
-    }
-  };
-}
 
 // Clone a chess.js instance while PRESERVING the move history. The
 // obvious-looking `new Chess(game.fen())` only carries the position
