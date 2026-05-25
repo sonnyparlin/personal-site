@@ -213,11 +213,11 @@ const GATOR_RETURN_SPEED = 1.4;
 const ARRIVE_DIST = 0.18;
 const DOOR_OPEN_SPEED = 3;
 const DOOR_CLOSE_SPEED = 4;
-const GATOR_HOME = { x: 11.5, z: -8, angle: 0.6 };
+const GATOR_HOME = { x: 9, z: -8, angle: 0.6 };
 // Lake footprint (matches the Lake component in Environment). Used to
 // auto-trigger the gator chase whenever the character wanders within
 // striking distance of the water.
-const LAKE_CENTER = { x: 11.5, z: -8 };
+const LAKE_CENTER = { x: 9, z: -8 };
 const LAKE_RADIUS = 2.8;
 const WATER_TRIGGER_RADIUS = LAKE_RADIUS + 1.2; // shore + a small buffer
 const CHAR_RADIUS = 0.32; // for building collision
@@ -277,30 +277,34 @@ const PUTT_SUNK_BEAT = 1.4; // sec of celebration before respawn
 const PUTT_MISSED_BEAT = 0.6; // sec of pause before ball respawns at tee
 const PUTT_BALL_Y = 0.08; // ball sits a hair above the green
 
-// Lazy-river easter egg (south side, replaces the old gun range
-// which replaced the old farm). A curved oval river loops around
-// the south footprint; the character walks to the boarding spot,
-// climbs into a Gracie-red inner tube, and floats around. Steering
-// is sideways drift via A/D in play mode or the touch arrows.
+// Lazy-river easter egg — a huge loop that spans the whole map and
+// encircles the plaza + buildings + lake + balloon + golf course.
+// Carnival sits in the NW corner just outside the loop (between the
+// river outer west and the road). The character walks to the
+// boarding deck on the south inner bank near the plaza, climbs
+// into a Gracie-red inner tube, and floats around. Steering is
+// sideways drift via A/D in play mode or the touch arrows.
 //
 // Centre of the river loop in world coords. The curve is defined
 // in local units (relative to this centre) and translated through
 // at render / sample time, matching the convention used by the
 // amusement-park coaster.
-const RIVER_CENTER = { x: -3, z: 50 };
-// Boarding spot — north side of the river, on grass, just outside
-// the water so the walk-up doesn't try to step on a tube.
-const RIVER_ENTRY = { x: -3, z: 40.5 };
+const RIVER_CENTER = { x: -3, z: 5 };
+// Boarding spot — south side of the inner bank, just north of the
+// plaza. The kid walks south a few units and auto-boards.
+const RIVER_ENTRY = { x: -3, z: 30 };
 // Ride physics. Current speed is in "parameter units" per second
-// (t advances by RIVER_CURRENT_SPEED * dt). A medium current of
-// 0.10 gives a 10-second lap, slow enough for kids to grab belts.
-const RIVER_CURRENT_SPEED = 0.10;
+// (t advances by RIVER_CURRENT_SPEED * dt). 0.06/sec → ~17 sec per
+// lap on the big-loop perimeter — challenging enough that the kid
+// has to actively steer to catch each belt before it floats past.
+const RIVER_CURRENT_SPEED = 0.06;
 // Sideways drift rate when the kid holds A/D — in offset units per
-// second. Clamped to [-1, +1] (river half-width).
-const RIVER_DRIFT_SPEED = 0.9;
+// second. Clamped to [-1, +1] (river half-width). Bumped from 0.9
+// to keep steering responsive at the higher current speed.
+const RIVER_DRIFT_SPEED = 1.2;
 // Visual half-width of the river channel (how far the tube can drift
 // before clamping). World units.
-const RIVER_HALF_WIDTH = 2.5;
+const RIVER_HALF_WIDTH = 3;
 
 // Tiny play-mode demo: 5 plaza-area black belts scattered around
 // the world at ground level, plus 3 more that float in the lazy
@@ -369,8 +373,8 @@ const CHARACTER_DATA: Record<CharacterId, CharacterMeta> = {
 // the same southern area the gun range used to. Sampled at N points
 // and fed into a closed CatmullRomCurve3 so the tube can move along
 // it smoothly.
-const RIVER_RX = 11; // x half-width (oval east-west extent)
-const RIVER_RZ = 7.5; // z half-depth (oval north-south extent)
+const RIVER_RX = 22; // x half-width (oval east-west extent)
+const RIVER_RZ = 30; // z half-depth (oval north-south extent)
 const RIVER_CURVE = (() => {
   const N = 96;
   const pts: THREE.Vector3[] = [];
@@ -391,16 +395,23 @@ const RIVER_CURVE = (() => {
   return new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
 })();
 
-// 3 black belts floating in the river, staggered across the channel
-// width (left edge → centre → right edge) at different points around
-// the loop. Kid has to actively steer left/right with the tube
-// controls to grab all three. Belt sample t and offset are paired
-// so the pickup geometry's world position can be computed from the
-// curve sample without remounting the meshes each frame.
+// 8 black belts floating in the river, staggered across the channel
+// width and spread evenly around the full loop. Kid has to actively
+// steer to catch each one before it drifts past — the bigger loop
+// + faster current means belts come up quickly, so the offsets
+// alternate sides so consecutive belts force back-and-forth steering.
+// Belt sample t + offset are paired so the pickup geometry's world
+// position can be computed from the curve sample without remounting
+// the meshes each frame.
 const RIVER_BELT_PICKUPS: { t: number; offset: number; label: string }[] = [
-  { t: 0.18, offset: -0.7, label: "river-1-left" },   // east leg, near left bank
-  { t: 0.50, offset:  0.0, label: "river-2-mid" },    // far side, centre
-  { t: 0.82, offset:  0.7, label: "river-3-right" },  // west leg, near right bank
+  { t: 0.05, offset:  0.6, label: "river-1" },
+  { t: 0.18, offset: -0.7, label: "river-2" },
+  { t: 0.30, offset:  0.5, label: "river-3" },
+  { t: 0.42, offset: -0.5, label: "river-4" },
+  { t: 0.55, offset:  0.7, label: "river-5" },
+  { t: 0.68, offset: -0.6, label: "river-6" },
+  { t: 0.80, offset:  0.4, label: "river-7" },
+  { t: 0.92, offset: -0.3, label: "river-8" },
 ];
 
 // Hot-air balloon easter egg (SE quadrant — south of the gator, right
@@ -448,7 +459,7 @@ const ADV_BALLOON_DESCENT_RATE = 4.0;  // units/sec during returning
 const ADV_RETURN_TRAVIS = { x: BALLOON_POSITION.x + 1.7, z: BALLOON_POSITION.z + 0.4 };
 
 // Amusement park
-const PARK = { x: -17, z: -19 };
+const PARK = { x: -21, z: -38 };
 // Visual scale applied to the entire AmusementPark group + the
 // CoasterCart so the character (~2 units tall) reads as a normal
 // rider rather than dwarfing the cart and rides. Local geometry
@@ -457,7 +468,7 @@ const PARK = { x: -17, z: -19 };
 // offset) multiplies through PARK_SCALE. Park width is constrained
 // horizontally by the road (x≈-27.5) on the west and JIU JITSU
 // (x≈-7.1) on the east, so growth happens mostly in the z direction.
-const PARK_SCALE = 2.5;
+const PARK_SCALE = 1.4;
 const COASTER_RX = 3.5;
 const COASTER_RZ = 4;
 const COASTER_Y_BASE = 1.5;
@@ -614,7 +625,6 @@ const OBSTACLES: { x: number; z: number; r: number }[] = [
   { x: -22, z:  28, r: 3.5 * 1.5 },
   { x:   0, z: -32, r: 3.5 * 1.8 },
   { x: -12, z: -34, r: 3.5 * 1.3 },
-  { x:  10, z:  30, r: 3.5 * 1.3 },
   { x: -22, z:  72, r: 3.5 * 1.4 },
   { x:  14, z:  73, r: 3.5 * 1.5 },
   { x:  -3, z:  84, r: 3.5 * 1.6 },
@@ -2892,19 +2902,19 @@ function Environment({
       <ParkedCar z={36} color="#506478" flipped />
       <ParkedCar z={52} color="#9a4040" />
       {/* Palms scattered along the beach for that coastal feel. */}
-      <PalmTree position={[19.5, 0, -28]} scale={1.1} />
-      <PalmTree position={[20.2, 0, -14]} scale={1.0} />
-      <PalmTree position={[19.8, 0, 0]} scale={1.2} />
-      <PalmTree position={[20.4, 0, 18]} scale={1.05} />
-      <PalmTree position={[19.6, 0, 32]} scale={1.15} />
+      <PalmTree position={[24.5, 0, -28]} scale={1.1} />
+      <PalmTree position={[25.2, 0, -14]} scale={1.0} />
+      <PalmTree position={[24.8, 0, 0]} scale={1.2} />
+      <PalmTree position={[25.4, 0, 18]} scale={1.05} />
+      <PalmTree position={[24.6, 0, 32]} scale={1.15} />
 
       {/* Lake to the northeast, with gator and surrounding palm trees */}
-      <Lake position={[11.5, 0, -8]} radius={2.8} />
+      <Lake position={[9, 0, -8]} radius={2.8} />
       <Alligator gatorRef={gatorRef} onSelect={onGatorClick} />
-      <PalmTree position={[8.5, 0, -10.5]} />
-      <PalmTree position={[14, 0, -10]} scale={1.15} />
-      <PalmTree position={[9.5, 0, -5.2]} scale={0.9} />
-      <PalmTree position={[14.5, 0, -6.3]} />
+      <PalmTree position={[6, 0, -10.5]} />
+      <PalmTree position={[11.5, 0, -10]} scale={1.15} />
+      <PalmTree position={[7, 0, -5.2]} scale={0.9} />
+      <PalmTree position={[12, 0, -6.3]} />
 
       {/* Golf course to the southwest */}
       <GolfCourse
@@ -2966,7 +2976,6 @@ function Environment({
       <Hill position={[-22, 0, 28]} scale={1.5} color="#3d6824" />
       <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
       <Hill position={[-12, 0, -34]} scale={1.3} color="#4a7a30" />
-      <Hill position={[10, 0, 30]} scale={1.3} color="#3d6824" />
 
       {/* Northern mountain ridge — two broad snow-capped peaks
           positioned with the smaller front peak overlapping the
@@ -3043,15 +3052,8 @@ function Environment({
       <Tree position={[9, 0, 13]} scale={1.2} />
       <Tree position={[-7, 0, 14]} />
       <Tree position={[2, 0, -16]} scale={1.05} />
-      <Tree position={[16, 0, -2]} scale={0.95} />
       <Tree position={[-19, 0, 5]} />
-      <Tree position={[-21, 0, -14]} scale={1.15} />
-      <PineTree position={[-22, 0, -6]} scale={1.0} />
-      <PineTree position={[-24, 0, 8]} scale={1.3} />
-      <PineTree position={[16, 0, 10]} scale={1.1} />
       <PineTree position={[17, 0, -16]} scale={1.5} />
-      <PineTree position={[12, 0, -19]} scale={1.0} />
-      <PineTree position={[-12, 0, -20]} scale={1.2} />
       <PineTree position={[-3, 0, 20]} scale={1.1} />
       <PineTree position={[8, 0, 19]} scale={1.4} />
 
@@ -3060,17 +3062,13 @@ function Environment({
       <Bush position={[-5, 0, 6]} scale={0.85} color="#356b30" />
       <Bush position={[10, 0, -6]} scale={0.9} />
       <Bush position={[-10, 0, -5]} scale={1.1} color="#446e2a" />
-      <Bush position={[17, 0, 5]} scale={0.95} />
-      <Bush position={[16, 0, -10]} scale={1.0} color="#356b30" />
       <Bush position={[-15, 0, 1]} scale={1.05} />
       <Bush position={[-16, 0, -8]} scale={0.9} />
       <Bush position={[-7, 0, -10]} scale={1.0} color="#446e2a" />
       <Bush position={[3, 0, 17]} scale={1.1} />
       <Bush position={[-1, 0, -19]} scale={0.95} color="#356b30" />
-      <Bush position={[20, 0, 18]} scale={1.2} />
       <Bush position={[-20, 0, 16]} scale={1.0} />
       <Bush position={[19, 0, -18]} scale={0.9} color="#446e2a" />
-      <Bush position={[-19, 0, -20]} scale={1.1} />
 
       {/* Birds drifting across the sky */}
       <Bird initialX={-20} y={10} z={-12} speed={1.8} size={1.0} flapPhase={0} />
@@ -3187,10 +3185,10 @@ function Ocean() {
     // just east of the shoreline. Different periods so they don't move
     // in lockstep.
     if (foam1Ref.current) {
-      foam1Ref.current.position.x = 22.6 + Math.sin(t * 0.6) * 0.35;
+      foam1Ref.current.position.x = 27.6 + Math.sin(t * 0.6) * 0.35;
     }
     if (foam2Ref.current) {
-      foam2Ref.current.position.x = 23.4 + Math.sin(t * 0.45 + 1.2) * 0.5;
+      foam2Ref.current.position.x = 28.4 + Math.sin(t * 0.45 + 1.2) * 0.5;
     }
   });
   return (
@@ -3201,7 +3199,7 @@ function Ocean() {
           between water and sky is continuous. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[64, 0.01, 0]}
+        position={[69, 0.01, 0]}
         receiveShadow
       >
         <planeGeometry args={[84, 160]} />
@@ -3211,7 +3209,7 @@ function Ocean() {
           separates beach from open water. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[22.3, 0.013, 0]}
+        position={[27.3, 0.013, 0]}
       >
         <planeGeometry args={[0.6, 120]} />
         <meshStandardMaterial
@@ -3226,7 +3224,7 @@ function Ocean() {
       <mesh
         ref={foam1Ref}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[22.6, 0.014, 0]}
+        position={[27.6, 0.014, 0]}
       >
         <planeGeometry args={[0.35, 110]} />
         <meshStandardMaterial
@@ -3239,7 +3237,7 @@ function Ocean() {
       <mesh
         ref={foam2Ref}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[23.4, 0.014, 0]}
+        position={[28.4, 0.014, 0]}
       >
         <planeGeometry args={[0.25, 100]} />
         <meshStandardMaterial
@@ -3259,7 +3257,7 @@ function Beach() {
       {/* Main sandy strip along the eastern shore. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[20, 0.011, 0]}
+        position={[25, 0.011, 0]}
         receiveShadow
       >
         <planeGeometry args={[4, 130]} />
@@ -3268,25 +3266,25 @@ function Beach() {
       {/* A few darker wet-sand patches near the waterline. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[21.5, 0.012, 0]}
+        position={[26.5, 0.012, 0]}
       >
         <planeGeometry args={[1.1, 130]} />
         <meshStandardMaterial color="#c8b078" roughness={1} />
       </mesh>
       {/* Small grey rocks dotting the sand. */}
-      <mesh position={[19.6, 0.12, -22]} castShadow>
+      <mesh position={[24.6, 0.12, -22]} castShadow>
         <sphereGeometry args={[0.22, 8, 6]} />
         <meshStandardMaterial color="#9a9a96" roughness={1} />
       </mesh>
-      <mesh position={[20.4, 0.1, 4]} castShadow>
+      <mesh position={[25.4, 0.1, 4]} castShadow>
         <sphereGeometry args={[0.18, 8, 6]} />
         <meshStandardMaterial color="#8a8a86" roughness={1} />
       </mesh>
-      <mesh position={[19.4, 0.14, 14]} castShadow>
+      <mesh position={[24.4, 0.14, 14]} castShadow>
         <sphereGeometry args={[0.26, 8, 6]} />
         <meshStandardMaterial color="#a5a5a0" roughness={1} />
       </mesh>
-      <mesh position={[20.6, 0.12, 22]} castShadow>
+      <mesh position={[25.6, 0.12, 22]} castShadow>
         <sphereGeometry args={[0.2, 8, 6]} />
         <meshStandardMaterial color="#9a9a96" roughness={1} />
       </mesh>
@@ -3389,9 +3387,9 @@ const CITY_BUILDINGS: CityBuilding[] = (() => {
   // gap between road and front row reads as a grass setback /
   // sidewalk strip.
   const rows = [
-    { baseX: -36, baseH: 4.5, hVar: 2.5, litChance: 0.6 }, // closest, shortest
-    { baseX: -41, baseH: 7, hVar: 3, litChance: 0.65 }, // mid
-    { baseX: -46, baseH: 10, hVar: 4.5, litChance: 0.55 }, // back, tallest
+    { baseX: -39, baseH: 4.5, hVar: 2.5, litChance: 0.6 }, // closest, shortest
+    { baseX: -44, baseH: 7, hVar: 3, litChance: 0.65 }, // mid
+    { baseX: -49, baseH: 10, hVar: 4.5, litChance: 0.55 }, // back, tallest
   ];
   const buildings: CityBuilding[] = [];
   for (const row of rows) {
@@ -3413,7 +3411,7 @@ const CITY_BUILDINGS: CityBuilding[] = (() => {
 
 // Pick the five tallest back-row buildings for antennae so the
 // horizon has a few clear spikes.
-const CITY_ANTENNAE = CITY_BUILDINGS.filter((b) => b.x < -43)
+const CITY_ANTENNAE = CITY_BUILDINGS.filter((b) => b.x < -46)
   .sort((a, b) => b.h - a.h)
   .slice(0, 5)
   .map((b) => ({ x: b.x, y: b.h, z: b.z }));
@@ -3449,7 +3447,7 @@ function Cityscape() {
 // full N-S length. Asphalt plane + dashed yellow centre line +
 // continuous white side lines. Sits at y=0.012 so it covers the
 // underlying grass without z-fighting.
-const ROAD_CENTER_X = -30;
+const ROAD_CENTER_X = -33;
 const ROAD_WIDTH = 5;
 const ROAD_LENGTH = 180; // extended to span the full ground (z=-95..85)
 const ROAD_CENTER_Z = -5; // shifted south to match the ground's centre
@@ -6876,9 +6874,9 @@ const DRONE_TOUR: { name: string; target: THREE.Vector3; camOffset: THREE.Vector
   // Plaza overview — buildings + character on the central plaza
   { name: "plaza", target: new THREE.Vector3(0, 2, 0), camOffset: new THREE.Vector3(0, 12, 16) },
   // Amusement park — coaster + carousel + ferris wheel
-  { name: "park", target: new THREE.Vector3(-17, 5, -19), camOffset: new THREE.Vector3(22, 16, 20) },
+  { name: "park", target: new THREE.Vector3(-21, 3, -38), camOffset: new THREE.Vector3(20, 14, 18) },
   // Lake & alligator
-  { name: "lake", target: new THREE.Vector3(11.5, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
+  { name: "lake", target: new THREE.Vector3(9, 1, -8), camOffset: new THREE.Vector3(8, 6, 9) },
   // Hot-air balloon
   { name: "balloon", target: new THREE.Vector3(10, 4, 6), camOffset: new THREE.Vector3(7, 5, 8) },
   // Lazy river — curved oval loop with sandy beach + palms. Vantage
