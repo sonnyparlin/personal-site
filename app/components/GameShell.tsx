@@ -30,6 +30,13 @@ const MUSIC_SRC = "/game-music.mp3";
 const MUSIC_VOLUME = 0.45;
 const MUSIC_MUTE_STORAGE_KEY = "personal-site:music-muted";
 
+// One-shot fanfare played the moment the kid collects their final
+// belt (count === PLAY_BELT_TOTAL). Louder than the loop so it
+// cuts through; obeys the same mute toggle as the bg music since
+// it's "the game's music" from a user perspective.
+const SUCCESS_SRC = "/belt-success.mp3";
+const SUCCESS_VOLUME = 0.7;
+
 function ResetViewButton() {
   return (
     <button
@@ -394,6 +401,72 @@ function BeltHUD() {
       <span className="opacity-80">belts</span>
     </div>
   );
+}
+
+// Invisible companion to BeltHUD — listens to `belt-collected`
+// + `play-mode-reset`, keeps its own running count, and plays
+// the one-shot fanfare MP3 the moment the count crosses
+// `PLAY_BELT_TOTAL`. Audio side-effect lives here (not inside
+// BeltHUD) so the HUD stays a pure-display component and so the
+// success chime can be muted in sync with the bg music via the
+// shared `musicMuted` prop — the kid who muted the loop
+// presumably doesn't want a sudden trumpet either.
+function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Init the audio element once (client only). Preloads so the
+  // playback on completion is instant — the file is tiny (~57 KB)
+  // so the cost is negligible.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const a = new Audio(SUCCESS_SRC);
+    a.preload = "auto";
+    a.volume = SUCCESS_VOLUME;
+    audioRef.current = a;
+    return () => {
+      a.pause();
+      a.src = "";
+      audioRef.current = null;
+    };
+  }, []);
+  // Mirror the bg-music mute state onto the chime so the toggle
+  // applies to both.
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = musicMuted;
+  }, [musicMuted]);
+  // Count + fire the fanfare. Reset on play-mode toggle.
+  useEffect(() => {
+    let count = 0;
+    function onCollect() {
+      count += 1;
+      if (count === PLAY_BELT_TOTAL) {
+        const a = audioRef.current;
+        if (!a) return;
+        a.currentTime = 0;
+        const p = a.play();
+        if (p && typeof p.then === "function") {
+          p.catch(() => {
+            // Autoplay blocked or playback interrupted — silent
+            // failure, nothing else depends on this sound.
+          });
+        }
+      }
+    }
+    function onReset() {
+      count = 0;
+      const a = audioRef.current;
+      if (a) {
+        a.pause();
+        a.currentTime = 0;
+      }
+    }
+    window.addEventListener("belt-collected", onCollect);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("belt-collected", onCollect);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
+  return null;
 }
 
 // Mute / unmute the background play-mode music. Renders a small
@@ -1027,6 +1100,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             onToggle={() => setPlayMode((v) => !v)}
           />
           {playMode && <BeltHUD />}
+          {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
           {playMode && (
             <MuteButton
               muted={musicMuted}
