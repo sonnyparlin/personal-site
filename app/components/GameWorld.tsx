@@ -9801,10 +9801,12 @@ const STUDY_CEILING = "#241712";
 // keeps the wood feel without disappearing behind the pieces.
 const STUDY_TABLE = "#7a4628";
 const STUDY_TABLE_DARK = "#4a2818";
-// Stockfish strength — Skill Level 2 lands roughly around 1000-1200
-// Elo per the engine's internal scaling. Range is 0 (random-ish) to
-// 20 (full ~3500 Elo).
-const STOCKFISH_SKILL = 2;
+// Stockfish strength — Skill Level 0 is the engine's most-random
+// setting (~600-800 Elo, roughly "blunders frequently"). Tuned for
+// the play-mode point-and-belt reward: kids should be able to win
+// fairly often so the chess room becomes a viable belt source.
+// Range is 0 (random-ish) to 20 (full ~3500 Elo).
+const STOCKFISH_SKILL = 0;
 // Time the engine gets to think before returning a move (ms).
 // 1000 ms gives the human a beat between making their move and
 // seeing the AI respond — feels less instant / robotic. The
@@ -10000,6 +10002,26 @@ function ChessRoom(_: { onExit: () => void }) {
     if (game.isDraw()) return "Draw";
     return "Game over";
   }, [game, playerColor, resignedBy]);
+
+  // Notify the rest of the app whenever the player wins (checkmate
+  // OR Sonny-resigns). GameShell listens on `chess-player-won`,
+  // dedups by play-session, and turns the first event into a
+  // `chess-won` (+500 points) + `belt-collected` (+1 belt + the
+  // pickup chirp) pair. Local ref so the same mount only fires
+  // once even if `gameOver` re-renders.
+  const chessWinDispatchedRef = useRef(false);
+  useEffect(() => {
+    if (chessWinDispatchedRef.current) return;
+    if (!gameOver) return;
+    const isPlayerWin =
+      gameOver === "Checkmate — You won" ||
+      gameOver === "Sonny resigned — You won";
+    if (!isPlayerWin) return;
+    chessWinDispatchedRef.current = true;
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("chess-player-won"));
+    }
+  }, [gameOver]);
 
   // ── Stockfish worker ─────────────────────────────────────────
   // Spawns once on mount. Subsequent re-renders just re-use it.

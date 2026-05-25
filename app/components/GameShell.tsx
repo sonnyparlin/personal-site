@@ -300,9 +300,17 @@ function ChessControls() {
 //   - 3 bridge belts (atop each arch deck)
 //   - 10 river belts (mid-float along the lazy-river curve)
 //   - 1 golf belt (next to the cup, awarded on first sink)
-// = 20. Bump this in lockstep with BELT_PICKUPS / RIVER_BELT_PICKUPS
+//   - 1 chess belt (awarded on first chess win per play session)
+// = 21. Bump this in lockstep with BELT_PICKUPS / RIVER_BELT_PICKUPS
 // edits or the HUD count will drift from the actual total.
-const PLAY_BELT_TOTAL = 20;
+const PLAY_BELT_TOTAL = 21;
+
+// Points scoring. Belts contribute a fixed amount per pickup;
+// chess wins add a bonus on top of the belt the win also grants.
+// Resets on every `play-mode-reset` (same lifecycle as the belt
+// counter — score is per-session, not cumulative across visits).
+const POINTS_PER_BELT = 100;
+const POINTS_PER_CHESS_WIN = 500;
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +
@@ -403,6 +411,57 @@ function BeltHUD() {
   );
 }
 
+// Running points tally. Sits below `<BeltHUD>` in the top-right
+// stack. Owns its own count + listens directly to the
+// `belt-collected` (+POINTS_PER_BELT) and `chess-won`
+// (+POINTS_PER_CHESS_WIN) window events so GameShell never
+// re-renders on score change — same anti-blip pattern as BeltHUD.
+// Number is grouped with commas so 1,200 reads clearly. Reset to
+// 0 on `play-mode-reset`.
+function PointsHUD() {
+  const [score, setScore] = useState(0);
+  useEffect(() => {
+    function onBelt() {
+      setScore((n) => n + POINTS_PER_BELT);
+    }
+    function onChess() {
+      setScore((n) => n + POINTS_PER_CHESS_WIN);
+    }
+    function onReset() {
+      setScore(0);
+    }
+    window.addEventListener("belt-collected", onBelt);
+    window.addEventListener("chess-won", onChess);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("belt-collected", onBelt);
+      window.removeEventListener("chess-won", onChess);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
+  return (
+    <div
+      role="status"
+      aria-label={`${score} points`}
+      className="
+        absolute top-36 right-4 z-10 select-none
+        h-12 px-4
+        flex items-center gap-2
+        bg-black/60
+        text-white text-sm uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+      "
+    >
+      <span aria-hidden className="text-amber-300 leading-none">★</span>
+      <span className="tabular-nums">{score.toLocaleString()}</span>
+      <span className="opacity-80">pts</span>
+    </div>
+  );
+}
+
 // Invisible companion to BeltHUD — listens to `belt-collected`
 // + `play-mode-reset`, keeps its own running count, and plays
 // the one-shot fanfare MP3 the moment the count crosses
@@ -480,9 +539,8 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
 // Mute / unmute the background play-mode music. Renders a small
 // pill with a speaker icon; tapping toggles the parent's `muted`
 // state, which both flips `audio.muted` on the HTMLAudioElement
-// and persists the preference to localStorage. Placed under the
-// belt HUD on the right so the top-right cluster reads as a
-// vertical stack: Play toggle → Belts → Mute.
+// and persists the preference to localStorage. Placed at the
+// bottom of the right-side stack: Play → Belts → Points → Mute.
 function MuteButton({
   muted,
   onToggle,
@@ -497,7 +555,7 @@ function MuteButton({
       aria-label={muted ? "Unmute music" : "Mute music"}
       title={muted ? "Unmute music" : "Mute music"}
       className="
-        absolute top-36 right-4 z-10 select-none
+        absolute top-52 right-4 z-10 select-none
         h-12 px-4
         flex items-center gap-2
         bg-black/60 hover:bg-black/75
@@ -1000,6 +1058,32 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new CustomEvent("play-mode-reset"));
   }, [playMode]);
 
+  // Chess-win belt + points bonus. ChessRoom fires
+  // `chess-player-won` every time the player wins a game. We
+  // dedupe to one award per play-mode session so the kid can't
+  // farm chess for unlimited belts. The `awardedRef` resets on
+  // every play-mode toggle (the `play-mode-reset` effect above
+  // also fires here as a co-tenant of the same lifecycle).
+  const chessAwardedRef = useRef(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    chessAwardedRef.current = false; // new play session = new chance
+    function onChessWin() {
+      if (chessAwardedRef.current) return;
+      chessAwardedRef.current = true;
+      // Belt + chirp + the +100 PointsHUD will pick up from this
+      // event automatically — and BeltSuccessChime will too if
+      // this is the 21st belt.
+      window.dispatchEvent(
+        new CustomEvent("belt-collected", { detail: "chess" })
+      );
+      // +500 bonus on top of the +100 from the belt.
+      window.dispatchEvent(new CustomEvent("chess-won"));
+    }
+    window.addEventListener("chess-player-won", onChessWin);
+    return () => window.removeEventListener("chess-player-won", onChessWin);
+  }, [playMode]);
+
   // ── Play-mode background music ──
   // Single HTMLAudioElement created on mount, looped, volume capped.
   // It's NOT attached to the DOM tree — we manage play/pause via
@@ -1108,6 +1192,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             onToggle={() => setPlayMode((v) => !v)}
           />
           {playMode && <BeltHUD />}
+          {playMode && <PointsHUD />}
           {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
           {playMode && (
             <MuteButton
