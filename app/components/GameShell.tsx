@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import GameWorld from "./GameWorld";
 import { getSectionByPath } from "@/app/lib/sections";
@@ -20,6 +20,15 @@ const CHESS_RESIGN_EVENT = "chess-resign";
 // pill is just a tally so visitors don't get spoilers.
 const EGG_IDS = ["gator", "coaster", "golf", "river", "balloon"] as const;
 const EGG_STORAGE_KEY = "personal-site:eggs-found";
+
+// Play-mode background music. Loops while play mode is active,
+// pauses on exit. Volume is intentionally modest so the synthesized
+// belt-pickup chirp and chess move taps still cut through. The
+// mute preference persists in localStorage so a kid who muted on
+// one visit doesn't get blasted on the next.
+const MUSIC_SRC = "/game-music.mp3";
+const MUSIC_VOLUME = 0.45;
+const MUSIC_MUTE_STORAGE_KEY = "personal-site:music-muted";
 
 function ResetViewButton() {
   return (
@@ -353,6 +362,47 @@ function BeltHUD({ count }: { count: number }) {
       </span>
       <span className="opacity-80">belts</span>
     </div>
+  );
+}
+
+// Mute / unmute the background play-mode music. Renders a small
+// pill with a speaker icon; tapping toggles the parent's `muted`
+// state, which both flips `audio.muted` on the HTMLAudioElement
+// and persists the preference to localStorage. Placed under the
+// belt HUD on the right so the top-right cluster reads as a
+// vertical stack: Play toggle → Belts → Mute.
+function MuteButton({
+  muted,
+  onToggle,
+}: {
+  muted: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={muted ? "Unmute music" : "Mute music"}
+      title={muted ? "Unmute music" : "Mute music"}
+      className="
+        absolute top-36 right-4 z-10 select-none
+        h-12 px-4
+        flex items-center gap-2
+        bg-black/60 hover:bg-black/75
+        text-white text-sm uppercase tracking-wider
+        border border-white/20
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        cursor-pointer
+        transition-colors
+      "
+    >
+      <span aria-hidden className="leading-none">
+        {muted ? "🔇" : "🔊"}
+      </span>
+      <span>{muted ? "Muted" : "Music"}</span>
+    </button>
   );
 }
 
@@ -847,6 +897,81 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("belt-collected", onCollect);
   }, []);
 
+  // ── Play-mode background music ──
+  // Single HTMLAudioElement created on mount, looped, volume capped.
+  // It's NOT attached to the DOM tree — we manage play/pause via
+  // the ref so React re-renders don't restart the track. Browser
+  // autoplay policies require a user gesture before .play() will
+  // succeed; the Play button click that flips `playMode` to true
+  // counts as that gesture, so the first play() call inside the
+  // play-mode effect works cleanly. Muted preference is persisted
+  // in localStorage so the choice survives reloads.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [musicMuted, setMusicMuted] = useState(false);
+  // Initialize the audio element + restore the persisted mute state.
+  // Done in an effect so window/Audio are only touched client-side.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const audio = new Audio(MUSIC_SRC);
+    audio.loop = true;
+    audio.volume = MUSIC_VOLUME;
+    audio.preload = "auto";
+    audioRef.current = audio;
+    try {
+      const stored = window.localStorage.getItem(MUSIC_MUTE_STORAGE_KEY);
+      if (stored === "1") {
+        audio.muted = true;
+        setMusicMuted(true);
+      }
+    } catch {
+      // localStorage can throw in private-browsing / sandboxed
+      // iframes; the music just plays unmuted in that case.
+    }
+    return () => {
+      audio.pause();
+      audio.src = "";
+      audioRef.current = null;
+    };
+  }, []);
+  // Start music on play-mode entry, pause on exit. The first call
+  // runs inside the toggle's click stack so the autoplay gate is
+  // already satisfied — .play() returns a promise that we swallow
+  // to silence the AbortError that fires if the user toggles play
+  // mode back off before the buffer is ready.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playMode) {
+      audio.currentTime = 0;
+      const p = audio.play();
+      if (p && typeof p.then === "function") {
+        p.catch(() => {
+          // Autoplay was blocked or play() was interrupted. Silent
+          // failure — the mute button still works if it ever does
+          // start; nothing else in the game depends on the music.
+        });
+      }
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  }, [playMode]);
+  // Mirror the muted state onto the audio element + persist it.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.muted = musicMuted;
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          MUSIC_MUTE_STORAGE_KEY,
+          musicMuted ? "1" : "0"
+        );
+      } catch {
+        // ignore — see init effect comment
+      }
+    }
+  }, [musicMuted]);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1a1a2e]">
       <GameWorld playMode={playMode} />
@@ -880,6 +1005,12 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             onToggle={() => setPlayMode((v) => !v)}
           />
           {playMode && <BeltHUD count={beltCount} />}
+          {playMode && (
+            <MuteButton
+              muted={musicMuted}
+              onToggle={() => setMusicMuted((v) => !v)}
+            />
+          )}
           {playMode && <PlayControlsHint />}
           {playMode && <TouchControls />}
           <RiverExitButton />
