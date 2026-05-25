@@ -621,10 +621,7 @@ function riverWorldAt(t: number, offset: number): {
 // inside Environment — each Hill's footprint radius is `3.5 * scale`
 // (the half-sphere has unscaled radius 3.5, and only Y is squashed).
 const OBSTACLES: { x: number; z: number; r: number }[] = [
-  { x: -22, z: -28, r: 3.5 * 1.4 },
-  { x: -22, z:  28, r: 3.5 * 1.5 },
   { x:   0, z: -32, r: 3.5 * 1.8 },
-  { x: -12, z: -34, r: 3.5 * 1.3 },
   { x: -22, z:  72, r: 3.5 * 1.4 },
   { x:  14, z:  73, r: 3.5 * 1.5 },
   { x:  -3, z:  84, r: 3.5 * 1.6 },
@@ -2972,10 +2969,11 @@ function Environment({
       {/* Distant rolling hills at the far edges of the world. East
           is ocean, west is cityscape — only north and south hills
           remain so each cardinal direction has its own backdrop. */}
-      <Hill position={[-22, 0, -28]} scale={1.4} color="#4a7a30" />
-      <Hill position={[-22, 0, 28]} scale={1.5} color="#3d6824" />
+      {/* North hill on the central island — purely backdrop, doesn't
+          overlap the river or the carnival. The other near-river /
+          near-carnival hills were removed to keep the carnival
+          fully visible and the river bank clean. */}
       <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
-      <Hill position={[-12, 0, -34]} scale={1.3} color="#4a7a30" />
 
       {/* Northern mountain ridge — two broad snow-capped peaks
           positioned with the smaller front peak overlapping the
@@ -3604,23 +3602,12 @@ function LazyRiver({ onSelect }: { onSelect: () => void }) {
         <meshStandardMaterial color="#5a3c20" />
       </mesh>
 
-      {/* Palms scattered around the river for tropical flavor. Local
-          positions, so they ride along with the group translation. */}
-      <PalmTree position={[-RIVER_RX - 2.2, 0, -3]} scale={1.0} />
-      <PalmTree position={[-RIVER_RX - 2.5, 0, 3]} scale={1.15} />
-      <PalmTree position={[RIVER_RX + 2.2, 0, -2.5]} scale={1.05} />
-      <PalmTree position={[RIVER_RX + 2.4, 0, 3.5]} scale={1.0} />
-      {/* Small palm on the centre island for the "tropical paradise"
-          read — the island gets the trees instead of just being
-          empty grass. */}
-      <PalmTree position={[0, 0, 0]} scale={1.1} />
-      <PalmTree position={[-2, 0, 1.5]} scale={0.85} />
-      <PalmTree position={[2.2, 0, -1]} scale={0.9} />
-      {/* Bushes around the outer beach */}
-      <Bush position={[-RIVER_RX - 1.5, 0, -5]} scale={0.85} />
-      <Bush position={[RIVER_RX + 1.5, 0, 5]} scale={0.95} />
-      <Bush position={[-3, 0, RIVER_RZ + 2]} scale={1.0} />
-      <Bush position={[4, 0, -RIVER_RZ - 2]} scale={0.9} />
+      {/* The map-spanning river has its own sandy beach ring +
+          plenty of trees + bushes in the wider world, so the
+          LazyRiver group doesn't add its own decor. The earlier
+          internal palms / bushes were sized for the small-oval
+          version of the river and ended up either on the plaza
+          (blocking the character) or inside the new river channel. */}
     </group>
   );
 }
