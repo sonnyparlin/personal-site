@@ -256,18 +256,29 @@ const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → 
 // Play-mode interactive putt — separate from the easter-egg
 // choreography above. Stepping ANYWHERE onto the green bounding
 // box snaps the kid back to the tee and starts putting mode. The
-// box matches the green plane in `GolfCourse` (14×30 centered at
-// world (-15, 17) — see the local→world conversion notes there).
+// box matches the green plane in `GolfCourse` (14×24 centered at
+// world (-15, 20) — see the local→world conversion notes there).
 // Using a bbox instead of a radial trigger means the cup-side
 // belt is unreachable by walking, you HAVE to sink the putt.
+//
+// **Why z starts at 8, not 2** — the west bridge crosses the
+// river at world z≈5, and the green USED to extend south to
+// z=2, blocking the bridge corridor. Walking from the plaza to
+// the W bridge auto-boarded into golf because the path crossed
+// the green at z=5. Trimming the green's north edge to z=8 (the
+// tee row) leaves the bridge corridor as walkable grass while
+// keeping tee (z=8) / cup (z=28) / the whole playable green
+// inside the trigger zone. The Rough + Green planes in
+// `GolfCourse` were shrunk to match.
 const PUTT_GREEN_X_MIN = -22;
 const PUTT_GREEN_X_MAX = -8;
-const PUTT_GREEN_Z_MIN = 2;
+const PUTT_GREEN_Z_MIN = 8;
 const PUTT_GREEN_Z_MAX = 32;
 // After tapping DONE in the putt HUD, the kid is teleported here
 // — outside the green bbox so the auto-board doesn't immediately
-// re-fire on the next play-mode tick. Chosen as 4u south of the
-// green's south edge, on the tee's x-line for a natural egress.
+// re-fire on the next play-mode tick. Chosen as 4u north of the
+// green's north edge, on the tee's x-line for a natural egress
+// toward the plaza.
 const PUTT_DONE_EXIT = { x: GOLF_TEE.x, z: PUTT_GREEN_Z_MIN - 4 };
 // Max launch speed (units/sec) at full power. Tuned so the ball
 // JUST BARELY reaches the cup at 100% power — meaning the kid has
@@ -5028,20 +5039,26 @@ function GolfCourse({
 
   return (
     <group position={position}>
-      {/* Rough — darker green border behind the green */}
+      {/* Rough — darker green border behind the green. Plane is
+          shifted local +z (= world +3 from group centre) so its
+          north edge sits at world z=8 instead of z=2; that leaves
+          the W-bridge corridor at world z≈5 as plain grass and
+          stops the auto-board from snaring people trying to walk
+          to the bridge. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-1, 0.010, 0]}
+        position={[-1, 0.010, 3]}
         receiveShadow
       >
-        <planeGeometry args={[16, 32]} />
+        <planeGeometry args={[16, 26]} />
         <meshStandardMaterial color="#558a36" />
       </mesh>
       {/* The green — one big putting surface covering the whole
-          playable area. Clickable for the hole-in-one easter egg. */}
+          playable area. Clickable for the hole-in-one easter egg.
+          Same northward shift as the Rough: spans world z=8..32. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[-1, 0.011, 0]}
+        position={[-1, 0.011, 3]}
         receiveShadow
         onClick={(e) => {
           onSelect();
@@ -5055,7 +5072,7 @@ function GolfCourse({
           document.body.style.cursor = "auto";
         }}
       >
-        <planeGeometry args={[14, 30]} />
+        <planeGeometry args={[14, 24]} />
         <meshStandardMaterial color="#7ab84a" />
       </mesh>
 
