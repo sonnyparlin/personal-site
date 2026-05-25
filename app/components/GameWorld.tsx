@@ -726,6 +726,22 @@ function inRiverChannel(x: number, z: number): boolean {
   return outerSum <= 1 && innerSum >= 1;
 }
 
+// Returns true ONLY when the kid is actually standing on a bridge
+// deck — i.e. inside a bridge footprint AND on foot. Tubing,
+// riding the coaster, and ballooning have their own height
+// machinery; the bridge ramp/deck Y offset must not apply to them
+// or the camera + body lift while the tube floats UNDER an arch,
+// which reads as a one-second camera blip per bridge crossed.
+// `CharState` here is referenced as the structural shape — we
+// avoid a circular type dependency by treating it as a thin
+// duck-typed argument.
+function charStandsOnBridge(c: { x: number; z: number; mode: string }): boolean {
+  if (c.mode === "tubing" || c.mode === "riding" || c.mode === "ballooning") {
+    return false;
+  }
+  return onBridge(c.x, c.z);
+}
+
 // Returns true if (x, z) falls within any bridge's rectangular
 // footprint. Bridges cross the channel at fixed spots — when the
 // character is on one of them the water-push collision is skipped.
@@ -6687,14 +6703,10 @@ function Character({
       // top-of-arch y for the bridge the kid is standing on (or 0
       // if they're not on one). Lift the kid by that amount so they
       // walk the curve of the arch. Skip for special-action modes
-      // that drive their own y (riding, tubing, ballooning) so a
-      // transient onBridge() near the boarding deck doesn't fight
-      // the tubing tick.
-      const standsOnBridge =
-        c.mode !== "tubing" &&
-        c.mode !== "riding" &&
-        c.mode !== "ballooning" &&
-        onBridge(c.x, c.z);
+      // that drive their own y (riding, tubing, ballooning) — see
+      // the `charStandsOnBridge` helper, shared with the chase-cam
+      // branches in CameraRig so the body and camera stay aligned.
+      const standsOnBridge = charStandsOnBridge(c);
       rootRef.current.position.y =
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
@@ -7527,8 +7539,12 @@ function CameraRig({
       // their feet rise from y=0 to y=2; if the camera stayed pinned
       // they'd disappear off the top of the frame. The bridge y is
       // ADDED to the pinned camera height so the framing follows the
-      // kid up and over the deck.
-      const bridgeY = bridgeYAt(c.x, c.z);
+      // kid up and over the deck. CRITICALLY gated by
+      // charStandsOnBridge — if we used the raw bridgeYAt the
+      // camera would also rise when the kid's TUBE floated UNDER a
+      // bridge (same x,z, different y), producing a one-second
+      // weird-angle blip every time they crossed an arch.
+      const bridgeY = charStandsOnBridge(c) ? bridgeYAt(c.x, c.z) : 0;
       const wantCam = {
         x: c.x - Math.sin(c.angle) * 5.5,
         y: 4 + bridgeY,
@@ -7653,8 +7669,12 @@ function CameraRig({
       // dead-center as the balloon rises (vs. only halfway for other
       // modes where the character barely leaves the ground). For
       // bridge walking, add the deck height so the camera doesn't
-      // tilt down at the water below the kid's feet.
-      const walkTargetBridgeY = bridgeYAt(c.x, c.z);
+      // tilt down at the water below the kid's feet. Gated by
+      // charStandsOnBridge so the offset doesn't apply when the
+      // kid is in a tube floating UNDER an arch.
+      const walkTargetBridgeY = charStandsOnBridge(c)
+        ? bridgeYAt(c.x, c.z)
+        : 0;
       wantTY =
         c.mode === "ballooning"
           ? 1 + c.y
@@ -7805,8 +7825,9 @@ function CameraRig({
       // walking is its own gate, separate from the post-event
       // glide-back. Bridge offset matches the play-mode chase cam:
       // rises with the kid when they walk up a bridge ramp so they
-      // don't disappear off the top of the frame.
-      const walkBridgeY = bridgeYAt(c.x, c.z);
+      // don't disappear off the top of the frame. Gated by
+      // charStandsOnBridge so it doesn't fire while tubing.
+      const walkBridgeY = charStandsOnBridge(c) ? bridgeYAt(c.x, c.z) : 0;
       wantCam = {
         x: c.x - Math.sin(c.angle) * 5.5,
         y: 4 + walkBridgeY,
