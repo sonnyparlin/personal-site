@@ -1545,21 +1545,21 @@ function Scene({
   // and the per-frame distance check can skip already-grabbed ones.
   const beltCollectedRef = useRef<boolean[]>(BELT_PICKUPS.map(() => false));
   // GameShell tells us to reset (entering or exiting play mode).
+  // The BeltPickup `useFrame` reads `collectedRef` every frame and
+  // toggles `g.visible` from it, so flipping the ref values is
+  // enough — no version state or remount needed. (Previously we
+  // bumped a `beltVersion` state which forced React to remount
+  // every belt mesh on every collect; the remount produced the
+  // single-frame visual hitch users described as a "bump.")
   useEffect(() => {
     function onReset() {
       for (let i = 0; i < beltCollectedRef.current.length; i++) {
         beltCollectedRef.current[i] = false;
       }
-      // Trigger a re-render of the BeltPickup meshes via the version bump.
-      setBeltVersion((v) => v + 1);
     }
     window.addEventListener("play-mode-reset", onReset);
     return () => window.removeEventListener("play-mode-reset", onReset);
   }, []);
-  // Bump this state every time the collected set changes so the
-  // BeltPickup meshes (which read the ref) actually re-render to
-  // hide the picked-up ones.
-  const [beltVersion, setBeltVersion] = useState(0);
 
   // Lazy-river belts — same tally / dispatch pattern as the plaza
   // belts. Tracked separately so they can persist across plaza belt
@@ -1568,13 +1568,11 @@ function Scene({
   const riverBeltCollectedRef = useRef<boolean[]>(
     RIVER_BELT_PICKUPS.map(() => false)
   );
-  const [riverBeltVersion, setRiverBeltVersion] = useState(0);
   useEffect(() => {
     function onReset() {
       for (let i = 0; i < riverBeltCollectedRef.current.length; i++) {
         riverBeltCollectedRef.current[i] = false;
       }
-      setRiverBeltVersion((v) => v + 1);
     }
     window.addEventListener("play-mode-reset", onReset);
     return () => window.removeEventListener("play-mode-reset", onReset);
@@ -1586,15 +1584,18 @@ function Scene({
   // belts (this is the "earn a belt by sinking a putt" reward, not
   // an infinite belt generator).
   const golfBeltCollectedRef = useRef(false);
-  const [golfBeltVersion, setGolfBeltVersion] = useState(0);
   useEffect(() => {
     function onReset() {
       golfBeltCollectedRef.current = false;
-      setGolfBeltVersion((v) => v + 1);
     }
     window.addEventListener("play-mode-reset", onReset);
     return () => window.removeEventListener("play-mode-reset", onReset);
   }, []);
+
+  // Tiny synthesized chirp played whenever a belt is collected
+  // (plaza, river, or golf). One AudioContext is created lazily on
+  // the first collect so the browser doesn't yell about autoplay.
+  const playBeltSoundRef = useRef(makeBeltSoundPlayer());
 
   // EXIT-the-ride request from GameShell's overlay button. Pause-
   // sets exitPending; the tubing tick consumes it on the next frame
@@ -1761,7 +1762,7 @@ function Scene({
         const dz = char.z - s.z;
         if (Math.hypot(dx, dz) < BELT_PICKUP_RADIUS) {
           beltCollectedRef.current[i] = true;
-          setBeltVersion((v) => v + 1);
+          playBeltSoundRef.current();
           if (typeof window !== "undefined") {
             window.dispatchEvent(
               new CustomEvent("belt-collected", { detail: i })
@@ -2276,7 +2277,7 @@ function Scene({
         const dz = char.z - bp.z;
         if (Math.hypot(dx, dz) < 1.0) {
           riverBeltCollectedRef.current[i] = true;
-          setRiverBeltVersion((v) => v + 1);
+          playBeltSoundRef.current();
           if (typeof window !== "undefined") {
             window.dispatchEvent(
               new CustomEvent("belt-collected", { detail: `river-${i}` })
@@ -2436,7 +2437,7 @@ function Scene({
             // SINKS counter but don't grant more belts.
             if (!golfBeltCollectedRef.current) {
               golfBeltCollectedRef.current = true;
-              setGolfBeltVersion((v) => v + 1);
+              playBeltSoundRef.current();
               window.dispatchEvent(
                 new CustomEvent("belt-collected", { detail: "golf" })
               );
@@ -2918,11 +2919,9 @@ function Scene({
             onGolfClick={handleGolfClick}
             riverRef={refs.river}
             riverBeltCollectedRef={riverBeltCollectedRef}
-            riverBeltVersion={riverBeltVersion}
             onRiverClick={handleRiverClick}
             puttingRef={refs.putting}
             golfBeltCollectedRef={golfBeltCollectedRef}
-            golfBeltVersion={golfBeltVersion}
             charRef={refs.char}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
@@ -2941,13 +2940,14 @@ function Scene({
           <Family familyRef={refs.family} />
           {/* Black-belt collectibles for the tiny play-mode demo.
               Mounted only when playMode is on so they don't clutter
-              portfolio mode. beltVersion bumps when any are
-              collected, forcing a re-render so the visibility flag
-              on each BeltPickup updates. */}
+              portfolio mode. Each BeltPickup's `useFrame` reads
+              `beltCollectedRef.current[i]` every frame and toggles
+              `g.visible`, so no remount is needed when one is
+              collected (stable keys = no visual hitch). */}
           {playMode &&
             BELT_PICKUPS.map((s, i) => (
               <BeltPickup
-                key={`belt-${i}-${beltVersion}`}
+                key={`belt-${i}`}
                 position={s}
                 index={i}
                 collectedRef={beltCollectedRef}
@@ -3069,11 +3069,9 @@ function Environment({
   onGolfClick,
   riverRef,
   riverBeltCollectedRef,
-  riverBeltVersion,
   onRiverClick,
   puttingRef,
   golfBeltCollectedRef,
-  golfBeltVersion,
   charRef,
   balloonRef,
   onBalloonClick,
@@ -3089,11 +3087,9 @@ function Environment({
   onGolfClick: () => void;
   riverRef: React.MutableRefObject<RiverState>;
   riverBeltCollectedRef: React.MutableRefObject<boolean[]>;
-  riverBeltVersion: number;
   onRiverClick: () => void;
   puttingRef: React.MutableRefObject<PuttingState>;
   golfBeltCollectedRef: React.MutableRefObject<boolean>;
-  golfBeltVersion: number;
   charRef: React.MutableRefObject<CharState>;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
@@ -3149,12 +3145,10 @@ function Environment({
       <GolfBall golfRef={golfRef} />
       {/* One floating belt next to the cup — the prize for sinking
           a putt. Disappears on the first sink and stays gone for
-          the rest of the play session. golfBeltVersion bumps to
-          force the GolfBeltPickup to re-evaluate the ref. */}
-      <GolfBeltPickup
-        key={`golf-belt-${golfBeltVersion}`}
-        collectedRef={golfBeltCollectedRef}
-      />
+          the rest of the play session. GolfBeltPickup's `useFrame`
+          reads the ref every frame and toggles visibility, so no
+          remount is needed when it's collected. */}
+      <GolfBeltPickup collectedRef={golfBeltCollectedRef} />
       {/* Interactive play-mode putt visuals — the ball that follows
           puttingRef physics, plus an aim arrow that rotates with the
           kid's body angle while addressing the ball. Both hidden
@@ -3239,7 +3233,7 @@ function Environment({
           modes so the easter-egg ride is also belt-collecting. */}
       {RIVER_BELT_PICKUPS.map((b, i) => (
         <RiverBeltPickup
-          key={`river-belt-${i}-${riverBeltVersion}`}
+          key={`river-belt-${i}`}
           index={i}
           spec={b}
           collectedRef={riverBeltCollectedRef}
@@ -9637,6 +9631,49 @@ function makeMoveSoundPlayer() {
   };
 }
 
+
+// Synthesized "belt pickup" chime. Cheerful 2-note rising blip
+// (C5 → G5) played through a triangle oscillator with a quick
+// attack + decay envelope so it reads as "got it!" rather than a
+// click. Lazy AudioContext (created on first call) so the browser
+// doesn't yell about autoplay; subsequent calls reuse the same
+// context. ~180 ms total, well under the spacing between adjacent
+// belts so consecutive pickups don't tail-chase each other.
+function makeBeltSoundPlayer() {
+  let ctx: AudioContext | null = null;
+  return function playBeltSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctx) return;
+      if (!ctx) ctx = new Ctx();
+      if (ctx.state === "suspended") void ctx.resume();
+      const now = ctx.currentTime;
+      const duration = 0.18; // seconds
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      // Rising chirp: C5 (523) → G5 (784). Exponential ramp so the
+      // pitch sweep feels musical rather than linear-buzzy.
+      osc.frequency.setValueAtTime(523.25, now);
+      osc.frequency.exponentialRampToValueAtTime(783.99, now + duration);
+      const gain = ctx.createGain();
+      // Quick attack (5ms) to avoid a click, then smooth decay to
+      // ~silence by the end of the sweep.
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.22, now + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    } catch {
+      // Silent failure — never break the game over a sound effect.
+    }
+  };
+}
 
 // Clone a chess.js instance while PRESERVING the move history. The
 // obvious-looking `new Chess(game.fen())` only carries the position
