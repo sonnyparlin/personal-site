@@ -277,7 +277,7 @@ function ChessControls() {
 // at ground level around the plaza (see `BELT_PICKUPS` in
 // GameWorld); the other 3 will float in the lazy river. When this
 // changes, update the corresponding world data too.
-const PLAY_BELT_TOTAL = 13;
+const PLAY_BELT_TOTAL = 14;
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +

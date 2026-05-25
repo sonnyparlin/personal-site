@@ -234,11 +234,14 @@ const GOLF_POSITION = { x: -14, z: 17 };
 // swing tilts the torso SOUTH toward the ball. If the char were south
 // of the ball, the body would lean away from the ball and the swing
 // would appear to come from behind the back. World coords:
-//   GOLF_TEE        = south-west corner of the green
+//   GOLF_TEE        = south-east area of the green (clear of all bridges)
 //   GOLF_BALL_START = just north-east of tee, in front of the char
 //   GOLF_HOLE       = north-east corner of the green
-const GOLF_TEE = { x: -20, z: 6 };
-const GOLF_BALL_START = { x: -19, z: 7 };
+// The W bridge spans x=-30.5..-19.5 at z=3.5..6.5; an earlier tee
+// at (-20, 6) sat right inside that footprint and the kid would
+// auto-bridge onto the deck instead of standing on the green.
+const GOLF_TEE = { x: -12, z: 8 };
+const GOLF_BALL_START = { x: -11, z: 9 };
 const GOLF_HOLE = { x: -9, z: 28 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
@@ -252,11 +255,11 @@ const PUTT_TRIGGER_RADIUS = 2.5;
 // Max launch speed (units/sec) at full power. Tuned so the ball
 // JUST BARELY reaches the cup at 100% power — meaning the kid has
 // to commit close to full strength AND a near-perfect aim line.
-// Math: ball→cup distance is ~23u; with friction 4.5/sec², a launch
-// at v travels d = v²/(2·a) = v²/9. To reach 23u: v² ≥ 207 → v ≥ 14.4.
-// Setting max to 14.4 means full power EXACTLY reaches the cup at
+// Math: ball→cup distance is ~19u; with friction 4.5/sec², a launch
+// at v travels d = v²/(2·a) = v²/9. To reach 19u: v² ≥ 171 → v ≥ 13.1.
+// Setting max to 13.2 means full power EXACTLY reaches the cup at
 // stopped speed, which feels right (perfect putt = sink).
-const PUTT_MAX_LAUNCH_SPEED = 14.4;
+const PUTT_MAX_LAUNCH_SPEED = 13.2;
 const PUTT_FRICTION = 4.5; // units/sec² deceleration
 const PUTT_CHARGE_TIME = 1.4; // seconds Space-held to reach full power
 // Aim rotation rate while putting (radians/sec). Slower than the
@@ -1577,6 +1580,22 @@ function Scene({
     return () => window.removeEventListener("play-mode-reset", onReset);
   }, []);
 
+  // Golf belt — ONE belt floating next to the cup. Awarded the
+  // FIRST time the kid sinks a putt, then disappears. Subsequent
+  // sinks count toward the SINKS counter but don't grant more
+  // belts (this is the "earn a belt by sinking a putt" reward, not
+  // an infinite belt generator).
+  const golfBeltCollectedRef = useRef(false);
+  const [golfBeltVersion, setGolfBeltVersion] = useState(0);
+  useEffect(() => {
+    function onReset() {
+      golfBeltCollectedRef.current = false;
+      setGolfBeltVersion((v) => v + 1);
+    }
+    window.addEventListener("play-mode-reset", onReset);
+    return () => window.removeEventListener("play-mode-reset", onReset);
+  }, []);
+
   // EXIT-the-ride request from GameShell's overlay button. Pause-
   // sets exitPending; the tubing tick consumes it on the next frame
   // and runs the exit path (walk back to plaza, etc.).
@@ -2411,15 +2430,17 @@ function Scene({
                 detail: { attempts: p.attempts, sinks: p.sinks, power: 0 },
               })
             );
-            // Each sink earns another belt — golf is the only
-            // belt-generator the kid can repeat indefinitely.
-            // The plaza + river belts are finite (5 + 3 = 8); putts
-            // can push the BeltHUD above 8 as a high-score effect.
-            window.dispatchEvent(
-              new CustomEvent("belt-collected", {
-                detail: `putt-${p.sinks}`,
-              })
-            );
+            // First sink awards the golf belt — there's ONE belt
+            // floating next to the cup, and the kid grabs it by
+            // sinking the putt. Subsequent sinks count toward the
+            // SINKS counter but don't grant more belts.
+            if (!golfBeltCollectedRef.current) {
+              golfBeltCollectedRef.current = true;
+              setGolfBeltVersion((v) => v + 1);
+              window.dispatchEvent(
+                new CustomEvent("belt-collected", { detail: "golf" })
+              );
+            }
           }
         } else if (curSpeed < PUTT_STOP_SPEED) {
           // Ball stopped without sinking — MISS
@@ -2900,6 +2921,8 @@ function Scene({
             riverBeltVersion={riverBeltVersion}
             onRiverClick={handleRiverClick}
             puttingRef={refs.putting}
+            golfBeltCollectedRef={golfBeltCollectedRef}
+            golfBeltVersion={golfBeltVersion}
             charRef={refs.char}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
@@ -3049,6 +3072,8 @@ function Environment({
   riverBeltVersion,
   onRiverClick,
   puttingRef,
+  golfBeltCollectedRef,
+  golfBeltVersion,
   charRef,
   balloonRef,
   onBalloonClick,
@@ -3067,6 +3092,8 @@ function Environment({
   riverBeltVersion: number;
   onRiverClick: () => void;
   puttingRef: React.MutableRefObject<PuttingState>;
+  golfBeltCollectedRef: React.MutableRefObject<boolean>;
+  golfBeltVersion: number;
   charRef: React.MutableRefObject<CharState>;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
@@ -3120,6 +3147,14 @@ function Environment({
         onSelect={onGolfClick}
       />
       <GolfBall golfRef={golfRef} />
+      {/* One floating belt next to the cup — the prize for sinking
+          a putt. Disappears on the first sink and stays gone for
+          the rest of the play session. golfBeltVersion bumps to
+          force the GolfBeltPickup to re-evaluate the ref. */}
+      <GolfBeltPickup
+        key={`golf-belt-${golfBeltVersion}`}
+        collectedRef={golfBeltCollectedRef}
+      />
       {/* Interactive play-mode putt visuals — the ball that follows
           puttingRef physics, plus an aim arrow that rotates with the
           kid's body angle while addressing the ball. Both hidden
@@ -4038,7 +4073,63 @@ function RiverBeltPickup({
   );
 }
 
-
+// GolfBeltPickup — single floating belt next to the cup. Visible
+// until the kid sinks their first putt; vanishes on the first
+// sink and stays gone (subsequent sinks don't re-grant a belt).
+// Position is hard-coded to the cup, offset slightly east so the
+// belt sits beside the flag pole rather than on top of it. Same
+// bob + spin animation as the plaza / river belts.
+function GolfBeltPickup({
+  collectedRef,
+}: {
+  collectedRef: React.MutableRefObject<boolean>;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    const g = ref.current;
+    if (!g) return;
+    g.visible = !collectedRef.current;
+    if (!collectedRef.current) {
+      const t = state.clock.elapsedTime;
+      g.position.y =
+        0.9 + Math.sin(t * BELT_BOB_FREQ * 2 * Math.PI) * BELT_BOB_AMP;
+      g.rotation.y = t * BELT_SPIN_FREQ * 2 * Math.PI;
+    }
+  });
+  // World position: 0.8u east of the cup so the belt sits beside
+  // the flag pole, well within sight from the tee.
+  return (
+    <group ref={ref} position={[GOLF_HOLE.x + 0.8, 0.9, GOLF_HOLE.z]}>
+      <mesh castShadow>
+        <boxGeometry args={[0.7, 0.18, 0.22]} />
+        <meshStandardMaterial color="#0a0a0a" />
+      </mesh>
+      <mesh position={[0.22, 0, 0]} castShadow>
+        <boxGeometry args={[0.12, 0.2, 0.24]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#fde047"
+          emissiveIntensity={0.9}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Glow ring on the green so the kid can spot the belt from
+          the tee 19u away. */}
+      <mesh
+        position={[0, -0.85, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+      >
+        <ringGeometry args={[0.4, 0.7, 24]} />
+        <meshBasicMaterial
+          color="#fde047"
+          transparent
+          opacity={0.5}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
 
 // Atmospheric haze wall at the southern horizon (formerly behind
 // the gun range, formerly behind the farm) — softens the abrupt
