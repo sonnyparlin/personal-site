@@ -4773,8 +4773,10 @@ function GolfCourse({
       {/* Hole 2 — middle of the course, dog-legs back the other way */}
       <GolfHole greenLocal={[5, 2]} teeLocal={[-5, -2]} />
 
-      {/* Hole 3 — south end, closest to the farm */}
-      <GolfHole greenLocal={[-5, 12]} teeLocal={[3, 8]} />
+      {/* Hole 3 used to live here (greenLocal [-5, 12] = world
+          (-19, 29)) but its green + flag landed inside the river
+          channel after the river became map-spanning, so it was
+          removed. Holes 1 + 2 cover the playable course. */}
 
       {/* Sand bunkers scattered across the course. Each is positioned
           so its ellipse doesn't overlap any green or the water
@@ -4837,7 +4839,8 @@ function GolfCourse({
       <FairwayMound position={[4, 0, 0]} scale={1.0} color="#5fa838" />
       <FairwayMound position={[-4, 0, 4]} scale={1.1} />
       <FairwayMound position={[5, 0, 11]} scale={0.85} color="#5fa838" />
-      <FairwayMound position={[-6, 0, 13]} scale={1.0} />
+      {/* (-6, 13) → world (-20, 30) — was deep in the river channel
+          after the map-spanning river, removed. */}
 
       {/* Parked golf cart on the cart path, between holes 1 and 2 */}
       <GolfCart position={[5, 0, -4]} rotation={Math.PI * 0.1} />
