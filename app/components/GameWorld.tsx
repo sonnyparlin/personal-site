@@ -621,7 +621,6 @@ function riverWorldAt(t: number, offset: number): {
 // inside Environment — each Hill's footprint radius is `3.5 * scale`
 // (the half-sphere has unscaled radius 3.5, and only Y is squashed).
 const OBSTACLES: { x: number; z: number; r: number }[] = [
-  { x:   0, z: -32, r: 3.5 * 1.8 },
   { x: -22, z:  72, r: 3.5 * 1.4 },
   { x:  14, z:  73, r: 3.5 * 1.5 },
   { x:  -3, z:  84, r: 3.5 * 1.6 },
@@ -3128,13 +3127,9 @@ function Environment({
       <CoasterCart coasterRef={coasterRef} />
 
       {/* Distant rolling hills at the far edges of the world. East
-          is ocean, west is cityscape — only north and south hills
-          remain so each cardinal direction has its own backdrop. */}
-      {/* North hill on the central island — purely backdrop, doesn't
-          overlap the river or the carnival. The other near-river /
-          near-carnival hills were removed to keep the carnival
-          fully visible and the river bank clean. */}
-      <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
+          is ocean, west is cityscape. All near-river hills were
+          removed so the river banks stay clean; only the southern
+          backdrop pines + hills (z>=72) remain. */}
 
       {/* Northern mountain ridge — two broad snow-capped peaks
           positioned with the smaller front peak overlapping the
