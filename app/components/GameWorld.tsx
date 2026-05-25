@@ -627,6 +627,102 @@ const OBSTACLES: { x: number; z: number; r: number }[] = [
   { x:  -3, z:  84, r: 3.5 * 1.6 },
 ];
 
+// Wooden bridges across the lazy river. Each bridge is a rectangle
+// aligned with one axis — `axis: "x"` means the long side runs in the
+// x direction (east-west), so the bridge spans the channel where the
+// channel runs north-south (east + west sides of the loop). `axis:
+// "z"` is the perpendicular case (bridge runs north-south across the
+// channel on the north + south sides of the loop).
+//
+// The character can ONLY cross the river by walking on a bridge — the
+// inRiverChannel + onBridge tests in resolveCollisions push the
+// character out of the water everywhere else.
+//
+// Bridge centres are placed so the rectangle covers the full channel
+// width (RIVER_HALF_WIDTH * 2 = 6u between inner + outer ring) plus a
+// little overhang on each side so the kid can step onto / off the
+// bridge from grass without an awkward zero-gap.
+type Bridge = {
+  x: number;
+  z: number;
+  axis: "x" | "z";
+  length: number; // along the long axis (= crosses the channel)
+  width: number;  // along the short axis (= along the channel)
+};
+const RIVER_BRIDGES: Bridge[] = [
+  // North bridge — direct path from plaza to the NW carnival.
+  { x: -3, z: -25, axis: "z", length: 8, width: 3 },
+  // East bridge — onto the beach + ocean side.
+  { x: 19, z: 5, axis: "x", length: 8, width: 3 },
+  // West bridge — onto the road + cityscape side.
+  { x: -25, z: 5, axis: "x", length: 8, width: 3 },
+];
+const BRIDGE_DECK_Y = 0.6; // top of the plank (clears tube top at y=0.38)
+const BRIDGE_DECK_THICKNESS = 0.18;
+
+// Returns true if (x, z) is inside the lazy-river water channel (the
+// annulus between the inner and outer rings of the oval).
+function inRiverChannel(x: number, z: number): boolean {
+  const dx = x - RIVER_CENTER.x;
+  const dz = z - RIVER_CENTER.z;
+  const Rxi = RIVER_RX - RIVER_HALF_WIDTH;
+  const Rzi = RIVER_RZ - RIVER_HALF_WIDTH;
+  const Rxo = RIVER_RX + RIVER_HALF_WIDTH;
+  const Rzo = RIVER_RZ + RIVER_HALF_WIDTH;
+  const innerSum = (dx / Rxi) ** 2 + (dz / Rzi) ** 2;
+  const outerSum = (dx / Rxo) ** 2 + (dz / Rzo) ** 2;
+  return outerSum <= 1 && innerSum >= 1;
+}
+
+// Returns true if (x, z) falls within any bridge's rectangular
+// footprint. Bridges cross the channel at fixed spots — when the
+// character is on one of them the water-push collision is skipped.
+function onBridge(x: number, z: number): boolean {
+  for (const b of RIVER_BRIDGES) {
+    const dx = Math.abs(x - b.x);
+    const dz = Math.abs(z - b.z);
+    if (b.axis === "z") {
+      if (dz < b.length / 2 && dx < b.width / 2) return true;
+    } else {
+      if (dx < b.length / 2 && dz < b.width / 2) return true;
+    }
+  }
+  return false;
+}
+
+// Push (x, z) out of the lazy-river channel toward the nearer ring
+// boundary, with a CHAR_RADIUS buffer so the character doesn't
+// immediately re-trigger on the next frame. Bridges punch holes — if
+// (x, z) is on a bridge the position passes through unchanged.
+function resolveRiverCollision(x: number, z: number): { x: number; z: number } {
+  if (!inRiverChannel(x, z) || onBridge(x, z)) return { x, z };
+  const dx = x - RIVER_CENTER.x;
+  const dz = z - RIVER_CENTER.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.0001) return { x, z };
+  const Rxi = RIVER_RX - RIVER_HALF_WIDTH;
+  const Rzi = RIVER_RZ - RIVER_HALF_WIDTH;
+  const Rxo = RIVER_RX + RIVER_HALF_WIDTH;
+  const Rzo = RIVER_RZ + RIVER_HALF_WIDTH;
+  const innerSum = (dx / Rxi) ** 2 + (dz / Rzi) ** 2;
+  const outerSum = (dx / Rxo) ** 2 + (dz / Rzo) ** 2;
+  // Scale that projects (dx, dz) onto the inner / outer rings.
+  const sInner = 1 / Math.sqrt(innerSum); // < 1, pulls toward centre
+  const sOuter = 1 / Math.sqrt(outerSum); // > 1, pushes away from centre
+  // Distance from current position to each projection.
+  const innerDist = len * (1 - sInner);
+  const outerDist = len * (sOuter - 1);
+  const buffer = CHAR_RADIUS / len;
+  if (innerDist < outerDist) {
+    // Push toward island (inward).
+    const s = sInner - buffer;
+    return { x: RIVER_CENTER.x + dx * s, z: RIVER_CENTER.z + dz * s };
+  }
+  // Push toward outer grass (outward).
+  const s = sOuter + buffer;
+  return { x: RIVER_CENTER.x + dx * s, z: RIVER_CENTER.z + dz * s };
+}
+
 // Resolve building collisions by pushing the character out of any
 // building footprint (rotated rectangle inflated by CHAR_RADIUS), and
 // out of any obstacle circle (hills).
@@ -677,6 +773,13 @@ function resolveCollisions(x: number, z: number): { x: number; z: number } {
       }
     }
   }
+  // Lazy-river water — push the character out of the channel toward
+  // the nearer ring boundary UNLESS they're standing on a bridge.
+  // Done last so it overrides any earlier push that would have
+  // dropped them into the water.
+  const r = resolveRiverCollision(nx, nz);
+  nx = r.x;
+  nz = r.z;
   return { x: nx, z: nz };
 }
 
@@ -732,8 +835,29 @@ function lineHitsAnyObstacle(
   return false;
 }
 
-// Combined route-blocking check: either a building footprint or a
-// hill circle. Both are obstacles routeTo must navigate around.
+// Does a straight line segment cross the lazy-river channel at a
+// point that isn't on a bridge? Sample-based; 32 samples is enough
+// granularity for the big oval (~165u perimeter, so each sample
+// covers ~5u).
+function lineHitsRiver(
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number
+): boolean {
+  const SAMPLES = 32;
+  for (let i = 1; i < SAMPLES; i++) {
+    const t = i / SAMPLES;
+    const sx = x1 + (x2 - x1) * t;
+    const sz = z1 + (z2 - z1) * t;
+    if (inRiverChannel(sx, sz) && !onBridge(sx, sz)) return true;
+  }
+  return false;
+}
+
+// Combined route-blocking check: a line is blocked if it crosses a
+// building footprint, a hill circle, or the river channel without a
+// bridge. All three are obstacles routeTo must navigate around.
 function lineIsBlocked(
   x1: number,
   z1: number,
@@ -742,7 +866,8 @@ function lineIsBlocked(
 ): boolean {
   return (
     lineHitsAnyBuilding(x1, z1, x2, z2) ||
-    lineHitsAnyObstacle(x1, z1, x2, z2)
+    lineHitsAnyObstacle(x1, z1, x2, z2) ||
+    lineHitsRiver(x1, z1, x2, z2)
   );
 }
 
@@ -762,9 +887,19 @@ const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: 3, z: -4 },    // NE corridor between HOME and MUSIC (toward the gator)
   { x: -3, z: -4 },   // NW corridor between HOME and JIU JITSU (toward the park)
   // Southern hills corridor — threads east of the SW hill (-22, 28)
-  // so the walk to the lazy river (z=40+) routes around the
-  // (10, 30) hill on the east side of the south meadow if needed.
+  // so the walk to the lazy river (z=40+) routes around it if needed.
   { x: -9, z: 26 },
+  // Bridge waypoints — each bridge has an INNER (island-side) and
+  // OUTER (outer-grass-side) entry point. routeTo's two-waypoint
+  // fallback walks through both to cross a bridge cleanly. Without
+  // these the path planner would slip diagonally off the bridge
+  // mid-cross and lineHitsRiver would block the route.
+  { x: -3, z: -22 },  // N bridge — island side
+  { x: -3, z: -28 },  // N bridge — outer side (toward carnival)
+  { x:  16, z: 5 },   // E bridge — island side
+  { x:  22, z: 5 },   // E bridge — outer side (toward beach)
+  { x: -22, z: 5 },   // W bridge — island side
+  { x: -28, z: 5 },   // W bridge — outer side (toward road)
 ];
 
 // Return the sequence of waypoints to walk through to get from (fromX, fromZ)
@@ -795,6 +930,32 @@ function routeTo(
     }
   }
   if (best) return [best, { x: toX, z: toZ }];
+
+  // Single-bypass failed — try a TWO-bypass path. Mainly used for
+  // river crossings: the kid needs to walk through the inner entry,
+  // then along the bridge to the outer entry, before heading off
+  // toward the destination. Pure O(N²) over waypoints, but N is
+  // ~15 so it's fine.
+  let bestPair: [{ x: number; z: number }, { x: number; z: number }] | null = null;
+  let bestPairCost = Infinity;
+  for (const w1 of BYPASS_WAYPOINTS) {
+    if (lineIsBlocked(fromX, fromZ, w1.x, w1.z)) continue;
+    for (const w2 of BYPASS_WAYPOINTS) {
+      if (w2 === w1) continue;
+      if (lineIsBlocked(w1.x, w1.z, w2.x, w2.z)) continue;
+      if (lineIsBlocked(w2.x, w2.z, toX, toZ)) continue;
+      const cost =
+        Math.hypot(w1.x - fromX, w1.z - fromZ) +
+        Math.hypot(w2.x - w1.x, w2.z - w1.z) +
+        Math.hypot(toX - w2.x, toZ - w2.z);
+      if (cost < bestPairCost) {
+        bestPairCost = cost;
+        bestPair = [w1, w2];
+      }
+    }
+  }
+  if (bestPair) return [...bestPair, { x: toX, z: toZ }];
+
   // Fallback: walk straight and let collision push-out do its best.
   return [{ x: toX, z: toZ }];
 }
@@ -2991,6 +3152,12 @@ function Environment({
           spot and start a one-loop tubing ride. Replaces the gun
           range (which replaced the old farm). */}
       <LazyRiver onSelect={onRiverClick} />
+      {/* Wooden bridges across the river channel — N, E, W. The
+          character must use one to cross; everywhere else the
+          water-collision pushes them back onto the nearest bank. */}
+      {RIVER_BRIDGES.map((b, i) => (
+        <RiverBridge key={`bridge-${i}`} bridge={b} />
+      ))}
       {/* Tube — visible only while the character is riding. Sized
           like a Gracie-red inner tube; child Character is drawn at
           the right XYZ by the tubing state machine. */}
@@ -3608,6 +3775,113 @@ function LazyRiver({ onSelect }: { onSelect: () => void }) {
           internal palms / bushes were sized for the small-oval
           version of the river and ended up either on the plaza
           (blocking the character) or inside the new river channel. */}
+    </group>
+  );
+}
+
+// RiverBridge — wooden plank crossing the river channel. Plank top
+// sits at BRIDGE_DECK_Y so the tube can float under it cleanly
+// (tube top y=0.38, plank bottom y=0.42). Four corner posts go down
+// to the ground, two short railings line the long sides. The
+// character's onBridge check (used by resolveCollisions + Character
+// useFrame) reads the RIVER_BRIDGES array so the visual + collision
+// stay in sync — only edit the bridge size by tweaking the constants.
+function RiverBridge({ bridge }: { bridge: Bridge }) {
+  const { x, z, axis, length, width } = bridge;
+  // Plank orientation: if axis === "z" the plank's long side runs
+  // along z so length is the z extent. Use the box dims directly:
+  // [x-extent, y-extent, z-extent].
+  const planks =
+    axis === "z"
+      ? ([width, BRIDGE_DECK_THICKNESS, length] as const)
+      : ([length, BRIDGE_DECK_THICKNESS, width] as const);
+  const planksY = BRIDGE_DECK_Y - BRIDGE_DECK_THICKNESS / 2;
+
+  const PLANK_COLOR = "#8b6644";
+  const POST_COLOR = "#5a3c20";
+  const RAIL_COLOR = "#5a3c20";
+
+  // Corner posts — go from ground (y=0) up to the railing top.
+  const POST_TOP_Y = BRIDGE_DECK_Y + 0.6;
+  const POST_HEIGHT = POST_TOP_Y;
+  // Position posts at the four corners of the plank footprint.
+  const halfL = length / 2;
+  const halfW = width / 2;
+  const corners =
+    axis === "z"
+      ? [
+          [-halfW + 0.1, -halfL + 0.1],
+          [ halfW - 0.1, -halfL + 0.1],
+          [-halfW + 0.1,  halfL - 0.1],
+          [ halfW - 0.1,  halfL - 0.1],
+        ]
+      : [
+          [-halfL + 0.1, -halfW + 0.1],
+          [ halfL - 0.1, -halfW + 0.1],
+          [-halfL + 0.1,  halfW - 0.1],
+          [ halfL - 0.1,  halfW - 0.1],
+        ];
+  // Railings — two horizontal beams along the long sides of the
+  // plank, at deck-top height + 0.4. Each runs the full plank
+  // length, offset perpendicular to ±halfW.
+  const railLen = length;
+  const railThickness = 0.08;
+  const railHeight = 0.4;
+
+  return (
+    <group position={[x, 0, z]}>
+      {/* Plank deck — kid walks on top. */}
+      <mesh position={[0, planksY, 0]} castShadow receiveShadow>
+        <boxGeometry args={[planks[0], planks[1], planks[2]]} />
+        <meshStandardMaterial color={PLANK_COLOR} roughness={0.85} />
+      </mesh>
+      {/* 4 corner posts going to the ground. */}
+      {corners.map(([cx, cz], i) => (
+        <mesh
+          key={i}
+          position={[cx, POST_HEIGHT / 2, cz]}
+          castShadow
+        >
+          <boxGeometry args={[0.15, POST_HEIGHT, 0.15]} />
+          <meshStandardMaterial color={POST_COLOR} roughness={0.9} />
+        </mesh>
+      ))}
+      {/* Two railings along the long sides. */}
+      {axis === "z" ? (
+        <>
+          <mesh
+            position={[-halfW + 0.05, BRIDGE_DECK_Y + railHeight, 0]}
+            castShadow
+          >
+            <boxGeometry args={[railThickness, railThickness, railLen]} />
+            <meshStandardMaterial color={RAIL_COLOR} />
+          </mesh>
+          <mesh
+            position={[halfW - 0.05, BRIDGE_DECK_Y + railHeight, 0]}
+            castShadow
+          >
+            <boxGeometry args={[railThickness, railThickness, railLen]} />
+            <meshStandardMaterial color={RAIL_COLOR} />
+          </mesh>
+        </>
+      ) : (
+        <>
+          <mesh
+            position={[0, BRIDGE_DECK_Y + railHeight, -halfW + 0.05]}
+            castShadow
+          >
+            <boxGeometry args={[railLen, railThickness, railThickness]} />
+            <meshStandardMaterial color={RAIL_COLOR} />
+          </mesh>
+          <mesh
+            position={[0, BRIDGE_DECK_Y + railHeight, halfW - 0.05]}
+            castShadow
+          >
+            <boxGeometry args={[railLen, railThickness, railThickness]} />
+            <meshStandardMaterial color={RAIL_COLOR} />
+          </mesh>
+        </>
+      )}
     </group>
   );
 }
@@ -6254,9 +6528,22 @@ function Character({
       // riding the coaster, lower the character so the hips (at
       // body-local y=0.66) sit on the cart's top surface (cart-local
       // y=0.36 × PARK_SCALE) rather than standing on top.
+      // Lazy-river bridges sit at BRIDGE_DECK_Y above the water;
+      // when the kid walks across, lift them so their feet stand on
+      // the plank top. Skip the bump for the special-action modes
+      // that drive their own y (riding, tubing, golfing, etc.) so
+      // a transient onBridge() at the kid's auto-board position
+      // doesn't fight the tubing tick.
+      const standsOnBridge =
+        c.mode !== "tubing" &&
+        c.mode !== "riding" &&
+        c.mode !== "ballooning" &&
+        onBridge(c.x, c.z);
       rootRef.current.position.y =
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
+          : standsOnBridge
+          ? c.y + BRIDGE_DECK_Y
           : c.y; // covers golfing / ballooning / tubing AND play-mode jumps
       // Show / hide the whole player avatar based on the `visible`
       // prop — used to hide the player Character in the academy
