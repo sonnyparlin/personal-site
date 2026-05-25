@@ -656,8 +656,40 @@ const RIVER_BRIDGES: Bridge[] = [
   // West bridge — onto the road + cityscape side.
   { x: -25, z: 5, axis: "x", length: 8, width: 3 },
 ];
-const BRIDGE_DECK_Y = 0.6; // top of the plank (clears tube top at y=0.38)
-const BRIDGE_DECK_THICKNESS = 0.18;
+// Arch geometry: bridges are half-circle wooden arches so the tube
+// rider passes UNDER them instead of clipping through. Apex y =
+// ARCH_RADIUS + ARCH_TUBE (top of the torus). Kept modest so the
+// kid's head doesn't rise above the play-mode chase cam's pinned
+// y=4. The kid walking across follows the arch's top surface — see
+// bridgeYAt().
+const ARCH_RADIUS = 2.2;
+const ARCH_TUBE = 0.5; // tube radius of the torus = visual band width
+
+// Top-of-arch y at a given world position, ASSUMING the position is
+// on the bridge already (callers should onBridge-check first). The
+// arch is a half-circle in the plane perpendicular to the bridge's
+// short axis: y = sqrt(1 - t²) × ARCH_RADIUS, where t is the
+// normalised position along the bridge's long axis (-1 at one end,
+// +1 at the other). The "+ ARCH_THICKNESS" lifts the kid onto the
+// top surface of the arch band rather than its centerline.
+function bridgeYAt(x: number, z: number): number {
+  for (const b of RIVER_BRIDGES) {
+    const dx = Math.abs(x - b.x);
+    const dz = Math.abs(z - b.z);
+    const halfL = b.length / 2;
+    const halfW = b.width / 2;
+    const onThis =
+      b.axis === "z"
+        ? dz < halfL && dx < halfW
+        : dx < halfL && dz < halfW;
+    if (!onThis) continue;
+    const along = b.axis === "z" ? z - b.z : x - b.x;
+    const t = along / halfL; // -1..+1
+    const archY = Math.sqrt(Math.max(0, 1 - t * t)) * ARCH_RADIUS;
+    return archY + ARCH_TUBE;
+  }
+  return 0;
+}
 
 // Returns true if (x, z) is inside the lazy-river water channel (the
 // annulus between the inner and outer rings of the oval).
@@ -3198,12 +3230,12 @@ function Environment({
           and the lanes directly adjacent to it. Trees too close to
           the carnival meshes clipped through the coaster track and
           the carousel canopy. */}
-      <PineTree position={[-35, 0, -38]} scale={1.4} />
+      <PineTree position={[-12, 0, -38]} scale={1.4} />
       <PineTree position={[-3, 0, -43]} scale={1.55} />
       <PineTree position={[5, 0, -38]} scale={1.7} />
       <PineTree position={[10, 0, -42]} scale={1.4} />
       <PineTree position={[16, 0, -39]} scale={1.3} />
-      <PineTree position={[-30, 0, -48]} scale={1.5} />
+      <PineTree position={[-12, 0, -48]} scale={1.5} />
       <PineTree position={[0, 0, -47]} scale={1.45} />
       <PineTree position={[13, 0, -47]} scale={1.5} />
 
@@ -3773,109 +3805,79 @@ function LazyRiver({ onSelect }: { onSelect: () => void }) {
   );
 }
 
-// RiverBridge — wooden plank crossing the river channel. Plank top
-// sits at BRIDGE_DECK_Y so the tube can float under it cleanly
-// (tube top y=0.38, plank bottom y=0.42). Four corner posts go down
-// to the ground, two short railings line the long sides. The
-// character's onBridge check (used by resolveCollisions + Character
-// useFrame) reads the RIVER_BRIDGES array so the visual + collision
-// stay in sync — only edit the bridge size by tweaking the constants.
+// RiverBridge — half-circle wooden arch over the river channel. The
+// arch apex is at y = ARCH_RADIUS (= 4) so the tube floats under it
+// cleanly (tube top y=0.38 vs arch underside y~3.75 at the centre).
+// The kid walking across follows the curve via `bridgeYAt(x, z)` in
+// Character useFrame — root.y traces the top of the arch instead of
+// staying at y=0.
+//
+// Visual is two pieces: (1) a fat torus (half-circle) for the arch
+// band itself, oriented so the apex points up and the span axis
+// matches `bridge.axis`; (2) a pair of side-railing torii on the
+// long sides for the "wooden footbridge" silhouette. The thicker
+// the main torus's tube, the wider the walking surface.
 function RiverBridge({ bridge }: { bridge: Bridge }) {
-  const { x, z, axis, length, width } = bridge;
-  // Plank orientation: if axis === "z" the plank's long side runs
-  // along z so length is the z extent. Use the box dims directly:
-  // [x-extent, y-extent, z-extent].
-  const planks =
-    axis === "z"
-      ? ([width, BRIDGE_DECK_THICKNESS, length] as const)
-      : ([length, BRIDGE_DECK_THICKNESS, width] as const);
-  const planksY = BRIDGE_DECK_Y - BRIDGE_DECK_THICKNESS / 2;
+  const { x, z, axis, width } = bridge;
+
+  const RAIL_TUBE = 0.06;    // thin side rails
+  const RAIL_OFFSET = width / 2 - 0.1; // distance from centre to each rail
 
   const PLANK_COLOR = "#8b6644";
-  const POST_COLOR = "#5a3c20";
   const RAIL_COLOR = "#5a3c20";
 
-  // Corner posts — go from ground (y=0) up to the railing top.
-  const POST_TOP_Y = BRIDGE_DECK_Y + 0.6;
-  const POST_HEIGHT = POST_TOP_Y;
-  // Position posts at the four corners of the plank footprint.
-  const halfL = length / 2;
-  const halfW = width / 2;
-  const corners =
-    axis === "z"
+  // Default TorusGeometry: arc lies in XY plane (X horizontal, Y up),
+  // tube cross-section centred on the XY ring. arc = π gives a
+  // half-circle from (radius, 0) up over (0, radius) to (-radius, 0).
+  //
+  // For axis="x" bridge: arch span runs along X. Default torus
+  // orientation already matches — no rotation needed.
+  //
+  // For axis="z" bridge: arch span needs to run along Z. Rotate the
+  // arch 90° around Y so its X axis becomes Z.
+  const archRotY = axis === "z" ? Math.PI / 2 : 0;
+
+  // Side rails — two thin torii offset PERPENDICULAR to the span.
+  // For axis="x": offset is in ±Z. For axis="z": offset is in ±X.
+  const railOffsets =
+    axis === "x"
       ? [
-          [-halfW + 0.1, -halfL + 0.1],
-          [ halfW - 0.1, -halfL + 0.1],
-          [-halfW + 0.1,  halfL - 0.1],
-          [ halfW - 0.1,  halfL - 0.1],
+          [0, 0,  RAIL_OFFSET] as const,
+          [0, 0, -RAIL_OFFSET] as const,
         ]
       : [
-          [-halfL + 0.1, -halfW + 0.1],
-          [ halfL - 0.1, -halfW + 0.1],
-          [-halfL + 0.1,  halfW - 0.1],
-          [ halfL - 0.1,  halfW - 0.1],
+          [ RAIL_OFFSET, 0, 0] as const,
+          [-RAIL_OFFSET, 0, 0] as const,
         ];
-  // Railings — two horizontal beams along the long sides of the
-  // plank, at deck-top height + 0.4. Each runs the full plank
-  // length, offset perpendicular to ±halfW.
-  const railLen = length;
-  const railThickness = 0.08;
-  const railHeight = 0.4;
 
   return (
     <group position={[x, 0, z]}>
-      {/* Plank deck — kid walks on top. */}
-      <mesh position={[0, planksY, 0]} castShadow receiveShadow>
-        <boxGeometry args={[planks[0], planks[1], planks[2]]} />
+      {/* Main arch band — kid walks along the top of this torus. */}
+      <mesh
+        position={[0, 0, 0]}
+        rotation={[0, archRotY, 0]}
+        castShadow
+        receiveShadow
+      >
+        <torusGeometry args={[ARCH_RADIUS, ARCH_TUBE, 12, 48, Math.PI]} />
         <meshStandardMaterial color={PLANK_COLOR} roughness={0.85} />
       </mesh>
-      {/* 4 corner posts going to the ground. */}
-      {corners.map(([cx, cz], i) => (
+      {/* Side rails — thinner torii at ±RAIL_OFFSET perpendicular to
+          the span. Slightly larger radius so they sit just OUTSIDE
+          the main arch band, like railings cresting over the deck. */}
+      {railOffsets.map(([rx, ry, rz], i) => (
         <mesh
           key={i}
-          position={[cx, POST_HEIGHT / 2, cz]}
+          position={[rx, ry, rz]}
+          rotation={[0, archRotY, 0]}
           castShadow
         >
-          <boxGeometry args={[0.15, POST_HEIGHT, 0.15]} />
-          <meshStandardMaterial color={POST_COLOR} roughness={0.9} />
+          <torusGeometry
+            args={[ARCH_RADIUS + ARCH_TUBE + 0.15, RAIL_TUBE, 6, 36, Math.PI]}
+          />
+          <meshStandardMaterial color={RAIL_COLOR} />
         </mesh>
       ))}
-      {/* Two railings along the long sides. */}
-      {axis === "z" ? (
-        <>
-          <mesh
-            position={[-halfW + 0.05, BRIDGE_DECK_Y + railHeight, 0]}
-            castShadow
-          >
-            <boxGeometry args={[railThickness, railThickness, railLen]} />
-            <meshStandardMaterial color={RAIL_COLOR} />
-          </mesh>
-          <mesh
-            position={[halfW - 0.05, BRIDGE_DECK_Y + railHeight, 0]}
-            castShadow
-          >
-            <boxGeometry args={[railThickness, railThickness, railLen]} />
-            <meshStandardMaterial color={RAIL_COLOR} />
-          </mesh>
-        </>
-      ) : (
-        <>
-          <mesh
-            position={[0, BRIDGE_DECK_Y + railHeight, -halfW + 0.05]}
-            castShadow
-          >
-            <boxGeometry args={[railLen, railThickness, railThickness]} />
-            <meshStandardMaterial color={RAIL_COLOR} />
-          </mesh>
-          <mesh
-            position={[0, BRIDGE_DECK_Y + railHeight, halfW - 0.05]}
-            castShadow
-          >
-            <boxGeometry args={[railLen, railThickness, railThickness]} />
-            <meshStandardMaterial color={RAIL_COLOR} />
-          </mesh>
-        </>
-      )}
     </group>
   );
 }
@@ -4769,8 +4771,10 @@ function GolfCourse({
         greenRadius={3.6}
       />
 
-      {/* Hole 2 — middle of the course, dog-legs back the other way */}
-      <GolfHole greenLocal={[5, 2]} teeLocal={[-5, -2]} />
+      {/* Hole 2 — middle of the course, dog-legs back the other way.
+          Green moved from local x=5 to x=8 so it doesn't overlap the
+          cart path (which runs N-S at local x=5). */}
+      <GolfHole greenLocal={[8, 2]} teeLocal={[-5, -2]} />
 
       {/* Hole 3 used to live here (greenLocal [-5, 12] = world
           (-19, 29)) but its green + flag landed inside the river
@@ -6524,12 +6528,13 @@ function Character({
       // riding the coaster, lower the character so the hips (at
       // body-local y=0.66) sit on the cart's top surface (cart-local
       // y=0.36 × PARK_SCALE) rather than standing on top.
-      // Lazy-river bridges sit at BRIDGE_DECK_Y above the water;
-      // when the kid walks across, lift them so their feet stand on
-      // the plank top. Skip the bump for the special-action modes
-      // that drive their own y (riding, tubing, golfing, etc.) so
-      // a transient onBridge() at the kid's auto-board position
-      // doesn't fight the tubing tick.
+      // Lazy-river bridges are arches — `bridgeYAt(x, z)` gives the
+      // top-of-arch y for the bridge the kid is standing on (or 0
+      // if they're not on one). Lift the kid by that amount so they
+      // walk the curve of the arch. Skip for special-action modes
+      // that drive their own y (riding, tubing, ballooning) so a
+      // transient onBridge() near the boarding deck doesn't fight
+      // the tubing tick.
       const standsOnBridge =
         c.mode !== "tubing" &&
         c.mode !== "riding" &&
@@ -6539,7 +6544,7 @@ function Character({
         c.mode === "riding"
           ? c.y + 0.36 * PARK_SCALE - 0.66
           : standsOnBridge
-          ? c.y + BRIDGE_DECK_Y
+          ? c.y + bridgeYAt(c.x, c.z)
           : c.y; // covers golfing / ballooning / tubing AND play-mode jumps
       // Show / hide the whole player avatar based on the `visible`
       // prop — used to hide the player Character in the academy
