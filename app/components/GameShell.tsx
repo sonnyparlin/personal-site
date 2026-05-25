@@ -470,6 +470,70 @@ function PointsHUD() {
   );
 }
 
+// Hint shown the moment the kid hits 20/21 belts. The 21st belt
+// is ONLY earnable by winning a chess game (see ChessRoom +
+// chess-player-won dispatch), and it isn't obvious from the
+// HUD which slot is "chess." This banner appears center-top
+// once the walking belts are all collected, and stays up until
+// the chess win lands the 21st belt → celebration fires →
+// banner is dismissed on play-mode-reset. Tracks its own count
+// + chess-belt-seen flag from window events so GameShell stays
+// inert (same anti-blip pattern as BeltHUD).
+function ChessHintBanner() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    let count = 0;
+    let chessAwarded = false;
+    function recompute() {
+      // Show when the kid has the 20 walking belts but no chess
+      // belt yet. Once chess lands they hit 21 → celebration →
+      // banner can stay hidden (count > 20 condition fails).
+      setVisible(count >= 20 && !chessAwarded);
+    }
+    function onCollect(e: Event) {
+      count += 1;
+      const detail = (e as CustomEvent).detail;
+      if (detail === "chess") chessAwarded = true;
+      recompute();
+    }
+    function onReset() {
+      count = 0;
+      chessAwarded = false;
+      recompute();
+    }
+    window.addEventListener("belt-collected", onCollect);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("belt-collected", onCollect);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
+  if (!visible) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="
+        absolute top-72 left-1/2 -translate-x-1/2 z-20 select-none
+        max-w-[88vw] w-max
+        px-5 py-3
+        flex items-center gap-3
+        bg-amber-500/95
+        text-amber-950 text-xs sm:text-sm uppercase tracking-wide font-semibold
+        text-center
+        border-2 border-amber-200/80
+        rounded-2xl
+        backdrop-blur-sm
+        shadow-lg shadow-black/50
+        animate-in fade-in slide-in-from-top-3 duration-300
+      "
+    >
+      <span aria-hidden className="text-lg leading-none">♟</span>
+      <span>Beat Sonny at chess to earn your final belt!</span>
+    </div>
+  );
+}
+
 // Invisible companion to BeltHUD — listens to `belt-collected`
 // + `play-mode-reset`, keeps its own running count, and plays
 // the one-shot fanfare MP3 the moment the count crosses
@@ -1191,6 +1255,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
           HUDs starting at `top-20`, so no overlap. */}
       {playMode && <BeltHUD />}
       {playMode && <PointsHUD />}
+      {playMode && <ChessHintBanner />}
       {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
       {playMode && (
         <MuteButton
