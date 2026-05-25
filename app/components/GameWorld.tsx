@@ -3193,16 +3193,17 @@ function Environment({
       {/* Pine forest in the valley between the hills and the
           mountain ridge — softens the transition from the play area
           to the towering peaks. */}
+      {/* Pine forest backdrop — kept on the OUTER ring around the
+          carnival but cleared from inside the carnival's footprint
+          and the lanes directly adjacent to it. Trees too close to
+          the carnival meshes clipped through the coaster track and
+          the carousel canopy. */}
       <PineTree position={[-35, 0, -38]} scale={1.4} />
-      <PineTree position={[-25, 0, -42]} scale={1.6} />
-      <PineTree position={[-18, 0, -45]} scale={1.5} />
-      <PineTree position={[-10, 0, -40]} scale={1.3} />
       <PineTree position={[-3, 0, -43]} scale={1.55} />
       <PineTree position={[5, 0, -38]} scale={1.7} />
       <PineTree position={[10, 0, -42]} scale={1.4} />
       <PineTree position={[16, 0, -39]} scale={1.3} />
       <PineTree position={[-30, 0, -48]} scale={1.5} />
-      <PineTree position={[-15, 0, -48]} scale={1.65} />
       <PineTree position={[0, 0, -47]} scale={1.45} />
       <PineTree position={[13, 0, -47]} scale={1.5} />
 
@@ -3214,8 +3215,6 @@ function Environment({
       <Tree position={[2, 0, -16]} scale={1.05} />
       <Tree position={[-19, 0, 5]} />
       <PineTree position={[17, 0, -16]} scale={1.5} />
-      <PineTree position={[-3, 0, 20]} scale={1.1} />
-      <PineTree position={[8, 0, 19]} scale={1.4} />
 
       {/* Bushes scattered around the perimeter for ground texture */}
       <Bush position={[6, 0, 4]} scale={1.0} />
@@ -4838,9 +4837,9 @@ function GolfCourse({
       <FairwayMound position={[-5, 0, -3]} scale={0.9} />
       <FairwayMound position={[4, 0, 0]} scale={1.0} color="#5fa838" />
       <FairwayMound position={[-4, 0, 4]} scale={1.1} />
-      <FairwayMound position={[5, 0, 11]} scale={0.85} color="#5fa838" />
-      {/* (-6, 13) → world (-20, 30) — was deep in the river channel
-          after the map-spanning river, removed. */}
+      {/* (5, 11) → world (-9, 28) + (-6, 13) → world (-20, 30) both
+          removed — landed inside the river channel or right at its
+          inner-south edge after the river became map-spanning. */}
 
       {/* Parked golf cart on the cart path, between holes 1 and 2 */}
       <GolfCart position={[5, 0, -4]} rotation={Math.PI * 0.1} />
