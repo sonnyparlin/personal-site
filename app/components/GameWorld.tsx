@@ -656,38 +656,23 @@ const RIVER_BRIDGES: Bridge[] = [
   // West bridge — onto the road + cityscape side.
   { x: -25, z: 5, axis: "x", length: 8, width: 3 },
 ];
-// Arch geometry: bridges are half-circle wooden arches so the tube
-// rider passes UNDER them instead of clipping through. Apex y =
-// ARCH_RADIUS + ARCH_TUBE (top of the torus). Kept modest so the
-// kid's head doesn't rise above the play-mode chase cam's pinned
-// y=4. The kid walking across follows the arch's top surface — see
-// bridgeYAt().
-const ARCH_RADIUS = 2.2;
-const ARCH_TUBE = 0.5; // tube radius of the torus = visual band width
+// Arch-bridge geometry: each bridge is a flat-deck stone bridge with
+// an arched opening underneath the deck. The kid walks ON the flat
+// deck at y = BRIDGE_DECK_Y; the tube floats UNDER the deck through
+// the arch opening (apex of arch at y = BRIDGE_ARCH_TOP_Y). Kept
+// modest so the kid's head doesn't rise above the play-mode chase
+// cam's pinned y=4.
+const BRIDGE_DECK_Y = 2.0;     // flat deck top — kid feet on this
+const BRIDGE_DECK_THICKNESS = 0.25;
+const BRIDGE_ARCH_TOP_Y = 1.6; // apex of the arch opening underneath
+const BRIDGE_ARCH_RADIUS = 1.6;
 
-// Top-of-arch y at a given world position, ASSUMING the position is
-// on the bridge already (callers should onBridge-check first). The
-// arch is a half-circle in the plane perpendicular to the bridge's
-// short axis: y = sqrt(1 - t²) × ARCH_RADIUS, where t is the
-// normalised position along the bridge's long axis (-1 at one end,
-// +1 at the other). The "+ ARCH_THICKNESS" lifts the kid onto the
-// top surface of the arch band rather than its centerline.
+// Bridge deck top y at a given world position, ASSUMING (x, z) is
+// already on a bridge (callers should onBridge-check first). The
+// deck is a flat plank — kid feet sit on it at BRIDGE_DECK_Y. Tube
+// passes under through the arched opening below the deck.
 function bridgeYAt(x: number, z: number): number {
-  for (const b of RIVER_BRIDGES) {
-    const dx = Math.abs(x - b.x);
-    const dz = Math.abs(z - b.z);
-    const halfL = b.length / 2;
-    const halfW = b.width / 2;
-    const onThis =
-      b.axis === "z"
-        ? dz < halfL && dx < halfW
-        : dx < halfL && dz < halfW;
-    if (!onThis) continue;
-    const along = b.axis === "z" ? z - b.z : x - b.x;
-    const t = along / halfL; // -1..+1
-    const archY = Math.sqrt(Math.max(0, 1 - t * t)) * ARCH_RADIUS;
-    return archY + ARCH_TUBE;
-  }
+  if (onBridge(x, z)) return BRIDGE_DECK_Y;
   return 0;
 }
 
@@ -3805,78 +3790,116 @@ function LazyRiver({ onSelect }: { onSelect: () => void }) {
   );
 }
 
-// RiverBridge — half-circle wooden arch over the river channel. The
-// arch apex is at y = ARCH_RADIUS (= 4) so the tube floats under it
-// cleanly (tube top y=0.38 vs arch underside y~3.75 at the centre).
-// The kid walking across follows the curve via `bridgeYAt(x, z)` in
-// Character useFrame — root.y traces the top of the arch instead of
-// staying at y=0.
+// RiverBridge — flat-deck stone-arch bridge. The body is an
+// extruded rectangle with an arched opening punched through, so from
+// the side it reads as a classic "stone arch bridge": flat walking
+// deck on top, semicircular opening below for the water (and tube)
+// to flow through. Side railings + corner posts complete the
+// silhouette.
 //
-// Visual is two pieces: (1) a fat torus (half-circle) for the arch
-// band itself, oriented so the apex points up and the span axis
-// matches `bridge.axis`; (2) a pair of side-railing torii on the
-// long sides for the "wooden footbridge" silhouette. The thicker
-// the main torus's tube, the wider the walking surface.
+// Cross-section (in the XY plane, before extrusion):
+//   outer rectangle = (-halfL, 0) to (halfL, BRIDGE_DECK_Y)
+//   hole = semicircle of radius BRIDGE_ARCH_RADIUS centred at
+//          (0, 0), arc from angle 0 (right) over the top to π (left)
+// Then extruded along Z by `width` to get the 3D bridge body.
 function RiverBridge({ bridge }: { bridge: Bridge }) {
-  const { x, z, axis, width } = bridge;
+  const { x, z, axis, length, width } = bridge;
 
-  const RAIL_TUBE = 0.06;    // thin side rails
-  const RAIL_OFFSET = width / 2 - 0.1; // distance from centre to each rail
+  const STONE_COLOR = "#a89684"; // warm grey stone-look
+  const DECK_COLOR = "#8b6644";  // wooden plank deck top
+  const RAIL_COLOR = "#5a3c20";  // dark wood rails
+  const POST_COLOR = "#5a3c20";
 
-  const PLANK_COLOR = "#8b6644";
-  const RAIL_COLOR = "#5a3c20";
+  const halfL = length / 2;
+  const halfW = width / 2;
 
-  // Default TorusGeometry: arc lies in XY plane (X horizontal, Y up),
-  // tube cross-section centred on the XY ring. arc = π gives a
-  // half-circle from (radius, 0) up over (0, radius) to (-radius, 0).
-  //
-  // For axis="x" bridge: arch span runs along X. Default torus
-  // orientation already matches — no rotation needed.
-  //
-  // For axis="z" bridge: arch span needs to run along Z. Rotate the
-  // arch 90° around Y so its X axis becomes Z.
-  const archRotY = axis === "z" ? Math.PI / 2 : 0;
+  // Build the stone-arch cross-section shape (in XY). The shape is
+  // then extruded along Z to give it depth. For axis="z" bridges we
+  // rotate the whole group 90° around Y so the long axis lines up.
+  const bridgeShape = useMemo(() => {
+    const outer = new THREE.Shape();
+    // Outer rectangle from (-halfL, 0) up to (halfL, BRIDGE_DECK_Y)
+    outer.moveTo(-halfL, 0);
+    outer.lineTo(-halfL, BRIDGE_DECK_Y);
+    outer.lineTo(halfL, BRIDGE_DECK_Y);
+    outer.lineTo(halfL, 0);
+    outer.lineTo(-halfL, 0);
+    // Arched hole through the middle, semicircle of radius
+    // BRIDGE_ARCH_RADIUS centred at origin. Path runs CW (the hole
+    // direction is opposite the outer outline) so the geometry
+    // engine treats it as a cut.
+    const hole = new THREE.Path();
+    const N = 32;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const a = Math.PI - t * Math.PI; // π → 0 (left to right)
+      const hx = BRIDGE_ARCH_RADIUS * Math.cos(a);
+      const hy = BRIDGE_ARCH_RADIUS * Math.sin(a);
+      if (i === 0) hole.moveTo(hx, hy);
+      else hole.lineTo(hx, hy);
+    }
+    hole.lineTo(BRIDGE_ARCH_RADIUS, 0);
+    hole.lineTo(-BRIDGE_ARCH_RADIUS, 0);
+    outer.holes.push(hole);
+    return outer;
+  }, [halfL]);
 
-  // Side rails — two thin torii offset PERPENDICULAR to the span.
-  // For axis="x": offset is in ±Z. For axis="z": offset is in ±X.
-  const railOffsets =
-    axis === "x"
-      ? [
-          [0, 0,  RAIL_OFFSET] as const,
-          [0, 0, -RAIL_OFFSET] as const,
-        ]
-      : [
-          [ RAIL_OFFSET, 0, 0] as const,
-          [-RAIL_OFFSET, 0, 0] as const,
-        ];
+  // Extrude the shape by `width` along Z, then centre it on Z = 0.
+  const extrudeOpts = useMemo(
+    () => ({ depth: width, bevelEnabled: false }),
+    [width]
+  );
+
+  // Group rotation: for axis="z" bridges the long axis runs along Z,
+  // so rotate the whole group 90° around Y to map the shape's X
+  // (long) onto world Z.
+  const groupRotY = axis === "z" ? Math.PI / 2 : 0;
 
   return (
-    <group position={[x, 0, z]}>
-      {/* Main arch band — kid walks along the top of this torus. */}
+    <group position={[x, 0, z]} rotation={[0, groupRotY, 0]}>
+      {/* Main bridge body — extruded stone arch. The shape is in
+          XY (long axis = X, height = Y). Extrude depth runs along
+          +Z, so translate -width/2 to centre on Z. */}
+      <mesh position={[0, 0, -halfW]} castShadow receiveShadow>
+        <extrudeGeometry args={[bridgeShape, extrudeOpts]} />
+        <meshStandardMaterial color={STONE_COLOR} roughness={0.9} />
+      </mesh>
+      {/* Wooden plank deck on top — slightly above the stone for
+          contrast + so the seam between deck and stone walls reads
+          cleanly. */}
       <mesh
-        position={[0, 0, 0]}
-        rotation={[0, archRotY, 0]}
+        position={[0, BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS / 2, 0]}
         castShadow
         receiveShadow
       >
-        <torusGeometry args={[ARCH_RADIUS, ARCH_TUBE, 12, 48, Math.PI]} />
-        <meshStandardMaterial color={PLANK_COLOR} roughness={0.85} />
+        <boxGeometry args={[length + 0.1, BRIDGE_DECK_THICKNESS, width + 0.1]} />
+        <meshStandardMaterial color={DECK_COLOR} roughness={0.85} />
       </mesh>
-      {/* Side rails — thinner torii at ±RAIL_OFFSET perpendicular to
-          the span. Slightly larger radius so they sit just OUTSIDE
-          the main arch band, like railings cresting over the deck. */}
-      {railOffsets.map(([rx, ry, rz], i) => (
-        <mesh
-          key={i}
-          position={[rx, ry, rz]}
-          rotation={[0, archRotY, 0]}
-          castShadow
-        >
-          <torusGeometry
-            args={[ARCH_RADIUS + ARCH_TUBE + 0.15, RAIL_TUBE, 6, 36, Math.PI]}
-          />
-          <meshStandardMaterial color={RAIL_COLOR} />
-        </mesh>
+      {/* Two side railings along the long sides, sitting on the
+          deck. Top rail + a pair of vertical balusters per end for
+          the classic footbridge look. */}
+      {[-halfW + 0.08, halfW - 0.08].map((rz, i) => (
+        <group key={i} position={[0, BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS, rz]}>
+          {/* Top rail */}
+          <mesh position={[0, 0.45, 0]} castShadow>
+            <boxGeometry args={[length, 0.08, 0.08]} />
+            <meshStandardMaterial color={RAIL_COLOR} />
+          </mesh>
+          {/* Corner balusters */}
+          <mesh position={[-halfL + 0.12, 0.25, 0]} castShadow>
+            <boxGeometry args={[0.1, 0.5, 0.1]} />
+            <meshStandardMaterial color={POST_COLOR} />
+          </mesh>
+          <mesh position={[halfL - 0.12, 0.25, 0]} castShadow>
+            <boxGeometry args={[0.1, 0.5, 0.1]} />
+            <meshStandardMaterial color={POST_COLOR} />
+          </mesh>
+          {/* Middle baluster */}
+          <mesh position={[0, 0.25, 0]} castShadow>
+            <boxGeometry args={[0.1, 0.5, 0.1]} />
+            <meshStandardMaterial color={POST_COLOR} />
+          </mesh>
+        </group>
       ))}
     </group>
   );
@@ -4772,9 +4795,10 @@ function GolfCourse({
       />
 
       {/* Hole 2 — middle of the course, dog-legs back the other way.
-          Green moved from local x=5 to x=8 so it doesn't overlap the
-          cart path (which runs N-S at local x=5). */}
-      <GolfHole greenLocal={[8, 2]} teeLocal={[-5, -2]} />
+          Green at local (3, 0): inside the 14-wide fairway (local x
+          range -8 to +6) and west of the cart path at local x=5,
+          so the green sits cleanly on the fairway with no overlap. */}
+      <GolfHole greenLocal={[3, 0]} teeLocal={[-5, -2]} />
 
       {/* Hole 3 used to live here (greenLocal [-5, 12] = world
           (-19, 29)) but its green + flag landed inside the river
