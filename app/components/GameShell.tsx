@@ -520,7 +520,17 @@ function ChessHintBanner() {
     // playing. Stays dismissed until `play-mode-reset` clears the
     // session. TouchControls dispatch real KeyboardEvents on window
     // so a single physical-key listener handles both input modes.
+    //
+    // **Critical gate**: only count key presses AFTER the
+    // celebration has ended. The kid is often holding A/D to steer
+    // the tube when their 20th belt fires; without this gate, the
+    // mid-celebration key press would dismiss the banner before it
+    // ever became visible — `celebration-done` would arrive 4 s
+    // later and recompute would see `dismissed = true` and stay
+    // hidden. The banner needs to actually be SHOWING (or about to)
+    // before "move means dismiss" is a valid signal.
     function onKey(e: KeyboardEvent) {
+      if (!celebrationDone) return;
       const k = e.code;
       const isGameKey =
         k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" ||
