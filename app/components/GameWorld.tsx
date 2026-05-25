@@ -223,29 +223,23 @@ const WATER_TRIGGER_RADIUS = LAKE_RADIUS + 1.2; // shore + a small buffer
 const CHAR_RADIUS = 0.32; // for building collision
 const HOME_FAMILY_DURATION = 2.8; // seconds for the wife/son/dogs to come out
 
-// Golf easter egg
-// Golf course centre. The course now extends south from the play
-// area toward the farm, with multiple holes laid out as a small
-// course rather than a single fairway. GOLF_TEE/GOLF_HOLE refer to
-// the interactive hole used by the easter egg (Hole 1 — the
-// northern-most hole, closest to the plaza). The other holes are
-// decorative. The easter egg is a PUTT, not a full swing, so
-// GOLF_TEE sits on the green itself just east of the cup — the
-// character walks all the way onto the green and putts a short
-// distance to drop the ball in the hole.
-//
-// GOLF_TEE is where the CHARACTER stands; GOLF_BALL_START is where
-// the BALL sits at address (offset slightly west + south of the
-// character so the character isn't standing directly on top of the
-// ball, and so the forward body-bend tilts toward the ball).
+// Golf — the course is ONE big green with ONE flag. The character
+// stands at the south-west tee and putts north-east to the cup,
+// roughly 23 world units away. This is a skill check rather than
+// the previous lay-up-distance easter-egg putt; full-power is just
+// barely enough to reach the cup, so the kid has to dial both
+// aim AND power in.
 const GOLF_POSITION = { x: -14, z: 17 };
 // Char stands NORTH of the ball so the forward body-bend during the
 // swing tilts the torso SOUTH toward the ball. If the char were south
 // of the ball, the body would lean away from the ball and the swing
-// would appear to come from behind the back.
-const GOLF_TEE = { x: -16.5, z: 8.3 };
-const GOLF_BALL_START = { x: -17.0, z: 8.7 };
-const GOLF_HOLE = { x: -18, z: 8.6 };
+// would appear to come from behind the back. World coords:
+//   GOLF_TEE        = south-west corner of the green
+//   GOLF_BALL_START = just north-east of tee, in front of the char
+//   GOLF_HOLE       = north-east corner of the green
+const GOLF_TEE = { x: -20, z: 6 };
+const GOLF_BALL_START = { x: -19, z: 7 };
+const GOLF_HOLE = { x: -9, z: 28 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
 
 // Play-mode interactive putt — separate from the easter-egg
@@ -255,20 +249,28 @@ const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → 
 // shot at the cup (distance ≈ 1.5u from tee → ball start) gives the
 // kid a decent chance of sinking but isn't trivial.
 const PUTT_TRIGGER_RADIUS = 2.5;
-// Max launch speed (units/sec) at full power. Distance to cup from
-// ball start is ~1.0u; with friction 4.0 a 3.5u/s launch travels
-// roughly 1.5u before stopping (s = v²/(2·a) = 12.25/8 ≈ 1.5).
-const PUTT_MAX_LAUNCH_SPEED = 4.5;
-const PUTT_FRICTION = 4.0; // units/sec² deceleration
-const PUTT_CHARGE_TIME = 1.0; // seconds Space-held to reach full power
+// Max launch speed (units/sec) at full power. Tuned so the ball
+// JUST BARELY reaches the cup at 100% power — meaning the kid has
+// to commit close to full strength AND a near-perfect aim line.
+// Math: ball→cup distance is ~23u; with friction 4.5/sec², a launch
+// at v travels d = v²/(2·a) = v²/9. To reach 23u: v² ≥ 207 → v ≥ 14.4.
+// Setting max to 14.4 means full power EXACTLY reaches the cup at
+// stopped speed, which feels right (perfect putt = sink).
+const PUTT_MAX_LAUNCH_SPEED = 14.4;
+const PUTT_FRICTION = 4.5; // units/sec² deceleration
+const PUTT_CHARGE_TIME = 1.4; // seconds Space-held to reach full power
 // Aim rotation rate while putting (radians/sec). Slower than the
-// tank turn rate on land so fine aiming is comfortable.
-const PUTT_AIM_TURN_RATE = 1.2;
+// tank turn rate on land so fine aiming is comfortable — even more
+// important now that the cup is 23u away (1° aim error → 0.4u miss).
+const PUTT_AIM_TURN_RATE = 0.6;
 // Cup geometry — proximity to the cup centre that counts as a sink,
 // and the max ball speed at which the cup edge "captures" the ball
-// (too fast → ball rolls over the lip instead of dropping in).
-const PUTT_CUP_RADIUS = 0.32;
-const PUTT_SINK_SPEED_MAX = 2.0;
+// (too fast → ball rolls over the lip instead of dropping in). Cup
+// radius is slightly forgiving + sink-speed window kept wide so the
+// kid has a reasonable shot when the aim + power are both close to
+// perfect.
+const PUTT_CUP_RADIUS = 0.5;
+const PUTT_SINK_SPEED_MAX = 3.5;
 // Stop threshold — below this speed the ball is considered stopped
 // (transitions to missed/sunk phase). Avoids the asymptotic
 // never-quite-zero tail of friction decay.
@@ -3252,7 +3254,9 @@ function Environment({
       <Tree position={[9, 0, 13]} scale={1.2} />
       <Tree position={[-7, 0, 14]} />
       <Tree position={[2, 0, -16]} scale={1.05} />
-      <Tree position={[-19, 0, 5]} />
+      {/* Tree at (-19, 5) removed — it landed right next to the
+          new south-west golf tee at (-20, 6) and blocked the kid's
+          view of the flag across the green. */}
       <PineTree position={[17, 0, -16]} scale={1.5} />
 
       {/* Bushes scattered around the perimeter for ground texture */}
@@ -4759,17 +4763,22 @@ function GolfCourse({
   onSelect: () => void;
 }) {
   // GolfCourse group is positioned at GOLF_POSITION = (-14, 0, 17).
-  // Local +x is east, local +z is south. The course extends from
-  // about local x=-9..+7 (world x=-23..-7, safely west of CODE at
-  // x=-4.9) and local z=-15..+15 (world z=2..32, reaching toward
-  // the south farm without overlapping it).
+  // Local +x is east, local +z is south. The course is ONE big
+  // putting green covering ~14×30 units. Tee is at the SW corner
+  // (local (-6, -11)), cup + flag at the NE corner (local (5, 11)).
+  // Distance ~23u — long putt, challenging for both the easter-egg
+  // animation and the play-mode interactive putt.
   //
-  // Hole 1 (the interactive easter egg): tee at local (7, -8) =
-  // world GOLF_TEE (-7, 9), green at local (-4, -8.4) = world
-  // GOLF_HOLE (-18, 8.6). The other two holes are decorative.
+  // GOLF_TEE / GOLF_BALL_START / GOLF_HOLE are world coords;
+  // converted to local for the meshes below.
+  const teeLocalX = GOLF_TEE.x - GOLF_POSITION.x;
+  const teeLocalZ = GOLF_TEE.z - GOLF_POSITION.z;
+  const holeLocalX = GOLF_HOLE.x - GOLF_POSITION.x;
+  const holeLocalZ = GOLF_HOLE.z - GOLF_POSITION.z;
+
   return (
     <group position={position}>
-      {/* Rough — darker green border behind everything else */}
+      {/* Rough — darker green border behind the green */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[-1, 0.010, 0]}
@@ -4778,8 +4787,8 @@ function GolfCourse({
         <planeGeometry args={[16, 32]} />
         <meshStandardMaterial color="#558a36" />
       </mesh>
-      {/* Main fairway covering the whole playable area — clickable
-          target for the hole-in-one easter egg. */}
+      {/* The green — one big putting surface covering the whole
+          playable area. Clickable for the hole-in-one easter egg. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[-1, 0.011, 0]}
@@ -4800,103 +4809,78 @@ function GolfCourse({
         <meshStandardMaterial color="#7ab84a" />
       </mesh>
 
-      {/* Cart path — light grey strip winding south through the
-          course. Stays inside the rough boundary. */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[5, 0.012, -2]}
-        receiveShadow
-      >
-        <planeGeometry args={[0.9, 20]} />
-        <meshStandardMaterial color="#c8c4b8" />
+      {/* Tee marker — small rectangular block at the south-west
+          corner of the green, where the kid stands to putt. */}
+      <mesh position={[teeLocalX, 0.05, teeLocalZ]} castShadow receiveShadow>
+        <boxGeometry args={[0.45, 0.1, 0.45]} />
+        <meshStandardMaterial color="#f0e8c8" />
       </mesh>
 
-      {/* Hole 1 (easter egg) — north end. Local (7, -8) tee →
-          local (-4, -8.4) green. Larger green than the other holes
-          so the rolling ball has visible space to travel during
-          the putt easter egg. */}
-      <GolfHole
-        greenLocal={[-4, -8.4]}
-        teeLocal={[7, -8]}
-        greenRadius={3.6}
-      />
-
-      {/* Hole 2 — middle of the course, dog-legs back the other way.
-          Green at local (3, 0): inside the 14-wide fairway (local x
-          range -8 to +6) and west of the cart path at local x=5,
-          so the green sits cleanly on the fairway with no overlap. */}
-      <GolfHole greenLocal={[3, 0]} teeLocal={[-5, -2]} />
-
-      {/* Hole 3 used to live here (greenLocal [-5, 12] = world
-          (-19, 29)) but its green + flag landed inside the river
-          channel after the river became map-spanning, so it was
-          removed. Holes 1 + 2 cover the playable course. */}
-
-      {/* Sand bunkers scattered across the course. Each is positioned
-          so its ellipse doesn't overlap any green or the water
-          hazard (otherwise the overlapping discs z-fight). */}
-      {/* Guarding Hole 1's east approach (the line from tee to
-          green). Moved out from inside the green to clear the new
-          bigger 3.6-radius Hole 1 green. */}
+      {/* Cup at the north-east corner — dark disc set into the green
+          marking where the ball must end up. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[2, 0.013, -7]}
-        scale={[1.8, 1, 1]}
+        position={[holeLocalX, 0.014, holeLocalZ]}
+      >
+        <circleGeometry args={[PUTT_CUP_RADIUS, 16]} />
+        <meshStandardMaterial color="#1a1a1a" />
+      </mesh>
+      {/* Flag pole + red flag waving from the cup */}
+      <mesh position={[holeLocalX, 1.0, holeLocalZ]} castShadow>
+        <cylinderGeometry args={[0.025, 0.025, 2.0, 6]} />
+        <meshStandardMaterial color="#dcdce0" metalness={0.5} />
+      </mesh>
+      <mesh position={[holeLocalX + 0.25, 1.75, holeLocalZ]} castShadow>
+        <boxGeometry args={[0.5, 0.3, 0.02]} />
+        <meshStandardMaterial color="#c63d3d" side={THREE.DoubleSide} />
+      </mesh>
+
+      {/* Sand bunkers + water hazard scattered between tee and
+          hole for visual interest. Purely decorative — the putt
+          physics don't actually check for them, but they read as
+          obstacles the kid wants to aim around. */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-2, 0.013, -5]}
+        scale={[1.6, 1, 1]}
         receiveShadow
       >
-        <circleGeometry args={[1.0, 20]} />
+        <circleGeometry args={[1.1, 20]} />
         <meshStandardMaterial color="#e8d8a8" />
       </mesh>
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[2, 0.013, -10]}
+        position={[3, 0.013, 4]}
+        scale={[1.4, 1, 1]}
+        receiveShadow
+      >
+        <circleGeometry args={[0.95, 20]} />
+        <meshStandardMaterial color="#e8d8a8" />
+      </mesh>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-3, 0.013, 8]}
         scale={[1.5, 1, 1]}
         receiveShadow
       >
         <circleGeometry args={[0.9, 20]} />
         <meshStandardMaterial color="#e8d8a8" />
       </mesh>
-      {/* Sand pit east of the water hazard. Moved further east so
-          its disc doesn't overlap the water hazard's disc. */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[4, 0.013, 6]}
-        scale={[1.4, 1, 1]}
-        receiveShadow
-      >
-        <circleGeometry args={[1.0, 20]} />
-        <meshStandardMaterial color="#e8d8a8" />
-      </mesh>
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[-3, 0.013, 9]}
-        scale={[1.6, 1, 1]}
-        receiveShadow
-      >
-        <circleGeometry args={[0.85, 20]} />
-        <meshStandardMaterial color="#e8d8a8" />
-      </mesh>
 
-      {/* Water hazard between holes 2 and 3 */}
+      {/* Water hazard between tee and hole */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.013, 5.5]}
+        position={[1, 0.013, 1]}
         receiveShadow
       >
-        <circleGeometry args={[1.6, 24]} />
+        <circleGeometry args={[1.4, 24]} />
         <meshStandardMaterial color="#3e7ba8" roughness={0.4} metalness={0.1} />
       </mesh>
 
-      {/* Rolling fairway mounds — give the course some terrain
-          variation instead of a flat plane */}
-      {/* All FairwayMounds removed — they read as little hills on
-          the green and the user wanted a flat course. The (5, 11)
-          and (-6, 13) ones had already been removed for clipping
-          into the river channel; the remaining three ((-5, -3),
-          (4, 0), (-4, 4)) followed. */}
-
-      {/* Parked golf cart on the cart path, between holes 1 and 2 */}
-      <GolfCart position={[5, 0, -4]} rotation={Math.PI * 0.1} />
+      {/* Parked golf cart at the south-east corner of the green
+          (well clear of the tee at the SW corner so it doesn't sit
+          in the kid's line of sight to the flag). */}
+      <GolfCart position={[6, 0, -13]} rotation={-Math.PI * 0.3} />
     </group>
   );
 }
@@ -5014,7 +4998,12 @@ function AimArrow({
     // truth — the putting state machine rotates it directly from
     // A/D input.
     g.position.set(p.ballX, 0.02, p.ballZ);
-    g.rotation.y = charRef.current.angle;
+    // Tip points in the shape's +Y, which after the X-rotation
+    // (-π/2) ends up at the mesh's -Z. Add Math.PI to the group's
+    // Y-rotation so the tip swings around to +Z (= the body's
+    // forward direction at char.angle=0), making the arrow point
+    // wherever the kid is aiming.
+    g.rotation.y = charRef.current.angle + Math.PI;
     // Brighten the arrow tip while charging so the kid sees the
     // power building up even before they look at the HUD.
     if (matRef.current) {
