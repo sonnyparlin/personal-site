@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import GameWorld from "./GameWorld";
 import { getSectionByPath } from "@/app/lib/sections";
 
@@ -87,9 +87,17 @@ function ResetViewButton() {
 // plaza via plain anchor-style routing (Next.js intercepts it).
 // The 3D scene flips back to the plaza on the route change.
 function ExitSceneButton({ label }: { label: string }) {
+  const router = useRouter();
+  // CLIENT-side navigation (not <a href> with full page reload).
+  // A reload would nuke React state — play mode would flip off,
+  // belt count + points would reset, character position would
+  // re-init. The character SELECTION survives because it's stored
+  // in localStorage, but everything else would vanish. router.push
+  // keeps React state intact across the route change.
   return (
-    <a
-      href="/"
+    <button
+      type="button"
+      onClick={() => router.push("/")}
       aria-label={`Exit ${label} and return to the plaza`}
       className="
         absolute top-4 left-4 z-10
@@ -120,7 +128,7 @@ function ExitSceneButton({ label }: { label: string }) {
         <path d="M15 18l-6-6 6-6" />
       </svg>
       <span>Exit</span>
-    </a>
+    </button>
   );
 }
 
