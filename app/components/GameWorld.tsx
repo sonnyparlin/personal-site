@@ -4834,12 +4834,11 @@ function GolfCourse({
 
       {/* Rolling fairway mounds — give the course some terrain
           variation instead of a flat plane */}
-      <FairwayMound position={[-5, 0, -3]} scale={0.9} />
-      <FairwayMound position={[4, 0, 0]} scale={1.0} color="#5fa838" />
-      <FairwayMound position={[-4, 0, 4]} scale={1.1} />
-      {/* (5, 11) → world (-9, 28) + (-6, 13) → world (-20, 30) both
-          removed — landed inside the river channel or right at its
-          inner-south edge after the river became map-spanning. */}
+      {/* All FairwayMounds removed — they read as little hills on
+          the green and the user wanted a flat course. The (5, 11)
+          and (-6, 13) ones had already been removed for clipping
+          into the river channel; the remaining three ((-5, -3),
+          (4, 0), (-4, 4)) followed. */}
 
       {/* Parked golf cart on the cart path, between holes 1 and 2 */}
       <GolfCart position={[5, 0, -4]} rotation={Math.PI * 0.1} />
