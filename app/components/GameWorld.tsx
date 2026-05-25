@@ -1889,6 +1889,12 @@ function Scene({
           char.mode = "idle";
           char.y = 0;
           char.vy = 0;
+          // Tell the rest of the app the dance is over. GameShell's
+          // <ChessHintBanner> listens for this so it can pop in
+          // AFTER the celebration, not on top of it.
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("celebration-done"));
+          }
         }
         return; // skip portfolio tick + WASD branch
       }

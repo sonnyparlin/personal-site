@@ -486,25 +486,31 @@ function ChessHintBanner() {
   // state without re-binding listeners every render.
   const dismissedRef = useRef(false);
   useEffect(() => {
-    let count = 0;
+    let celebrationDone = false;
     let chessAwarded = false;
     let dismissed = false;
     function recompute() {
-      // Show when the kid has the 20 walking belts but no chess
-      // belt yet AND they haven't dismissed the hint by moving or
-      // tapping it. Once chess lands they hit 21 → celebration →
-      // banner can stay hidden (count > 20 condition fails).
+      // Banner shows AFTER the jump-for-joy celebration ends (which
+      // itself fires at the 20th walking belt — see BeltSuccessChime
+      // above). If chess has already been won, no banner — the kid
+      // has nothing left to do. Once the kid dismisses (move key or
+      // tap), banner stays hidden until next play-mode-reset.
       dismissedRef.current = dismissed;
-      setVisible(count >= 20 && !chessAwarded && !dismissed);
+      setVisible(celebrationDone && !chessAwarded && !dismissed);
     }
     function onCollect(e: Event) {
-      count += 1;
       const detail = (e as CustomEvent).detail;
-      if (detail === "chess") chessAwarded = true;
+      if (detail === "chess") {
+        chessAwarded = true;
+        recompute();
+      }
+    }
+    function onCelebrationDone() {
+      celebrationDone = true;
       recompute();
     }
     function onReset() {
-      count = 0;
+      celebrationDone = false;
       chessAwarded = false;
       dismissed = false;
       recompute();
@@ -527,10 +533,12 @@ function ChessHintBanner() {
       }
     }
     window.addEventListener("belt-collected", onCollect);
+    window.addEventListener("celebration-done", onCelebrationDone);
     window.addEventListener("play-mode-reset", onReset);
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("belt-collected", onCollect);
+      window.removeEventListener("celebration-done", onCelebrationDone);
       window.removeEventListener("play-mode-reset", onReset);
       window.removeEventListener("keydown", onKey);
     };
@@ -606,11 +614,24 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
   // in GameWorld, which puts the character into `mode = "celebrating"`
   // — hops with arms in the air for ~4 sec to match the fanfare's
   // length.
+  //
+  // **Trigger is the 20 walking belts, NOT the 21-total** — kids
+  // celebrate the moment they've collected everything they can
+  // get from the world (plaza + carnival + bridges + river + golf).
+  // The chess belt (detail === "chess") doesn't advance the
+  // walkingCount, so winning chess BEFORE collecting all walking
+  // belts won't pre-fire the celebration. Once celebrated, the
+  // chime won't re-fire even if chess later pushes total to 21.
   useEffect(() => {
-    let count = 0;
-    function onCollect() {
-      count += 1;
-      if (count === PLAY_BELT_TOTAL) {
+    let walkingCount = 0;
+    let celebrated = false;
+    function onCollect(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail === "chess") return; // chess belt doesn't trigger celebration
+      walkingCount += 1;
+      if (celebrated) return;
+      if (walkingCount === PLAY_BELT_TOTAL - 1) {
+        celebrated = true;
         const a = audioRef.current;
         if (a) {
           a.currentTime = 0;
@@ -628,7 +649,8 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
       }
     }
     function onReset() {
-      count = 0;
+      walkingCount = 0;
+      celebrated = false;
       const a = audioRef.current;
       if (a) {
         a.pause();
