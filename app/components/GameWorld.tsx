@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import {
   Billboard,
@@ -1014,7 +1014,14 @@ function routeTo(
 
 // -------------------- entry point --------------------
 
-export default function GameWorld({ playMode = false }: { playMode?: boolean } = {}) {
+// memo()-wrapped because GameShell sits above us and may re-render
+// on its own state changes (HUD pills that own state, etc.). We
+// only need to re-render when `playMode` actually flips. Without
+// the memo, every GameShell re-render walked this entire component
+// tree (Canvas + Scene + ~10k lines of meshes) which caused a
+// single-frame hitch — most visible when the previous BeltHUD
+// counter lived on GameShell and bumped on every belt pickup.
+function GameWorldBase({ playMode = false }: { playMode?: boolean } = {}) {
   const charRef = useRef<CharState>({
     x: 0,
     z: 0,
@@ -1375,6 +1382,9 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
     </div>
   );
 }
+
+const GameWorld = memo(GameWorldBase);
+export default GameWorld;
 
 // -------------------- scene --------------------
 

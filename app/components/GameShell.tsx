@@ -338,8 +338,30 @@ function PlayToggleButton({
 
 // HUD shown only while play mode is active — a running black-belt
 // tally the kid can glance at to see how many they have left to
-// grab.
-function BeltHUD({ count }: { count: number }) {
+// grab. Owns its own count state and listens to `belt-collected`
+// + `play-mode-reset` window events directly. This is DELIBERATE:
+// if the count lived on GameShell, every collect would re-render
+// GameShell → GameWorld → the whole 3D scene tree, producing a
+// one-frame hitch that read as a "blip" when grabbing a belt.
+// Co-locating the state with the HUD that reads it isolates the
+// update so the canvas never reconciles on collect. Same pattern
+// as `EasterEggTally` above.
+function BeltHUD() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    function onCollect() {
+      setCount((n) => n + 1);
+    }
+    function onReset() {
+      setCount(0);
+    }
+    window.addEventListener("belt-collected", onCollect);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("belt-collected", onCollect);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
   return (
     <div
       role="status"
@@ -877,25 +899,16 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   // Play mode (the Mario-style kid game) only makes sense on the
   // plaza route. Navigating away auto-exits via the effect below.
   const [playMode, setPlayMode] = useState(false);
-  const [beltCount, setBeltCount] = useState(0);
   useEffect(() => {
     if (pathname !== "/") setPlayMode(false);
   }, [pathname]);
   useEffect(() => {
-    // Reset the count when entering or exiting play mode so each
-    // play session starts at 0/5.
-    setBeltCount(0);
     // Tell Scene to reset the belt meshes' collected state.
+    // `BeltHUD` listens for this too and zeros its own counter
+    // (state lives there, not here — see the BeltHUD comment).
     if (typeof window === "undefined") return;
     window.dispatchEvent(new CustomEvent("play-mode-reset"));
   }, [playMode]);
-  useEffect(() => {
-    function onCollect() {
-      setBeltCount((n) => n + 1);
-    }
-    window.addEventListener("belt-collected", onCollect);
-    return () => window.removeEventListener("belt-collected", onCollect);
-  }, []);
 
   // ── Play-mode background music ──
   // Single HTMLAudioElement created on mount, looped, volume capped.
@@ -1004,7 +1017,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             playMode={playMode}
             onToggle={() => setPlayMode((v) => !v)}
           />
-          {playMode && <BeltHUD count={beltCount} />}
+          {playMode && <BeltHUD />}
           {playMode && (
             <MuteButton
               muted={musicMuted}
