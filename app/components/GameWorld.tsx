@@ -25,7 +25,15 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "tubing" | "putting";
+type CharMode =
+  | "idle"
+  | "flee"
+  | "riding"
+  | "golfing"
+  | "ballooning"
+  | "tubing"
+  | "putting"
+  | "celebrating"; // all 20 belts collected — hops with arms in the air
 
 type CharState = {
   x: number;
@@ -1481,6 +1489,14 @@ function Scene({
   // ("left turns the character right, and too much per press").
   const PLAY_TURN_RATE = 1.8;
   const BELT_PICKUP_RADIUS = 1.1;  // distance from char to belt to grab it
+  // Celebration animation tunings — fired when the kid collects
+  // their 20th belt. Hops with arms in the air for the duration of
+  // the success-fanfare MP3 (~4 sec) then drops back to idle.
+  // Each hop reuses the play-mode jump velocity scaled down a touch
+  // so the bounces feel rhythmic rather than identical.
+  const CELEBRATE_DURATION = 4.0;       // seconds of joy
+  const CELEBRATE_HOP_VELOCITY = 6.5;   // initial vy per hop (vs PLAY_JUMP_VELOCITY=8)
+  const CELEBRATE_SPIN_RATE = 2.4;      // radians/sec slow body spin (~140°/sec)
 
   // Key-tracking refs. Refilled by window keydown/keyup listeners in
   // the effect below. We track WASD + arrows + space; everything
@@ -1657,6 +1673,42 @@ function Scene({
   // the first collect so the browser doesn't yell about autoplay.
   const playBeltSoundRef = useRef(makeBeltSoundPlayer());
 
+  // Celebration animation state — set active by the `belts-complete`
+  // window event GameShell's <BeltSuccessChime> dispatches when the
+  // 20th belt drops. `t` counts seconds since the start; the
+  // play-mode tick reads it to drive hop/spin/exit logic. Reset on
+  // play-mode toggle so re-entering after a full clear doesn't
+  // leave the kid mid-jump.
+  const celebrationRef = useRef<{ active: boolean; t: number }>({
+    active: false,
+    t: 0,
+  });
+  useEffect(() => {
+    function onComplete() {
+      const c = refs.char.current;
+      // Only celebrate during play mode + on the home route.
+      // (Both are the conditions the chime is mounted under, but
+      // double-check defensively.)
+      if (!playModeRef.current) return;
+      celebrationRef.current.active = true;
+      celebrationRef.current.t = 0;
+      c.mode = "celebrating";
+      c.walking = false;
+      c.vy = CELEBRATE_HOP_VELOCITY; // start the first hop right away
+      c.grounded = false;
+    }
+    function onReset() {
+      celebrationRef.current.active = false;
+      celebrationRef.current.t = 0;
+    }
+    window.addEventListener("belts-complete", onComplete);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("belts-complete", onComplete);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, [CELEBRATE_HOP_VELOCITY, refs.char]);
+
   // EXIT-the-ride request from GameShell's overlay button. Pause-
   // sets exitPending; the tubing tick consumes it on the next frame
   // and runs the exit path (walk back to plaza, etc.).
@@ -1756,6 +1808,40 @@ function Scene({
     // handle*Click functions, so the only thing controlling Sonny
     // is the keyboard.
     if (playModeRef.current && isOnHome) {
+      // Celebration takes precedence — when the kid collects the
+      // 20th belt, the BeltSuccessChime fires `belts-complete` and
+      // this branch runs its own little physics: a string of hops
+      // (rejump on land) plus a slow body spin, arms up handled by
+      // the Character pose. Auto-exits to idle after the full
+      // duration so the kid can keep playing.
+      if (char.mode === "celebrating") {
+        const cel = celebrationRef.current;
+        cel.t += clampedDt;
+        // Gravity + landing → re-hop while still inside the window.
+        char.vy -= PLAY_GRAVITY * clampedDt;
+        char.y += char.vy * clampedDt;
+        if (char.y <= 0) {
+          char.y = 0;
+          char.vy = 0;
+          if (cel.t < CELEBRATE_DURATION) {
+            char.vy = CELEBRATE_HOP_VELOCITY;
+            char.grounded = false;
+          } else {
+            char.grounded = true;
+          }
+        }
+        // Slow body spin, in place.
+        char.angle += CELEBRATE_SPIN_RATE * clampedDt;
+        char.walking = false;
+        char.stepPhase = 0;
+        if (cel.t >= CELEBRATE_DURATION) {
+          cel.active = false;
+          char.mode = "idle";
+          char.y = 0;
+          char.vy = 0;
+        }
+        return; // skip portfolio tick + WASD branch
+      }
       // If the kid is already on the lazy-river tube (entered by
       // walking onto the boarding platform below) OR addressing a
       // play-mode putt at the green, skip the play-mode movement /
@@ -6772,7 +6858,8 @@ function Character({
         c.mode === "golfing" ||
         c.mode === "ballooning" ||
         c.mode === "tubing" ||
-        c.mode === "putting";
+        c.mode === "putting" ||
+        c.mode === "celebrating"; // body spins on its own — don't fight it
       if (!isSpecial) {
         const camToCharX = c.x - state.camera.position.x;
         const camToCharZ = c.z - state.camera.position.z;
@@ -6917,6 +7004,31 @@ function Character({
       }
       if (bodyRef.current) {
         bodyRef.current.rotation.x = 0.15; // slight forward lean
+        bodyRef.current.position.y = 0;
+      }
+      return;
+    }
+
+    if (c.mode === "celebrating") {
+      // Jumping for joy — both arms reaching all the way UP with a
+      // small wiggle so they read as waving in the air, legs
+      // straight, body fully upright. Identical formula to the
+      // coaster-thrill `riding` pose but a touch more emphatic
+      // (deeper rotation, slightly faster oscillation).
+      const wave = Math.sin(t * 8) * 0.18;
+      const armsUp = -Math.PI * 0.95 + wave;
+      if (leftShoulderRef.current) {
+        leftShoulderRef.current.rotation.x = armsUp;
+        leftShoulderRef.current.rotation.z = 0;
+      }
+      if (rightShoulderRef.current) {
+        rightShoulderRef.current.rotation.x = armsUp;
+        rightShoulderRef.current.rotation.z = 0;
+      }
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      if (bodyRef.current) {
+        bodyRef.current.rotation.x = 0;
         bodyRef.current.position.y = 0;
       }
       return;

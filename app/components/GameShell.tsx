@@ -433,21 +433,29 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
   useEffect(() => {
     if (audioRef.current) audioRef.current.muted = musicMuted;
   }, [musicMuted]);
-  // Count + fire the fanfare. Reset on play-mode toggle.
+  // Count + fire the fanfare AND the celebration. Reset on play-mode
+  // toggle. The `belts-complete` window event is picked up by Scene
+  // in GameWorld, which puts the character into `mode = "celebrating"`
+  // — hops with arms in the air for ~4 sec to match the fanfare's
+  // length.
   useEffect(() => {
     let count = 0;
     function onCollect() {
       count += 1;
       if (count === PLAY_BELT_TOTAL) {
         const a = audioRef.current;
-        if (!a) return;
-        a.currentTime = 0;
-        const p = a.play();
-        if (p && typeof p.then === "function") {
-          p.catch(() => {
-            // Autoplay blocked or playback interrupted — silent
-            // failure, nothing else depends on this sound.
-          });
+        if (a) {
+          a.currentTime = 0;
+          const p = a.play();
+          if (p && typeof p.then === "function") {
+            p.catch(() => {
+              // Autoplay blocked or playback interrupted — silent
+              // failure, nothing else depends on this sound.
+            });
+          }
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("belts-complete"));
         }
       }
     }
