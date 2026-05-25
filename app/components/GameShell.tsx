@@ -273,9 +273,11 @@ function ChessControls() {
   );
 }
 
-// Total stripes hidden in the world during the tiny play-mode demo.
-// When this changes, also update the `STRIPES` array in GameWorld.tsx.
-const PLAY_STRIPE_TOTAL = 5;
+// Total black belts hidden in the world during play mode. 5 sit
+// at ground level around the plaza (see `BELT_PICKUPS` in
+// GameWorld); the other 3 will float in the lazy river. When this
+// changes, update the corresponding world data too.
+const PLAY_BELT_TOTAL = 8;
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +
@@ -325,13 +327,14 @@ function PlayToggleButton({
   );
 }
 
-// HUD shown only while play mode is active — a running stripe tally
-// the kid can glance at to see how many they have left to grab.
-function StripeHUD({ count }: { count: number }) {
+// HUD shown only while play mode is active — a running black-belt
+// tally the kid can glance at to see how many they have left to
+// grab.
+function BeltHUD({ count }: { count: number }) {
   return (
     <div
       role="status"
-      aria-label={`${count} of ${PLAY_STRIPE_TOTAL} stripes collected`}
+      aria-label={`${count} of ${PLAY_BELT_TOTAL} black belts collected`}
       className="
         absolute top-20 right-4 z-10 select-none
         h-12 px-4
@@ -346,26 +349,152 @@ function StripeHUD({ count }: { count: number }) {
     >
       <span aria-hidden className="text-amber-300 leading-none">▰</span>
       <span className="tabular-nums">
-        {count}/{PLAY_STRIPE_TOTAL}
+        {count}/{PLAY_BELT_TOTAL}
       </span>
-      <span className="opacity-80">stripes</span>
+      <span className="opacity-80">belts</span>
     </div>
   );
 }
 
+// Mobile touch controls — shown only on coarse-pointer devices
+// while play mode is active. Two thumb clusters at the bottom of
+// the screen:
+//   - LEFT (forward / back stacked)
+//   - RIGHT (turn-left + turn-right, with JUMP above)
+// Each button dispatches a synthetic KeyboardEvent so the existing
+// play-mode input pipeline (which listens on window keydown/keyup)
+// handles them with no extra glue. PointerCancel + PointerLeave
+// also fire keyup so a finger that slides off a button doesn't
+// leave the key "stuck down".
+function TouchControls() {
+  const [isTouch, setIsTouch] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    setIsTouch(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsTouch(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  if (!isTouch) return null;
+
+  function emit(key: string, code: string, type: "keydown" | "keyup") {
+    window.dispatchEvent(new KeyboardEvent(type, { key, code, bubbles: true }));
+  }
+  function bind(key: string, code: string) {
+    return {
+      onPointerDown: (e: React.PointerEvent) => {
+        e.preventDefault();
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        emit(key, code, "keydown");
+      },
+      onPointerUp: () => emit(key, code, "keyup"),
+      onPointerCancel: () => emit(key, code, "keyup"),
+      onPointerLeave: () => emit(key, code, "keyup"),
+    };
+  }
+
+  const buttonClass =
+    "select-none touch-none flex items-center justify-center " +
+    "bg-black/55 active:bg-black/80 " +
+    "text-white text-2xl font-bold " +
+    "border border-white/25 rounded-full " +
+    "backdrop-blur-sm shadow-lg shadow-black/40 " +
+    "transition-colors";
+
+  return (
+    <>
+      {/* LEFT CLUSTER — forward / back stacked. Bottom-left corner. */}
+      <div className="absolute bottom-6 left-6 z-10 flex flex-col gap-3">
+        <button
+          type="button"
+          aria-label="Move forward"
+          className={`${buttonClass} w-16 h-16`}
+          {...bind("w", "KeyW")}
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          aria-label="Move backward"
+          className={`${buttonClass} w-16 h-16`}
+          {...bind("s", "KeyS")}
+        >
+          ↓
+        </button>
+      </div>
+      {/* RIGHT CLUSTER — jump on top, turn-left / turn-right below.
+          Slight width on each side so the cluster reads as a single
+          touch target zone. */}
+      <div className="absolute bottom-6 right-6 z-10 flex flex-col items-center gap-3">
+        <button
+          type="button"
+          aria-label="Jump"
+          className={`${buttonClass} w-20 h-16 text-sm tracking-wider uppercase`}
+          {...bind(" ", "Space")}
+        >
+          Jump
+        </button>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            aria-label="Turn left"
+            className={`${buttonClass} w-16 h-16`}
+            {...bind("a", "KeyA")}
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            aria-label="Turn right"
+            className={`${buttonClass} w-16 h-16`}
+            {...bind("d", "KeyD")}
+          >
+            →
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Tiny on-screen hint of the play-mode controls — fades out after
-// a few seconds so it doesn't clutter the screen.
+// a few seconds so it doesn't clutter the screen. Adapts the
+// shown hint to the device: desktop sees the keyboard mapping,
+// touch sees a "rotate your phone for more room" tip on portrait
+// (the touch button overlay already shows the controls visually).
 function PlayControlsHint() {
   const [visible, setVisible] = useState(true);
+  const [isTouch, setIsTouch] = useState(false);
+  const [isPortrait, setIsPortrait] = useState(false);
   useEffect(() => {
     const id = setTimeout(() => setVisible(false), 5000);
     return () => clearTimeout(id);
   }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const touchMq = window.matchMedia("(pointer: coarse)");
+    const portraitMq = window.matchMedia("(orientation: portrait)");
+    setIsTouch(touchMq.matches);
+    setIsPortrait(portraitMq.matches);
+    const onTouch = (e: MediaQueryListEvent) => setIsTouch(e.matches);
+    const onPortrait = (e: MediaQueryListEvent) => setIsPortrait(e.matches);
+    touchMq.addEventListener("change", onTouch);
+    portraitMq.addEventListener("change", onPortrait);
+    return () => {
+      touchMq.removeEventListener("change", onTouch);
+      portraitMq.removeEventListener("change", onPortrait);
+    };
+  }, []);
   if (!visible) return null;
+  // Touch portrait → suggest rotating for more room.
+  // Touch landscape → no hint (controls are obvious on screen).
+  // Desktop → keyboard mapping.
+  if (isTouch && !isPortrait) return null;
   return (
     <div
       className="
-        absolute bottom-4 left-1/2 -translate-x-1/2 z-10 select-none
+        absolute top-4 left-1/2 -translate-x-1/2 z-10 select-none
         px-4 py-2
         bg-black/60
         text-white text-xs uppercase tracking-wider
@@ -376,8 +505,17 @@ function PlayControlsHint() {
         pointer-events-none
       "
     >
-      Move: <span className="text-amber-300">WASD</span> &nbsp;•&nbsp;
-      Jump: <span className="text-amber-300">Space</span>
+      {isTouch ? (
+        <>
+          Tip: rotate your phone for more room
+        </>
+      ) : (
+        <>
+          Move: <span className="text-amber-300">WASD</span> &nbsp;•&nbsp;
+          Turn: <span className="text-amber-300">←/→</span> &nbsp;•&nbsp;
+          Jump: <span className="text-amber-300">Space</span>
+        </>
+      )}
     </div>
   );
 }
@@ -520,24 +658,24 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   // Play mode (the Mario-style kid game) only makes sense on the
   // plaza route. Navigating away auto-exits via the effect below.
   const [playMode, setPlayMode] = useState(false);
-  const [stripeCount, setStripeCount] = useState(0);
+  const [beltCount, setBeltCount] = useState(0);
   useEffect(() => {
     if (pathname !== "/") setPlayMode(false);
   }, [pathname]);
   useEffect(() => {
     // Reset the count when entering or exiting play mode so each
     // play session starts at 0/5.
-    setStripeCount(0);
-    // Tell Scene to reset the stripe meshes' collected state.
+    setBeltCount(0);
+    // Tell Scene to reset the belt meshes' collected state.
     if (typeof window === "undefined") return;
     window.dispatchEvent(new CustomEvent("play-mode-reset"));
   }, [playMode]);
   useEffect(() => {
     function onCollect() {
-      setStripeCount((n) => n + 1);
+      setBeltCount((n) => n + 1);
     }
-    window.addEventListener("stripe-collected", onCollect);
-    return () => window.removeEventListener("stripe-collected", onCollect);
+    window.addEventListener("belt-collected", onCollect);
+    return () => window.removeEventListener("belt-collected", onCollect);
   }, []);
 
   return (
@@ -572,8 +710,9 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             playMode={playMode}
             onToggle={() => setPlayMode((v) => !v)}
           />
-          {playMode && <StripeHUD count={stripeCount} />}
+          {playMode && <BeltHUD count={beltCount} />}
           {playMode && <PlayControlsHint />}
+          {playMode && <TouchControls />}
           <div className="hidden">{children}</div>
         </>
       )}

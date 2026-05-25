@@ -212,21 +212,23 @@ const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → 
 const RANGE_CENTER = { x: -3, z: 50 };
 const RANGE_FIRING_LINE = { x: -3, z: 42 }; // where the character stands to shoot
 
-// Tiny play-mode demo: 5 stripes scattered around the world at
-// ground level. Picked so the kid has to actually wander the map
-// to grab them all (not just spin in place). Positions sit clear
-// of buildings + hills + the existing easter eggs so a stripe
-// never spawns inside something the character can't reach.
-const STRIPES: { x: number; z: number; label: string }[] = [
+// Tiny play-mode demo: 5 black belts scattered around the world
+// at ground level. Picked so the kid has to actually wander the
+// map to grab them all (not just spin in place). Positions sit
+// clear of buildings + hills + the existing easter eggs so a
+// belt never spawns inside something the character can't reach.
+// The 3 additional belts that come with the lazy river bring the
+// total tally to 8 — see PLAY_BELT_TOTAL in GameShell.
+const BELT_PICKUPS: { x: number; z: number; label: string }[] = [
   { x:  6,  z:  2,  label: "near-music" },     // plaza edge, MUSIC side
   { x: -6,  z:  6,  label: "near-code" },      // plaza edge, CODE side
   { x:  9,  z: -6,  label: "lake-shore" },     // near the gator / lake corner
   { x: -3,  z: 20,  label: "south-meadow" },   // between plaza and gun range
   { x: 15,  z:  8,  label: "east-beach" },     // east near the beach
 ];
-const STRIPE_BOB_AMP = 0.15;    // vertical wobble amplitude
-const STRIPE_BOB_FREQ = 1.8;    // wobbles/sec
-const STRIPE_SPIN_FREQ = 1.4;   // rotations/sec
+const BELT_BOB_AMP = 0.15;    // vertical wobble amplitude
+const BELT_BOB_FREQ = 1.8;    // wobbles/sec
+const BELT_SPIN_FREQ = 1.4;   // rotations/sec
 
 // Character selection — the kid picks who they want to play as by
 // clicking a character on the dojo mat. Selection persists to
@@ -1008,7 +1010,7 @@ function Scene({
   // model that mapped left arrow to a 90° CW rotation per press
   // ("left turns the character right, and too much per press").
   const PLAY_TURN_RATE = 1.8;
-  const STRIPE_PICKUP_RADIUS = 1.1;  // distance from char to stripe to grab it
+  const BELT_PICKUP_RADIUS = 1.1;  // distance from char to belt to grab it
 
   // Key-tracking refs. Refilled by window keydown/keyup listeners in
   // the effect below. We track WASD + arrows + space; everything
@@ -1092,30 +1094,30 @@ function Scene({
   // first play-mode camera tick after a reset.
   const playCamSnapRef = useRef(false);
 
-  // Stripes — 5 collectibles scattered around the world for the
+  // Belts — 5 collectibles scattered around the world for the
   // tiny play-mode demo. Positions are deliberately *ground-level*
   // (no platforms to land on yet) but spread far enough apart that
-  // the kid has to actually run around to find them. `STRIPES` is
-  // a module-level constant; `stripeCollectedRef` mirrors its
-  // collected state per-stripe so the meshes can hide themselves
+  // the kid has to actually run around to find them. `BELT_PICKUPS` is
+  // a module-level constant; `beltCollectedRef` mirrors its
+  // collected state per-belt so the meshes can hide themselves
   // and the per-frame distance check can skip already-grabbed ones.
-  const stripeCollectedRef = useRef<boolean[]>(STRIPES.map(() => false));
+  const beltCollectedRef = useRef<boolean[]>(BELT_PICKUPS.map(() => false));
   // GameShell tells us to reset (entering or exiting play mode).
   useEffect(() => {
     function onReset() {
-      for (let i = 0; i < stripeCollectedRef.current.length; i++) {
-        stripeCollectedRef.current[i] = false;
+      for (let i = 0; i < beltCollectedRef.current.length; i++) {
+        beltCollectedRef.current[i] = false;
       }
-      // Trigger a re-render of the Stripe meshes via the version bump.
-      setStripeVersion((v) => v + 1);
+      // Trigger a re-render of the BeltPickup meshes via the version bump.
+      setBeltVersion((v) => v + 1);
     }
     window.addEventListener("play-mode-reset", onReset);
     return () => window.removeEventListener("play-mode-reset", onReset);
   }, []);
   // Bump this state every time the collected set changes so the
-  // Stripe meshes (which read the ref) actually re-render to hide
-  // the picked-up ones.
-  const [stripeVersion, setStripeVersion] = useState(0);
+  // BeltPickup meshes (which read the ref) actually re-render to
+  // hide the picked-up ones.
+  const [beltVersion, setBeltVersion] = useState(0);
 
   // Game tick — runs every frame
   useFrame((state, dt) => {
@@ -1129,7 +1131,7 @@ function Scene({
     // When play mode is active, skip the entire portfolio tick
     // (easter eggs, walk-to-target, gator chase, etc.) and run the
     // tiny Mario-style platformer instead: WASD/arrow movement,
-    // gravity + jump, and stripe pickup detection. Click-to-walk
+    // gravity + jump, and belt pickup detection. Click-to-walk
     // and easter eggs are gated off by the playMode checks in the
     // handle*Click functions, so the only thing controlling Sonny
     // is the keyboard.
@@ -1185,19 +1187,19 @@ function Scene({
         char.vy = 0;
         char.grounded = true;
       }
-      // Stripe pickup — radial distance check (ignores height so
-      // jumping into a floating stripe also counts).
-      for (let i = 0; i < STRIPES.length; i++) {
-        if (stripeCollectedRef.current[i]) continue;
-        const s = STRIPES[i];
+      // Belt pickup — radial distance check (ignores height so
+      // jumping into a floating belt also counts).
+      for (let i = 0; i < BELT_PICKUPS.length; i++) {
+        if (beltCollectedRef.current[i]) continue;
+        const s = BELT_PICKUPS[i];
         const dx = char.x - s.x;
         const dz = char.z - s.z;
-        if (Math.hypot(dx, dz) < STRIPE_PICKUP_RADIUS) {
-          stripeCollectedRef.current[i] = true;
-          setStripeVersion((v) => v + 1);
+        if (Math.hypot(dx, dz) < BELT_PICKUP_RADIUS) {
+          beltCollectedRef.current[i] = true;
+          setBeltVersion((v) => v + 1);
           if (typeof window !== "undefined") {
             window.dispatchEvent(
-              new CustomEvent("stripe-collected", { detail: i })
+              new CustomEvent("belt-collected", { detail: i })
             );
           }
         }
@@ -2093,17 +2095,18 @@ function Scene({
             />
           ))}
           <Family familyRef={refs.family} />
-          {/* Stripe collectibles for the tiny play-mode demo. Mounted
-              only when playMode is on so they don't clutter portfolio
-              mode. stripeVersion bumps when any are collected, forcing
-              a re-render so the visibility flag on each Stripe updates. */}
+          {/* Black-belt collectibles for the tiny play-mode demo.
+              Mounted only when playMode is on so they don't clutter
+              portfolio mode. beltVersion bumps when any are
+              collected, forcing a re-render so the visibility flag
+              on each BeltPickup updates. */}
           {playMode &&
-            STRIPES.map((s, i) => (
-              <Stripe
-                key={`stripe-${i}-${stripeVersion}`}
+            BELT_PICKUPS.map((s, i) => (
+              <BeltPickup
+                key={`belt-${i}-${beltVersion}`}
                 position={s}
                 index={i}
-                collectedRef={stripeCollectedRef}
+                collectedRef={beltCollectedRef}
               />
             ))}
         </>
@@ -4209,13 +4212,15 @@ function Hill({
   );
 }
 
-// Play-mode collectible — a small glowing belt that bobs + spins
-// in place. Reads collected-state from a shared ref so the parent
-// (Scene) can mark it grabbed during the pickup check without a
-// React re-render. Visibility is toggled directly on the mesh
-// each frame. A single stripe is sized like a Mario coin so
-// it's findable from across the plaza.
-function Stripe({
+// Play-mode collectible — a small glowing black belt (with a
+// bright rank-stripe end) that bobs + spins in place. The visual
+// reads as "a BJJ black belt with a stripe earned on it" — the
+// reward kids on the mat actually earn. Reads collected-state
+// from a shared ref so the parent (Scene) can mark it grabbed
+// during the pickup check without a React re-render. Visibility
+// is toggled directly on the mesh each frame. Sized like a Mario
+// coin so it's findable from across the plaza.
+function BeltPickup({
   position,
   index,
   collectedRef,
@@ -4225,7 +4230,7 @@ function Stripe({
   collectedRef: React.MutableRefObject<boolean[]>;
 }) {
   const groupRef = useRef<THREE.Group | null>(null);
-  // Stagger each stripe's bob/spin phase so the cluster doesn't
+  // Stagger each belt's bob/spin phase so the cluster doesn't
   // pulse in lockstep when the kid sees several at once.
   const phaseOffset = (index * 0.41) % 1;
   useFrame((state) => {
@@ -4236,8 +4241,8 @@ function Stripe({
     if (!collected) {
       const t = state.clock.elapsedTime + phaseOffset * 10;
       g.position.y =
-        0.9 + Math.sin(t * STRIPE_BOB_FREQ * 2 * Math.PI) * STRIPE_BOB_AMP;
-      g.rotation.y = t * STRIPE_SPIN_FREQ * 2 * Math.PI;
+        0.9 + Math.sin(t * BELT_BOB_FREQ * 2 * Math.PI) * BELT_BOB_AMP;
+      g.rotation.y = t * BELT_SPIN_FREQ * 2 * Math.PI;
     }
   });
   return (
@@ -4258,7 +4263,7 @@ function Stripe({
           toneMapped={false}
         />
       </mesh>
-      {/* Soft ground ring so the kid can see WHERE the stripe is
+      {/* Soft ground ring so the kid can see WHERE the belt is
           floating even when it's behind a hill / tree. Faint
           additive yellow disc. */}
       <mesh
