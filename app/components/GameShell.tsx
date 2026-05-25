@@ -286,7 +286,16 @@ function ChessControls() {
 // at ground level around the plaza (see `BELT_PICKUPS` in
 // GameWorld); the other 3 will float in the lazy river. When this
 // changes, update the corresponding world data too.
-const PLAY_BELT_TOTAL = 14;
+// Denominator on the `▰ X/Y BELTS` pill. Matches the layout in
+// GameWorld:
+//   - 5 plaza belts (ground)
+//   - 1 carnival belt (ground)
+//   - 3 bridge belts (atop each arch deck)
+//   - 10 river belts (mid-float along the lazy-river curve)
+//   - 1 golf belt (next to the cup, awarded on first sink)
+// = 20. Bump this in lockstep with BELT_PICKUPS / RIVER_BELT_PICKUPS
+// edits or the HUD count will drift from the actual total.
+const PLAY_BELT_TOTAL = 20;
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +

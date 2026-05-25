@@ -320,18 +320,41 @@ const RIVER_DRIFT_SPEED = 1.2;
 // before clamping). World units.
 const RIVER_HALF_WIDTH = 3;
 
-// Tiny play-mode demo: 5 plaza-area black belts scattered around
-// the world at ground level, plus 3 more that float in the lazy
-// river (RIVER_BELT_PICKUPS below) — total 8, matching PLAY_BELT_TOTAL
-// in GameShell. Plaza belts are findable just by wandering; the
-// river belts require actively boarding the tube and steering to
-// the right offset to grab them mid-float.
-const BELT_PICKUPS: { x: number; z: number; label: string }[] = [
+// Play-mode collectibles scattered across the world. Most live at
+// ground level (default `groundY = 0`); a few sit elevated atop
+// landmarks (`groundY > 0`) — the three bridge belts ride the
+// stone deck. Total layout:
+//   - 5 plaza / map belts at ground level
+//   - 1 carnival belt at ground level (inside the park)
+//   - 3 bridge belts elevated on the stone arches (groundY=2.25,
+//     the top of `BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS/2`-ish)
+// + 10 river belts (RIVER_BELT_PICKUPS below)
+// + 1 golf belt (single floating belt next to the cup, awarded
+//   on the first sink — separate GolfBeltPickup)
+// = 20 total, matches PLAY_BELT_TOTAL in GameShell.
+//
+// `groundY` is the surface the belt floats above. The
+// `<BeltPickup>` mesh adds 0.9 to it for the bob centre and
+// places the glow ring 0.05 above it. The play-mode pickup check
+// uses `charStandsOnBridge` for any belt with `groundY > 0.5`
+// so the kid CAN'T collect a bridge belt by walking underneath
+// it at ground level (or by jumping — max jump height ≈ 1.45u,
+// well below the bridge deck at y=2).
+type BeltSpec = { x: number; z: number; label: string; groundY?: number };
+const BELT_PICKUPS: BeltSpec[] = [
   { x:  6,  z:  2,  label: "near-music" },     // plaza edge, MUSIC side
   { x: -6,  z:  6,  label: "near-code" },      // plaza edge, CODE side
   { x:  9,  z: -6,  label: "lake-shore" },     // near the gator / lake corner
   { x: -3,  z: 20,  label: "south-meadow" },   // between plaza and the river
   { x: 15,  z:  8,  label: "east-beach" },     // east near the beach
+  { x: -21, z: -34, label: "carnival" },       // inside the amusement park entrance
+  // Bridge belts — one per bridge, sitting on top of each arch deck.
+  // Coords match the bridge centres in RIVER_BRIDGES. `groundY` =
+  // BRIDGE_DECK_Y + BRIDGE_DECK_THICKNESS/2 + a hair so the belt
+  // sits just above the deck plank rather than half-embedded in it.
+  { x: -3,  z: -25, label: "bridge-n", groundY: 2.25 },
+  { x: 19,  z:   5, label: "bridge-e", groundY: 2.25 },
+  { x: -25, z:   5, label: "bridge-w", groundY: 2.25 },
 ];
 const BELT_BOB_AMP = 0.15;    // vertical wobble amplitude
 const BELT_BOB_FREQ = 1.8;    // wobbles/sec
@@ -419,13 +442,15 @@ const RIVER_CURVE = (() => {
 // the meshes each frame.
 const RIVER_BELT_PICKUPS: { t: number; offset: number; label: string }[] = [
   { t: 0.05, offset:  0.6, label: "river-1" },
-  { t: 0.18, offset: -0.7, label: "river-2" },
-  { t: 0.30, offset:  0.5, label: "river-3" },
-  { t: 0.42, offset: -0.5, label: "river-4" },
-  { t: 0.55, offset:  0.7, label: "river-5" },
-  { t: 0.68, offset: -0.6, label: "river-6" },
-  { t: 0.80, offset:  0.4, label: "river-7" },
-  { t: 0.92, offset: -0.3, label: "river-8" },
+  { t: 0.13, offset: -0.4, label: "river-2" },
+  { t: 0.22, offset:  0.7, label: "river-3" },
+  { t: 0.30, offset: -0.5, label: "river-4" },
+  { t: 0.42, offset:  0.5, label: "river-5" },
+  { t: 0.55, offset: -0.6, label: "river-6" },
+  { t: 0.65, offset:  0.4, label: "river-7" },
+  { t: 0.74, offset: -0.7, label: "river-8" },
+  { t: 0.83, offset:  0.6, label: "river-9" },
+  { t: 0.92, offset: -0.3, label: "river-10" },
 ];
 
 // Hot-air balloon easter egg (SE quadrant — south of the gator, right
@@ -1792,11 +1817,19 @@ function Scene({
         char.vy = 0;
         char.grounded = true;
       }
-      // Belt pickup — radial distance check (ignores height so
-      // jumping into a floating belt also counts).
+      // Belt pickup — radial 2D distance check. For ground belts
+      // the height is ignored so jumping into one still counts.
+      // Elevated belts (groundY > 0.5, currently the three bridge
+      // belts) additionally require the kid to actually be ON the
+      // bridge at the moment of pickup — otherwise walking
+      // UNDERNEATH the arch would grab the belt for free, since
+      // max jump height (~1.45u) can't reach the deck (y=2.0)
+      // anyway. `charStandsOnBridge` already encodes "on foot AND
+      // inside a bridge footprint."
       for (let i = 0; i < BELT_PICKUPS.length; i++) {
         if (beltCollectedRef.current[i]) continue;
         const s = BELT_PICKUPS[i];
+        if ((s.groundY ?? 0) > 0.5 && !charStandsOnBridge(char)) continue;
         const dx = char.x - s.x;
         const dz = char.z - s.z;
         if (Math.hypot(dx, dz) < BELT_PICKUP_RADIUS) {
@@ -5355,7 +5388,7 @@ function BeltPickup({
   index,
   collectedRef,
 }: {
-  position: { x: number; z: number };
+  position: { x: number; z: number; groundY?: number };
   index: number;
   collectedRef: React.MutableRefObject<boolean[]>;
 }) {
@@ -5363,6 +5396,9 @@ function BeltPickup({
   // Stagger each belt's bob/spin phase so the cluster doesn't
   // pulse in lockstep when the kid sees several at once.
   const phaseOffset = (index * 0.41) % 1;
+  // Base Y the belt bobs around. Ground belts hover 0.9 above the
+  // grass; bridge belts (`groundY > 0`) hover 0.9 above the deck.
+  const baseY = (position.groundY ?? 0) + 0.9;
   useFrame((state) => {
     const g = groupRef.current;
     if (!g) return;
@@ -5371,12 +5407,12 @@ function BeltPickup({
     if (!collected) {
       const t = state.clock.elapsedTime + phaseOffset * 10;
       g.position.y =
-        0.9 + Math.sin(t * BELT_BOB_FREQ * 2 * Math.PI) * BELT_BOB_AMP;
+        baseY + Math.sin(t * BELT_BOB_FREQ * 2 * Math.PI) * BELT_BOB_AMP;
       g.rotation.y = t * BELT_SPIN_FREQ * 2 * Math.PI;
     }
   });
   return (
-    <group ref={groupRef} position={[position.x, 0.9, position.z]}>
+    <group ref={groupRef} position={[position.x, baseY, position.z]}>
       {/* Belt — black core with a bright stripe band wrapped around */}
       <mesh castShadow>
         <boxGeometry args={[0.7, 0.18, 0.22]} />
