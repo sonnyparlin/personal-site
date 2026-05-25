@@ -1048,7 +1048,17 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   // plaza route. Navigating away auto-exits via the effect below.
   const [playMode, setPlayMode] = useState(false);
   useEffect(() => {
-    if (pathname !== "/") setPlayMode(false);
+    // Play mode is "alive" on the plaza route AND on the two
+    // play-compatible interior scenes (chess, academy) — those
+    // are reachable BY walking up to their building in play mode,
+    // so the toggle has to survive the navigation. All other
+    // routes (music, code, personal-life) reset play mode like
+    // before.
+    const playCompatible =
+      pathname === "/" ||
+      pathname === "/chess" ||
+      pathname === "/jiu-jitsu";
+    if (!playCompatible) setPlayMode(false);
   }, [pathname]);
   useEffect(() => {
     // Tell Scene to reset the belt meshes' collected state.
@@ -1162,6 +1172,24 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1a1a2e]">
       <GameWorld playMode={playMode} />
+      {/* Play-mode HUDs that need to survive route changes. Belts +
+          Points + the success chime are rendered for every
+          play-compatible route (home / chess / academy) so their
+          internal count state persists across the walk-into-chess →
+          win → walk-out flow — otherwise a chess win earned during
+          play mode would be lost when BeltHUD unmounted, then reset
+          to 0 on return to home. Chess scene's own HUD lives at
+          `top-4 right-4` (ChessControls) which is above the play
+          HUDs starting at `top-20`, so no overlap. */}
+      {playMode && <BeltHUD />}
+      {playMode && <PointsHUD />}
+      {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
+      {playMode && (
+        <MuteButton
+          muted={musicMuted}
+          onToggle={() => setMusicMuted((v) => !v)}
+        />
+      )}
       {isFullScene ? (
         <>
           <ExitSceneButton label={exitLabel} />
@@ -1191,15 +1219,6 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
             playMode={playMode}
             onToggle={() => setPlayMode((v) => !v)}
           />
-          {playMode && <BeltHUD />}
-          {playMode && <PointsHUD />}
-          {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
-          {playMode && (
-            <MuteButton
-              muted={musicMuted}
-              onToggle={() => setMusicMuted((v) => !v)}
-            />
-          )}
           {playMode && <PlayControlsHint />}
           {playMode && <TouchControls />}
           <RiverExitButton />

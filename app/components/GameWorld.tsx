@@ -1987,6 +1987,41 @@ function Scene({
       if (refs.target.current) refs.target.current = null;
       if (refs.pathQueue.current.length) refs.pathQueue.current = [];
 
+      // Auto-enter the chess room / jiu-jitsu academy — walking
+      // close to either building's doorTarget in play mode triggers
+      // a route push, the same way the river / golf green auto-board
+      // works. Chess is a points-and-belt earner (win = +500 pts +
+      // 1 belt); jiu-jitsu is where the kid can switch character.
+      // Both routes are flagged "play-compatible" in GameShell's
+      // pathname effect so play mode SURVIVES the navigation — the
+      // belt + points HUDs stay mounted across the trip, so a chess
+      // win earned during play mode correctly updates the tally.
+      //
+      // After the trigger, the char is teleported back to plaza
+      // spawn (0, 0) so when the kid returns from the scene they
+      // DON'T immediately re-trigger the same building (they'd
+      // re-spawn at the door otherwise — char position survives
+      // across routes since GameWorld stays mounted).
+      {
+        let routedTo: string | null = null;
+        for (const s of SECTIONS) {
+          if (s.id !== "chess" && s.id !== "jiu-jitsu") continue;
+          const t = doorTarget(s);
+          if (Math.hypot(char.x - t.x, char.z - t.z) < 1.6) {
+            routedTo = s.path;
+            break;
+          }
+        }
+        if (routedTo) {
+          char.x = 0;
+          char.z = 0;
+          char.angle = 0;
+          char.walking = false;
+          router.push(routedTo);
+          return; // skip the river / golf auto-boards this frame
+        }
+      }
+
       // Auto-board the lazy-river tube — if the kid walks anywhere
       // near the river footprint (within ~4 units of the boarding
       // deck, which covers most of the north bank of the loop), hop
