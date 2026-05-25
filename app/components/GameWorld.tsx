@@ -7418,10 +7418,16 @@ function CameraRig({
       // and Sonny would appear motionless on screen while the world
       // dropped (it reads as "the camera jumped, not the character").
       // Keeping the camera at a fixed height makes the jump visibly
-      // lift Sonny in the frame, the way it should look.
+      // lift Sonny in the frame, the way it should look. The ONE
+      // exception is the bridges — when the kid walks up the ramp,
+      // their feet rise from y=0 to y=2; if the camera stayed pinned
+      // they'd disappear off the top of the frame. The bridge y is
+      // ADDED to the pinned camera height so the framing follows the
+      // kid up and over the deck.
+      const bridgeY = bridgeYAt(c.x, c.z);
       const wantCam = {
         x: c.x - Math.sin(c.angle) * 5.5,
-        y: 4,
+        y: 4 + bridgeY,
         z: c.z - Math.cos(c.angle) * 5.5,
       };
       // On play-mode entry the camera could be anywhere (portfolio
@@ -7443,7 +7449,10 @@ function CameraRig({
         // Look at a fixed torso height (1.5u) — also independent of
         // c.y so jumps don't tilt the camera up with the character.
         // The character will visibly leap upward in the screen frame.
-        controlsRef.current.target.set(c.x, 1.5, c.z);
+        // Bridge offset is added so the target rides up the ramp
+        // with the camera (otherwise on the deck the camera would
+        // look DOWN at empty water below the kid's feet).
+        controlsRef.current.target.set(c.x, 1.5 + bridgeY, c.z);
         controlsRef.current.update();
       }
       // Reset hijack / manual flags so exiting play mode lands in
@@ -7538,8 +7547,14 @@ function CameraRig({
       wantTZ = c.z;
       // Ballooning tracks the rider's height 1:1 so the face stays
       // dead-center as the balloon rises (vs. only halfway for other
-      // modes where the character barely leaves the ground).
-      wantTY = c.mode === "ballooning" ? 1 + c.y : 1 + c.y * 0.5;
+      // modes where the character barely leaves the ground). For
+      // bridge walking, add the deck height so the camera doesn't
+      // tilt down at the water below the kid's feet.
+      const walkTargetBridgeY = bridgeYAt(c.x, c.z);
+      wantTY =
+        c.mode === "ballooning"
+          ? 1 + c.y
+          : 1 + c.y * 0.5 + walkTargetBridgeY;
     } else if (balloonAdventureRef.current.active) {
       // Adventure: look at the "action" altitude (adv.riderY). For
       // rising/atTop that IS the balloon (riders in basket). For
@@ -7684,10 +7699,13 @@ function CameraRig({
       // wantCam goes null and the camera holds at the doorway
       // (buildings). Intentionally does NOT set camHijackedRef —
       // walking is its own gate, separate from the post-event
-      // glide-back.
+      // glide-back. Bridge offset matches the play-mode chase cam:
+      // rises with the kid when they walk up a bridge ramp so they
+      // don't disappear off the top of the frame.
+      const walkBridgeY = bridgeYAt(c.x, c.z);
       wantCam = {
         x: c.x - Math.sin(c.angle) * 5.5,
-        y: 4,
+        y: 4 + walkBridgeY,
         z: c.z - Math.cos(c.angle) * 5.5,
       };
       camLerpSpeed = 3.5;
