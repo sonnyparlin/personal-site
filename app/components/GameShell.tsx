@@ -480,15 +480,22 @@ function PointsHUD() {
 // + chess-belt-seen flag from window events so GameShell stays
 // inert (same anti-blip pattern as BeltHUD).
 function ChessHintBanner() {
+  const router = useRouter();
   const [visible, setVisible] = useState(false);
+  // Refs let the click handler read the latest count + dismissal
+  // state without re-binding listeners every render.
+  const dismissedRef = useRef(false);
   useEffect(() => {
     let count = 0;
     let chessAwarded = false;
+    let dismissed = false;
     function recompute() {
       // Show when the kid has the 20 walking belts but no chess
-      // belt yet. Once chess lands they hit 21 → celebration →
+      // belt yet AND they haven't dismissed the hint by moving or
+      // tapping it. Once chess lands they hit 21 → celebration →
       // banner can stay hidden (count > 20 condition fails).
-      setVisible(count >= 20 && !chessAwarded);
+      dismissedRef.current = dismissed;
+      setVisible(count >= 20 && !chessAwarded && !dismissed);
     }
     function onCollect(e: Event) {
       count += 1;
@@ -499,38 +506,68 @@ function ChessHintBanner() {
     function onReset() {
       count = 0;
       chessAwarded = false;
+      dismissed = false;
       recompute();
+    }
+    // Any movement key (WASD / arrows / Space jump) dismisses the
+    // hint so it stops covering the play area once the kid resumes
+    // playing. Stays dismissed until `play-mode-reset` clears the
+    // session. TouchControls dispatch real KeyboardEvents on window
+    // so a single physical-key listener handles both input modes.
+    function onKey(e: KeyboardEvent) {
+      const k = e.code;
+      const isGameKey =
+        k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" ||
+        k === "ArrowUp" || k === "ArrowDown" ||
+        k === "ArrowLeft" || k === "ArrowRight" ||
+        k === "Space";
+      if (isGameKey && !dismissed) {
+        dismissed = true;
+        recompute();
+      }
     }
     window.addEventListener("belt-collected", onCollect);
     window.addEventListener("play-mode-reset", onReset);
+    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("belt-collected", onCollect);
       window.removeEventListener("play-mode-reset", onReset);
+      window.removeEventListener("keydown", onKey);
     };
   }, []);
   if (!visible) return null;
+  // Clickable: tapping the pill is a shortcut to the chess room.
+  // Hides itself immediately (so the chip doesn't linger over the
+  // transition) and pushes the route — same destination as the
+  // proximity auto-enter when you walk up to the chess building.
   return (
-    <div
-      role="status"
-      aria-live="polite"
+    <button
+      type="button"
+      onClick={() => {
+        dismissedRef.current = true;
+        setVisible(false);
+        router.push("/chess");
+      }}
+      aria-label="Beat Sonny at chess to earn your final belt"
       className="
         absolute top-72 left-1/2 -translate-x-1/2 z-20 select-none
         max-w-[88vw] w-max
         px-5 py-3
         flex items-center gap-3
-        bg-amber-500/95
+        bg-amber-500/95 hover:bg-amber-400/95 active:bg-amber-600/95
         text-amber-950 text-xs sm:text-sm uppercase tracking-wide font-semibold
-        text-center
+        text-center cursor-pointer
         border-2 border-amber-200/80
         rounded-2xl
         backdrop-blur-sm
         shadow-lg shadow-black/50
+        transition-colors
         animate-in fade-in slide-in-from-top-3 duration-300
       "
     >
       <span aria-hidden className="text-lg leading-none">♟</span>
       <span>Beat Sonny at chess to earn your final belt!</span>
-    </div>
+    </button>
   );
 }
 
