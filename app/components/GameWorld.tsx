@@ -1701,10 +1701,49 @@ function Scene({
       // (Both are the conditions the chime is mounted under, but
       // double-check defensively.)
       if (!playModeRef.current) return;
+      // Wherever the kid was — tubing on the river, addressing a
+      // putt at the green, mid-walk to a building — fully exit
+      // and teleport back to the plaza spawn so the celebration
+      // happens in the SAME place every time (and so the camera
+      // doesn't try to chase through the green's auto-board or
+      // re-trigger the tubing tick).
+      const r = refs.river.current;
+      r.active = false;
+      r.riding = false;
+      r.exitPending = false;
+      const p = refs.putting.current;
+      p.active = false;
+      p.charging = false;
+      p.power = 0;
+      p.phase = "idle";
+      p.phaseT = 0;
+      p.ballVx = 0;
+      p.ballVz = 0;
+      // Clear any pending walk-to-target so the celebration isn't
+      // immediately interrupted by an arrival handler.
+      if (refs.target.current) refs.target.current = null;
+      if (refs.pathQueue.current.length) refs.pathQueue.current = [];
+      // Teleport to the plaza spawn — same coords as the initial
+      // charRef in GameWorld.
+      c.x = 0;
+      c.z = 0;
+      c.y = 0;
+      c.angle = 0;
+      c.walking = false;
+      c.stepPhase = 0;
+      // Dismiss any HUD overlays that might be up from the
+      // exited mode (river-exit button, putt HUD).
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("river-active", { detail: false })
+        );
+        window.dispatchEvent(
+          new CustomEvent("putting-active", { detail: false })
+        );
+      }
       celebrationRef.current.active = true;
       celebrationRef.current.t = 0;
       c.mode = "celebrating";
-      c.walking = false;
       c.vy = CELEBRATE_HOP_VELOCITY; // start the first hop right away
       c.grounded = false;
     }
@@ -1718,7 +1757,7 @@ function Scene({
       window.removeEventListener("belts-complete", onComplete);
       window.removeEventListener("play-mode-reset", onReset);
     };
-  }, [CELEBRATE_HOP_VELOCITY, refs.char]);
+  }, [CELEBRATE_HOP_VELOCITY, refs.char, refs.river, refs.putting, refs.target, refs.pathQueue]);
 
   // EXIT-the-ride request from GameShell's overlay button. Pause-
   // sets exitPending; the tubing tick consumes it on the next frame
