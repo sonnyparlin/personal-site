@@ -25,7 +25,7 @@ import {
 
 // -------------------- shared state types --------------------
 
-type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "tubing";
+type CharMode = "idle" | "flee" | "riding" | "golfing" | "ballooning" | "tubing" | "putting";
 
 type CharState = {
   x: number;
@@ -65,6 +65,34 @@ type FamilyState = {
 type GolfState = {
   active: boolean;
   t: number; // 0..1 progress of the golf easter-egg animation
+};
+
+// Play-mode interactive putt at the golf green. Aim with A/D (rotates
+// the kid's body angle), hold Space to charge a power meter, release
+// to launch the ball. Ball decelerates from friction; if it reaches
+// the cup at low speed it sinks. Missed putts respawn at the tee for
+// another try. Exit via the DONE overlay button.
+type PuttingState = {
+  active: boolean;
+  // Held-key state for the Space-charge → release flow. `charging`
+  // is true while Space is down; `power` builds up to 1 over
+  // PUTT_CHARGE_TIME seconds.
+  charging: boolean;
+  power: number; // 0..1, normalised
+  // Ball physics — world XZ position and per-frame velocity vector.
+  // y is fixed at GOLF_BALL_Y (slightly above the green) since the
+  // putt is a flat surface roll.
+  ballX: number;
+  ballZ: number;
+  ballVx: number;
+  ballVz: number;
+  // Phase: 'idle' (tee, awaiting aim/charge), 'rolling' (ball in
+  // motion), 'sunk' (in cup, celebrating), 'missed' (stopped, brief
+  // beat before respawn).
+  phase: "idle" | "rolling" | "sunk" | "missed";
+  phaseT: number; // seconds since phase entry (for sunk/missed beats)
+  attempts: number; // total putts this session (just for HUD)
+  sinks: number; // total sinks this session
 };
 
 // Lazy-river ride. The tube auto-floats along RIVER_CURVE at a
@@ -169,6 +197,7 @@ type SharedRefs = {
   approachingGolf: React.MutableRefObject<boolean>;
   river: React.MutableRefObject<RiverState>;
   approachingRiver: React.MutableRefObject<boolean>;
+  putting: React.MutableRefObject<PuttingState>;
   balloon: React.MutableRefObject<BalloonState>;
   approachingBalloon: React.MutableRefObject<boolean>;
   balloonAdventure: React.MutableRefObject<BalloonAdventureState>;
@@ -218,6 +247,35 @@ const GOLF_TEE = { x: -16.5, z: 8.3 };
 const GOLF_BALL_START = { x: -17.0, z: 8.7 };
 const GOLF_HOLE = { x: -18, z: 8.6 };
 const GOLF_DURATION = 6.0; // total seconds of address → swing → flight → celebration
+
+// Play-mode interactive putt — separate from the easter-egg
+// choreography above. When the kid walks within PUTT_TRIGGER_RADIUS
+// of GOLF_TEE in play mode, they auto-board into putting mode and
+// can aim + charge + putt with A/D + Space. Tuned so a full-power
+// shot at the cup (distance ≈ 1.5u from tee → ball start) gives the
+// kid a decent chance of sinking but isn't trivial.
+const PUTT_TRIGGER_RADIUS = 2.5;
+// Max launch speed (units/sec) at full power. Distance to cup from
+// ball start is ~1.0u; with friction 4.0 a 3.5u/s launch travels
+// roughly 1.5u before stopping (s = v²/(2·a) = 12.25/8 ≈ 1.5).
+const PUTT_MAX_LAUNCH_SPEED = 4.5;
+const PUTT_FRICTION = 4.0; // units/sec² deceleration
+const PUTT_CHARGE_TIME = 1.0; // seconds Space-held to reach full power
+// Aim rotation rate while putting (radians/sec). Slower than the
+// tank turn rate on land so fine aiming is comfortable.
+const PUTT_AIM_TURN_RATE = 1.2;
+// Cup geometry — proximity to the cup centre that counts as a sink,
+// and the max ball speed at which the cup edge "captures" the ball
+// (too fast → ball rolls over the lip instead of dropping in).
+const PUTT_CUP_RADIUS = 0.32;
+const PUTT_SINK_SPEED_MAX = 2.0;
+// Stop threshold — below this speed the ball is considered stopped
+// (transitions to missed/sunk phase). Avoids the asymptotic
+// never-quite-zero tail of friction decay.
+const PUTT_STOP_SPEED = 0.08;
+const PUTT_SUNK_BEAT = 1.4; // sec of celebration before respawn
+const PUTT_MISSED_BEAT = 0.6; // sec of pause before ball respawns at tee
+const PUTT_BALL_Y = 0.08; // ball sits a hair above the green
 
 // Lazy-river easter egg (south side, replaces the old gun range
 // which replaced the old farm). A curved oval river loops around
@@ -555,7 +613,6 @@ const OBSTACLES: { x: number; z: number; r: number }[] = [
   { x: -22, z: -28, r: 3.5 * 1.4 },
   { x: -22, z:  28, r: 3.5 * 1.5 },
   { x:   0, z: -32, r: 3.5 * 1.8 },
-  { x:   0, z:  32, r: 3.5 * 1.4 },
   { x: -12, z: -34, r: 3.5 * 1.3 },
   { x:  10, z:  30, r: 3.5 * 1.3 },
   { x: -22, z:  72, r: 3.5 * 1.4 },
@@ -697,9 +754,9 @@ const BYPASS_WAYPOINTS: { x: number; z: number }[] = [
   { x: 8, z: 0 },     // E
   { x: 3, z: -4 },    // NE corridor between HOME and MUSIC (toward the gator)
   { x: -3, z: -4 },   // NW corridor between HOME and JIU JITSU (toward the park)
-  // Southern hills corridor — threads west of the central hill (0, 32)
-  // and east of the SW hill (-22, 28) so the walk to the lazy river
-  // (z=40+) doesn't clip the (0, 32) / (10, 30) hill cluster.
+  // Southern hills corridor — threads east of the SW hill (-22, 28)
+  // so the walk to the lazy river (z=40+) routes around the
+  // (10, 30) hill on the east side of the south meadow if needed.
   { x: -9, z: 26 },
 ];
 
@@ -785,6 +842,19 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
     exitPending: false,
   });
   const approachingRiverRef = useRef(false);
+  const puttingRef = useRef<PuttingState>({
+    active: false,
+    charging: false,
+    power: 0,
+    ballX: GOLF_BALL_START.x,
+    ballZ: GOLF_BALL_START.z,
+    ballVx: 0,
+    ballVz: 0,
+    phase: "idle",
+    phaseT: 0,
+    attempts: 0,
+    sinks: 0,
+  });
   const balloonRef = useRef<BalloonState>({
     active: false,
     phase: "rising",
@@ -904,6 +974,15 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       riverRef.current.laps = 0;
       riverRef.current.exitPending = false;
       approachingRiverRef.current = false;
+      puttingRef.current.active = false;
+      puttingRef.current.charging = false;
+      puttingRef.current.power = 0;
+      puttingRef.current.phase = "idle";
+      puttingRef.current.phaseT = 0;
+      puttingRef.current.ballX = GOLF_BALL_START.x;
+      puttingRef.current.ballZ = GOLF_BALL_START.z;
+      puttingRef.current.ballVx = 0;
+      puttingRef.current.ballVz = 0;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -924,6 +1003,15 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       riverRef.current.laps = 0;
       riverRef.current.exitPending = false;
       approachingRiverRef.current = false;
+      puttingRef.current.active = false;
+      puttingRef.current.charging = false;
+      puttingRef.current.power = 0;
+      puttingRef.current.phase = "idle";
+      puttingRef.current.phaseT = 0;
+      puttingRef.current.ballX = GOLF_BALL_START.x;
+      puttingRef.current.ballZ = GOLF_BALL_START.z;
+      puttingRef.current.ballVx = 0;
+      puttingRef.current.ballVz = 0;
       balloonRef.current.active = false;
       balloonRef.current.t = 0;
       balloonRef.current.height = 0;
@@ -947,6 +1035,7 @@ export default function GameWorld({ playMode = false }: { playMode?: boolean } =
       approachingGolf: approachingGolfRef,
       river: riverRef,
       approachingRiver: approachingRiverRef,
+      putting: puttingRef,
       balloon: balloonRef,
       approachingBalloon: approachingBalloonRef,
       balloonAdventure: balloonAdventureRef,
@@ -1191,6 +1280,38 @@ function Scene({
       c.walking = false;
       c.stepPhase = 0;
       c.mode = "idle";
+      // Clear any in-progress mode states so the next session starts clean.
+      const p = refs.putting.current;
+      if (p.active) {
+        p.active = false;
+        p.charging = false;
+        p.power = 0;
+        p.phase = "idle";
+        p.phaseT = 0;
+        p.ballVx = 0;
+        p.ballVz = 0;
+        p.ballX = GOLF_BALL_START.x;
+        p.ballZ = GOLF_BALL_START.z;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("putting-active", { detail: false })
+          );
+        }
+      }
+      const r = refs.river.current;
+      if (r.active) {
+        r.active = false;
+        r.riding = false;
+        r.t = 0;
+        r.offset = 0;
+        r.laps = 0;
+        r.exitPending = false;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("river-active", { detail: false })
+          );
+        }
+      }
       // Signal the play-mode camera branch to snap directly to the
       // follow position on the next frame instead of lerping in
       // from wherever the camera happened to be. Without this, the
@@ -1260,6 +1381,70 @@ function Scene({
     return () => window.removeEventListener("river-exit", onExit);
   }, [refs.river]);
 
+  // DONE-with-putt request from the GameShell overlay button. Exits
+  // putting mode and snaps the kid 3u north of the tee so they're
+  // back on grass (outside the auto-board trigger) when control
+  // returns. Mirrors the river exit pattern.
+  useEffect(() => {
+    function onDone() {
+      const p = refs.putting.current;
+      if (!p.active) return;
+      const c = refs.char.current;
+      p.active = false;
+      p.charging = false;
+      p.power = 0;
+      p.phase = "idle";
+      p.phaseT = 0;
+      p.ballVx = 0;
+      p.ballVz = 0;
+      p.ballX = GOLF_BALL_START.x;
+      p.ballZ = GOLF_BALL_START.z;
+      // Snap NORTH of the green so the next play-mode tick doesn't
+      // immediately re-trigger the proximity auto-board.
+      c.x = GOLF_TEE.x;
+      c.z = GOLF_TEE.z - 4;
+      c.mode = "idle";
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("putting-active", { detail: false })
+        );
+      }
+    }
+    window.addEventListener("putt-done", onDone);
+    return () => window.removeEventListener("putt-done", onDone);
+  }, [refs.putting, refs.char]);
+
+  // Space-key tracking for putt power-charge. The main keysRef
+  // already has `jump` (Space) as an edge-triggered key, but the
+  // putting tick needs to know whether Space is CURRENTLY HELD
+  // (continuous, not edge), so we track that separately with its
+  // own listeners. Active only on coarse-pointer + play-mode
+  // sessions so the listeners don't fire constantly elsewhere.
+  const spaceHeldRef = useRef(false);
+  useEffect(() => {
+    function isSpace(e: KeyboardEvent) {
+      return e.code === "Space" || e.key === " ";
+    }
+    function onDown(e: KeyboardEvent) {
+      if (!playModeRef.current) return;
+      if (isSpace(e)) {
+        spaceHeldRef.current = true;
+        e.preventDefault();
+      }
+    }
+    function onUp(e: KeyboardEvent) {
+      if (isSpace(e)) {
+        spaceHeldRef.current = false;
+      }
+    }
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
+  }, []);
+
 
 
   // Game tick — runs every frame
@@ -1280,12 +1465,13 @@ function Scene({
     // is the keyboard.
     if (playModeRef.current && isOnHome) {
       // If the kid is already on the lazy-river tube (entered by
-      // walking onto the boarding platform below), skip the play-mode
-      // movement / gravity / pickup code and let the portfolio
-      // tubing branch drive char this frame. The portfolio tick
-      // re-reads keysRef each frame for A/D drift steering, so the
-      // tank-control keys map naturally to "drift left / right".
-      if (char.mode === "tubing") {
+      // walking onto the boarding platform below) OR addressing a
+      // play-mode putt at the green, skip the play-mode movement /
+      // gravity / pickup code and let the portfolio tubing or
+      // putting branch drive char this frame. Both branches re-read
+      // keysRef each frame so the tank-control keys map naturally:
+      // tubing → A/D drift, putting → A/D aim + Space charge.
+      if (char.mode === "tubing" || char.mode === "putting") {
         // fall through to the portfolio tick below
       } else {
       const keys = keysRef.current;
@@ -1389,6 +1575,35 @@ function Scene({
         if (typeof window !== "undefined") {
           window.dispatchEvent(
             new CustomEvent("river-active", { detail: true })
+          );
+        }
+      } else if (
+        // Auto-board into the play-mode putt — same proximity
+        // pattern as the river. Pins the kid at the tee, faces
+        // them south by default (toward the cup), and resets the
+        // ball + putting state. The portfolio putting branch below
+        // drives aim/charge/release from keysRef each frame.
+        !refs.putting.current.active &&
+        Math.hypot(char.x - GOLF_TEE.x, char.z - GOLF_TEE.z) < PUTT_TRIGGER_RADIUS
+      ) {
+        const p = refs.putting.current;
+        p.active = true;
+        p.charging = false;
+        p.power = 0;
+        p.phase = "idle";
+        p.phaseT = 0;
+        p.ballX = GOLF_BALL_START.x;
+        p.ballZ = GOLF_BALL_START.z;
+        p.ballVx = 0;
+        p.ballVz = 0;
+        char.x = GOLF_TEE.x;
+        char.z = GOLF_TEE.z;
+        char.angle = 0; // face south toward the cup
+        char.mode = "putting";
+        char.walking = false;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("putting-active", { detail: true })
           );
         }
       } else {
@@ -1880,6 +2095,152 @@ function Scene({
       }
     }
 
+    // ── 0ab. Play-mode interactive putt at the golf green ──
+    // Pinned at GOLF_TEE. A/D rotates the body angle (= aim
+    // direction). Holding Space charges power; releasing fires the
+    // ball along the body's facing direction at PUTT_MAX_LAUNCH_SPEED
+    // × power. Ball decelerates from friction; if it stops near the
+    // cup at low speed → sunk. Otherwise → missed; ball respawns at
+    // the tee after a short beat.
+    if (char.mode === "putting") {
+      const p = refs.putting.current;
+      const k = keysRef.current;
+      // Hard-pin the character at the tee — the auto-board snapped
+      // them here, and the play-mode tick has been short-circuited
+      // for putting so nothing else can move them off the spot.
+      char.x = GOLF_TEE.x;
+      char.z = GOLF_TEE.z;
+      char.y = 0;
+      char.walking = false;
+
+      if (p.phase === "idle") {
+        // Aim — A turns CCW (player-relative LEFT), D turns CW.
+        // Same sign convention as the on-land tank controls so the
+        // muscle memory carries over.
+        if (k.left)  char.angle += PUTT_AIM_TURN_RATE * clampedDt;
+        if (k.right) char.angle -= PUTT_AIM_TURN_RATE * clampedDt;
+        // Power charge — Space-down builds power up to 1, Space-up
+        // releases the putt. The Space key in keysRef is edge-
+        // triggered (set on keydown, NOT cleared on keyup), so we
+        // mirror its current pressed state via a separate
+        // `spaceHeldRef`. (Tracked below via an effect to keep this
+        // useFrame branch simple — see the spaceHeldRef setup.)
+        if (spaceHeldRef.current) {
+          if (!p.charging) {
+            // rising edge — start charging
+            p.charging = true;
+            p.power = 0;
+          }
+          p.power = Math.min(1, p.power + clampedDt / PUTT_CHARGE_TIME);
+        } else if (p.charging) {
+          // falling edge — release the putt
+          p.charging = false;
+          const speed = PUTT_MAX_LAUNCH_SPEED * Math.max(0.15, p.power);
+          // Launch direction = body facing (atan2(sin, cos) lives in
+          // char.angle already). Body angle 0 = +Z (south), positive
+          // = CCW from above.
+          p.ballVx = speed * Math.sin(char.angle);
+          p.ballVz = speed * Math.cos(char.angle);
+          p.phase = "rolling";
+          p.phaseT = 0;
+          p.power = 0;
+          p.attempts += 1;
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("putt-stats", {
+                detail: { attempts: p.attempts, sinks: p.sinks, power: 0 },
+              })
+            );
+          }
+        } else {
+          // Live-update the HUD with the charging power so the
+          // meter fills smoothly. (Only dispatch when there's
+          // visible change to avoid spamming.)
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("putt-stats", {
+                detail: { attempts: p.attempts, sinks: p.sinks, power: 0 },
+              })
+            );
+          }
+        }
+        // Continuously broadcast power for the HUD when charging.
+        if (p.charging && typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("putt-stats", {
+              detail: { attempts: p.attempts, sinks: p.sinks, power: p.power },
+            })
+          );
+        }
+      } else if (p.phase === "rolling") {
+        // Integrate position + apply friction.
+        const speed = Math.hypot(p.ballVx, p.ballVz);
+        if (speed > 0) {
+          const decel = PUTT_FRICTION * clampedDt;
+          const newSpeed = Math.max(0, speed - decel);
+          const f = newSpeed / speed;
+          p.ballVx *= f;
+          p.ballVz *= f;
+        }
+        p.ballX += p.ballVx * clampedDt;
+        p.ballZ += p.ballVz * clampedDt;
+        // Cup proximity — sink if close enough AND moving slowly
+        // enough to drop in (fast balls roll over the lip).
+        const dCup = Math.hypot(p.ballX - GOLF_HOLE.x, p.ballZ - GOLF_HOLE.z);
+        const curSpeed = Math.hypot(p.ballVx, p.ballVz);
+        if (dCup < PUTT_CUP_RADIUS && curSpeed < PUTT_SINK_SPEED_MAX) {
+          // SUNK
+          p.ballX = GOLF_HOLE.x;
+          p.ballZ = GOLF_HOLE.z;
+          p.ballVx = 0;
+          p.ballVz = 0;
+          p.phase = "sunk";
+          p.phaseT = 0;
+          p.sinks += 1;
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("putt-stats", {
+                detail: { attempts: p.attempts, sinks: p.sinks, power: 0 },
+              })
+            );
+            // Each sink earns another belt — golf is the only
+            // belt-generator the kid can repeat indefinitely.
+            // The plaza + river belts are finite (5 + 3 = 8); putts
+            // can push the BeltHUD above 8 as a high-score effect.
+            window.dispatchEvent(
+              new CustomEvent("belt-collected", {
+                detail: `putt-${p.sinks}`,
+              })
+            );
+          }
+        } else if (curSpeed < PUTT_STOP_SPEED) {
+          // Ball stopped without sinking — MISS
+          p.ballVx = 0;
+          p.ballVz = 0;
+          p.phase = "missed";
+          p.phaseT = 0;
+        }
+      } else if (p.phase === "sunk") {
+        p.phaseT += clampedDt;
+        if (p.phaseT >= PUTT_SUNK_BEAT) {
+          // Reset for the next attempt — ball back at the tee.
+          p.ballX = GOLF_BALL_START.x;
+          p.ballZ = GOLF_BALL_START.z;
+          p.phase = "idle";
+          p.phaseT = 0;
+        }
+      } else if (p.phase === "missed") {
+        p.phaseT += clampedDt;
+        if (p.phaseT >= PUTT_MISSED_BEAT) {
+          // Respawn the ball at the tee for another try.
+          p.ballX = GOLF_BALL_START.x;
+          p.ballZ = GOLF_BALL_START.z;
+          p.phase = "idle";
+          p.phaseT = 0;
+        }
+      }
+    }
+
     // ── 0a. Golf hole-in-one ──
     if (char.mode === "golfing") {
       refs.golf.current.t += clampedDt / GOLF_DURATION;
@@ -2199,11 +2560,13 @@ function Scene({
       refs.char.current.mode === "golfing" ||
       refs.char.current.mode === "ballooning" ||
       refs.char.current.mode === "tubing" ||
+      refs.char.current.mode === "putting" ||
       refs.gator.current.chasing ||
       refs.coaster.current.riding ||
       refs.family.current.active ||
       refs.golf.current.active ||
       refs.river.current.active ||
+      refs.putting.current.active ||
       refs.balloon.current.active ||
       refs.balloonAdventure.current.active
     );
@@ -2328,6 +2691,8 @@ function Scene({
             riverBeltCollectedRef={riverBeltCollectedRef}
             riverBeltVersion={riverBeltVersion}
             onRiverClick={handleRiverClick}
+            puttingRef={refs.putting}
+            charRef={refs.char}
             balloonRef={refs.balloon}
             onBalloonClick={handleBalloonClick}
             travisRef={refs.travis}
@@ -2475,6 +2840,8 @@ function Environment({
   riverBeltCollectedRef,
   riverBeltVersion,
   onRiverClick,
+  puttingRef,
+  charRef,
   balloonRef,
   onBalloonClick,
   travisRef,
@@ -2491,6 +2858,8 @@ function Environment({
   riverBeltCollectedRef: React.MutableRefObject<boolean[]>;
   riverBeltVersion: number;
   onRiverClick: () => void;
+  puttingRef: React.MutableRefObject<PuttingState>;
+  charRef: React.MutableRefObject<CharState>;
   balloonRef: React.MutableRefObject<BalloonState>;
   onBalloonClick: () => void;
   travisRef: React.MutableRefObject<AvatarState>;
@@ -2543,6 +2912,12 @@ function Environment({
         onSelect={onGolfClick}
       />
       <GolfBall golfRef={golfRef} />
+      {/* Interactive play-mode putt visuals — the ball that follows
+          puttingRef physics, plus an aim arrow that rotates with the
+          kid's body angle while addressing the ball. Both hidden
+          outside play-mode putting. */}
+      <PuttBall puttingRef={puttingRef} />
+      <AimArrow puttingRef={puttingRef} charRef={charRef} />
 
       {/* Hot-air balloon to the south-east (clickable easter egg) */}
       <Balloon balloonRef={balloonRef} onSelect={onBalloonClick} />
@@ -2590,7 +2965,6 @@ function Environment({
       <Hill position={[-22, 0, -28]} scale={1.4} color="#4a7a30" />
       <Hill position={[-22, 0, 28]} scale={1.5} color="#3d6824" />
       <Hill position={[0, 0, -32]} scale={1.8} color="#446e2a" />
-      <Hill position={[0, 0, 32]} scale={1.4} color="#446e2a" />
       <Hill position={[-12, 0, -34]} scale={1.3} color="#4a7a30" />
       <Hill position={[10, 0, 30]} scale={1.3} color="#3d6824" />
 
@@ -4271,6 +4645,107 @@ function GolfBall({
   );
 }
 
+// Play-mode putt ball — separate from the easter-egg GolfBall above.
+// Reads puttingRef each frame for live physics-driven position. Sunk
+// state drops the ball into the cup (lower y) for a beat before the
+// state machine respawns it at the tee.
+function PuttBall({
+  puttingRef,
+}: {
+  puttingRef: React.MutableRefObject<PuttingState>;
+}) {
+  const ref = useRef<THREE.Mesh>(null);
+  useFrame(() => {
+    const m = ref.current;
+    if (!m) return;
+    const p = puttingRef.current;
+    m.visible = p.active;
+    if (!p.active) return;
+    m.position.x = p.ballX;
+    m.position.z = p.ballZ;
+    // Sunk → drop the ball into the cup; otherwise sit on the green.
+    m.position.y = p.phase === "sunk" ? -0.05 : PUTT_BALL_Y;
+  });
+  return (
+    <mesh ref={ref} visible={false} castShadow>
+      <sphereGeometry args={[0.08, 12, 8]} />
+      <meshStandardMaterial
+        color="#ffffff"
+        emissive="#fff8e0"
+        emissiveIntensity={0.4}
+        roughness={0.55}
+      />
+    </mesh>
+  );
+}
+
+// AimArrow — flat triangular indicator on the green that points in
+// the kid's current facing direction while addressing the ball. Only
+// visible during the idle phase of putting (hidden while the ball is
+// rolling / sunk / missed). Length is fixed; colour shifts subtly
+// when the kid is charging the putt.
+function AimArrow({
+  puttingRef,
+  charRef,
+}: {
+  puttingRef: React.MutableRefObject<PuttingState>;
+  charRef: React.MutableRefObject<CharState>;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+  useFrame(() => {
+    const g = groupRef.current;
+    const p = puttingRef.current;
+    if (!g) return;
+    g.visible = p.active && p.phase === "idle";
+    if (!g.visible) return;
+    // Anchor at the ball's current rest spot (the tee), rotate to
+    // match the body's aim angle. charRef.angle is the source of
+    // truth — the putting state machine rotates it directly from
+    // A/D input.
+    g.position.set(p.ballX, 0.02, p.ballZ);
+    g.rotation.y = charRef.current.angle;
+    // Brighten the arrow tip while charging so the kid sees the
+    // power building up even before they look at the HUD.
+    if (matRef.current) {
+      const charge = p.charging ? p.power : 0;
+      const r = 0.95;
+      const gr = 0.4 + charge * 0.55; // fades from amber → yellow
+      const b = 0.1 + charge * 0.4;
+      matRef.current.color.setRGB(r, gr, b);
+    }
+  });
+  // Arrow geometry: a thin elongated triangle. Built so the tip
+  // points in +Z (the body's "forward" direction at angle 0 = south).
+  // 1.6 units long, 0.32 wide at the base.
+  const arrowGeom = useMemo(() => {
+    const shape = new THREE.Shape();
+    shape.moveTo(-0.16, 0);
+    shape.lineTo(0.16, 0);
+    shape.lineTo(0.08, 1.2);
+    shape.lineTo(0.18, 1.2);
+    shape.lineTo(0, 1.6);
+    shape.lineTo(-0.18, 1.2);
+    shape.lineTo(-0.08, 1.2);
+    shape.closePath();
+    return new THREE.ShapeGeometry(shape);
+  }, []);
+  return (
+    <group ref={groupRef} visible={false}>
+      <mesh geometry={arrowGeom} rotation={[-Math.PI / 2, 0, 0]}>
+        <meshBasicMaterial
+          ref={matRef}
+          color="#f2a020"
+          transparent
+          opacity={0.8}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 // Hot-air balloon — envelope (sphere) + basket (box) + suspension ropes
 // + a tiny burner. Clickable; rises off the ground during the easter egg
 // driven by balloonRef.height.
@@ -5783,7 +6258,7 @@ function Character({
     const c = charRef.current;
     // Show the golf club only while addressing / swinging.
     if (clubRef.current) {
-      clubRef.current.visible = c.mode === "golfing";
+      clubRef.current.visible = c.mode === "golfing" || c.mode === "putting";
     }
     if (rootRef.current) {
       rootRef.current.position.x = c.x;
@@ -5820,7 +6295,8 @@ function Character({
         c.mode === "riding" ||
         c.mode === "golfing" ||
         c.mode === "ballooning" ||
-        c.mode === "tubing";
+        c.mode === "tubing" ||
+        c.mode === "putting";
       if (!isSpecial) {
         const camToCharX = c.x - state.camera.position.x;
         const camToCharZ = c.z - state.camera.position.z;
@@ -5938,6 +6414,34 @@ function Character({
       if (bodyRef.current) {
         bodyRef.current.rotation.x = 0;
         bodyRef.current.position.y = bob;
+      }
+      return;
+    }
+
+    if (c.mode === "putting") {
+      // Putting stance — feet flat, slight forward body bend, arms
+      // extended forward at chest height with inward tilt so both
+      // hands meet on the putter grip (same trick as the golf-egg
+      // pose, just static). Legs stay straight (no hip rotation).
+      const FORWARD = -0.55;
+      const INWARD = 0.48;
+      if (leftHipRef.current) leftHipRef.current.rotation.x = 0;
+      if (rightHipRef.current) rightHipRef.current.rotation.x = 0;
+      if (leftShoulderRef.current) {
+        leftShoulderRef.current.rotation.x = FORWARD;
+        leftShoulderRef.current.rotation.z = INWARD;
+      }
+      if (rightShoulderRef.current) {
+        rightShoulderRef.current.rotation.x = FORWARD;
+        rightShoulderRef.current.rotation.z = -INWARD;
+      }
+      if (clubHolderRef.current) {
+        clubHolderRef.current.rotation.x = FORWARD;
+        clubHolderRef.current.rotation.z = 0;
+      }
+      if (bodyRef.current) {
+        bodyRef.current.rotation.x = 0.15; // slight forward lean
+        bodyRef.current.position.y = 0;
       }
       return;
     }
@@ -6685,6 +7189,15 @@ function CameraRig({
       wantTX = c.x;
       wantTZ = c.z;
       wantTY = 1.2;
+    } else if (c.mode === "putting") {
+      // Target a point a few units ahead of the kid in their aim
+      // direction so the cup naturally sits in the centre of frame
+      // when the kid is pointed at it. The chase cam below sits
+      // behind the kid, so this looks "down the aim line".
+      const ang = c.angle;
+      wantTX = c.x + Math.sin(ang) * 1.5;
+      wantTZ = c.z + Math.cos(ang) * 1.5;
+      wantTY = 0.4;
     } else if (c.mode === "riding") {
       // Lock the target to the park centre (slightly elevated to
       // include the loop) so the fixed cinematic vantage frames the
@@ -6758,6 +7271,20 @@ function CameraRig({
         z: c.z - Math.cos(ang) * 4.5,
       };
       camLerpSpeed = 3.5;
+      camHijackedRef.current = true;
+    } else if (c.mode === "putting") {
+      // Over-the-shoulder vantage — camera sits 3u BEHIND the kid
+      // (relative to their aim direction) and 2u up, so the aim
+      // arrow + ball + cup all read along a line going "into" the
+      // screen. Lerps faster than the default so the camera tracks
+      // each A/D aim adjustment without dragging behind.
+      const ang = c.angle;
+      wantCam = {
+        x: c.x - Math.sin(ang) * 3.0,
+        y: 2.0,
+        z: c.z - Math.cos(ang) * 3.0,
+      };
+      camLerpSpeed = 4.0;
       camHijackedRef.current = true;
     } else if (c.mode === "riding") {
       // Fixed wide vantage south-east of the park, framing the

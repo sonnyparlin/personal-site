@@ -701,6 +701,117 @@ function RiverExitButton() {
   );
 }
 
+// Putt HUD — power meter + attempts/sinks counter + a control hint.
+// Shown while the kid is addressing or playing a putt (driven by the
+// `putting-active` window event). Power fills via `putt-stats` events
+// dispatched from the putting tick.
+function PuttHUD() {
+  const [visible, setVisible] = useState(false);
+  const [power, setPower] = useState(0);
+  const [attempts, setAttempts] = useState(0);
+  const [sinks, setSinks] = useState(0);
+  useEffect(() => {
+    function onActive(e: Event) {
+      const detail = (e as CustomEvent<boolean>).detail;
+      setVisible(!!detail);
+      if (!detail) {
+        setPower(0);
+        setAttempts(0);
+        setSinks(0);
+      }
+    }
+    window.addEventListener("putting-active", onActive);
+    return () => window.removeEventListener("putting-active", onActive);
+  }, []);
+  useEffect(() => {
+    function onStats(e: Event) {
+      const d = (e as CustomEvent<{ attempts: number; sinks: number; power: number }>).detail;
+      if (!d) return;
+      setPower(d.power);
+      setAttempts(d.attempts);
+      setSinks(d.sinks);
+    }
+    window.addEventListener("putt-stats", onStats);
+    return () => window.removeEventListener("putt-stats", onStats);
+  }, []);
+  if (!visible) return null;
+  return (
+    <>
+      {/* Bottom-centre vertical power meter — left of the DONE button.
+          Empty grey box; bright green bar fills upward with power. */}
+      <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-10 flex items-end gap-3 select-none pointer-events-none">
+        <div className="w-6 h-32 bg-black/60 border border-white/30 rounded-md overflow-hidden flex flex-col-reverse">
+          <div
+            className="w-full bg-gradient-to-t from-amber-400 to-emerald-400 transition-[height] duration-75 ease-linear"
+            style={{ height: `${Math.round(Math.max(0, Math.min(1, power)) * 100)}%` }}
+          />
+        </div>
+        <div className="flex flex-col items-start gap-1 text-white text-xs uppercase tracking-wider bg-black/60 px-3 py-2 rounded-md border border-white/20 backdrop-blur-sm">
+          <span>Sinks <span className="text-amber-300 tabular-nums">{sinks}</span></span>
+          <span>Putts <span className="text-amber-300 tabular-nums">{attempts}</span></span>
+          <span className="opacity-70 normal-case text-[10px] tracking-normal">
+            ← / → aim · hold space
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// "DONE" button for the play-mode putt. Wired exactly like the river
+// exit — `putting-active` shows/hides it, click fires `putt-done`
+// which the putting tick consumes to walk the kid off the green.
+function PuttDoneButton() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    function onActive(e: Event) {
+      const detail = (e as CustomEvent<boolean>).detail;
+      setVisible(!!detail);
+    }
+    window.addEventListener("putting-active", onActive);
+    return () => window.removeEventListener("putting-active", onActive);
+  }, []);
+  if (!visible) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        window.dispatchEvent(new CustomEvent("putt-done"));
+      }}
+      aria-label="Finish putting and walk away"
+      className="
+        absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+        h-12 px-6
+        flex items-center gap-2
+        bg-emerald-700/85 hover:bg-emerald-700 active:bg-emerald-800
+        text-white text-base uppercase tracking-wider font-semibold
+        border border-white/30
+        rounded-full
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        transition-colors
+        cursor-pointer
+        select-none
+      "
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M5 13l4 4 10-10" />
+      </svg>
+      <span>Done</span>
+    </button>
+  );
+}
+
 export default function GameShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const section = getSectionByPath(pathname ?? "/");
@@ -772,6 +883,8 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
           {playMode && <PlayControlsHint />}
           {playMode && <TouchControls />}
           <RiverExitButton />
+          <PuttHUD />
+          <PuttDoneButton />
           <div className="hidden">{children}</div>
         </>
       )}
