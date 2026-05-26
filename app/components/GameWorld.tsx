@@ -9842,18 +9842,32 @@ const STUDY_CEILING = "#241712";
 // keeps the wood feel without disappearing behind the pieces.
 const STUDY_TABLE = "#7a4628";
 const STUDY_TABLE_DARK = "#4a2818";
-// Stockfish strength — Skill Level 0 is the engine's most-random
-// setting (~600-800 Elo, roughly "blunders frequently"). Tuned for
-// the play-mode point-and-belt reward: kids should be able to win
-// fairly often so the chess room becomes a viable belt source.
-// Range is 0 (random-ish) to 20 (full ~3500 Elo).
+// Stockfish strength — tuned for ABSOLUTE BEGINNERS (kids in the
+// gym's BJJ class, casual visitors who don't know chess). Even at
+// Skill 0 with the default 1000ms movetime Stockfish finds basic
+// tactics and never hangs pieces, which makes it unbeatable for
+// real beginners. Three layered weakenings:
+//   1. `Skill Level 0` (range 0-20) — most random move selection
+//   2. `UCI_LimitStrength true` + `UCI_Elo 1320` — Stockfish's
+//      minimum supported Elo; the engine self-tunes to play at
+//      roughly this level
+//   3. Short `go depth 1` search — Stockfish only looks ONE ply
+//      ahead, so it can't see "if I take this pawn I lose my
+//      queen next move" patterns
+//   4. `STOCKFISH_RANDOM_MOVE_CHANCE` — 40% of AI turns skip
+//      Stockfish entirely and play a random legal move. Beginners
+//      hang pieces all the time and the engine should too if it's
+//      meant to feel like a fair opponent for them.
+// Adjust these knobs in pairs — bumping Elo without bumping depth
+// won't help much, and vice versa.
 const STOCKFISH_SKILL = 0;
-// Time the engine gets to think before returning a move (ms).
-// 1000 ms gives the human a beat between making their move and
-// seeing the AI respond — feels less instant / robotic. The
-// engine's strength is capped by Skill Level, so the extra
-// thinking time doesn't push it beyond the user's rating.
-const STOCKFISH_MOVE_MS = 1000;
+const STOCKFISH_LIMIT_ELO = 1320; // engine's minimum supported value
+const STOCKFISH_SEARCH_DEPTH = 1; // 1-ply lookahead = no deep tactics
+const STOCKFISH_RANDOM_MOVE_CHANCE = 0.4;
+// Artificial think-time before applying the move. `go depth 1`
+// returns in <5 ms which feels robotic; this delay gives the
+// human a beat to see their own move land before the AI replies.
+const STOCKFISH_MOVE_MS = 600;
 
 type PieceColor = "w" | "b";
 type PieceType = "p" | "n" | "b" | "r" | "q" | "k";
@@ -10073,6 +10087,8 @@ function ChessRoom(_: { onExit: () => void }) {
     stockfishRef.current = w;
     w.postMessage("uci");
     w.postMessage(`setoption name Skill Level value ${STOCKFISH_SKILL}`);
+    w.postMessage("setoption name UCI_LimitStrength value true");
+    w.postMessage(`setoption name UCI_Elo value ${STOCKFISH_LIMIT_ELO}`);
     w.postMessage("isready");
     return () => {
       w.terminate();
@@ -10080,13 +10096,49 @@ function ChessRoom(_: { onExit: () => void }) {
     };
   }, []);
 
-  // Ask Stockfish for a move whenever it's the AI's turn.
+  // Ask Stockfish for a move whenever it's the AI's turn. For
+  // beginner-friendliness, two paths:
+  //   1. With probability STOCKFISH_RANDOM_MOVE_CHANCE, skip
+  //      Stockfish entirely and play a random legal move. Beginners
+  //      hang pieces; the AI should sometimes do the same.
+  //   2. Otherwise ask Stockfish with `go depth 1` (1-ply
+  //      lookahead). Combined with `Skill Level 0` + `UCI_Elo 1320`,
+  //      this caps the engine at "beginner club player" strength.
+  // Both paths wait STOCKFISH_MOVE_MS before applying the move so
+  // the human gets a beat to see their own move land before the AI
+  // responds (otherwise depth-1 returns in <5 ms and feels robotic).
   useEffect(() => {
     const w = stockfishRef.current;
     if (!w) return;
     if (game.isGameOver() || resignedBy) return;
     if (game.turn() === playerColor) return;
     let cancelled = false;
+    // Path 1: random legal move
+    if (Math.random() < STOCKFISH_RANDOM_MOVE_CHANCE) {
+      const legalMoves = game.moves({ verbose: true });
+      if (legalMoves.length > 0) {
+        const m = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+        const tid = setTimeout(() => {
+          if (cancelled) return;
+          const next = cloneChessWithHistory(game);
+          const result = next.move({
+            from: m.from as Square,
+            to: m.to as Square,
+            promotion: m.promotion,
+          });
+          if (result) {
+            playMoveSoundRef.current();
+            setGame(next);
+          }
+        }, STOCKFISH_MOVE_MS);
+        return () => {
+          cancelled = true;
+          clearTimeout(tid);
+        };
+      }
+    }
+    // Path 2: Stockfish with depth-1 search + artificial think delay
+    let bestMove: string | null = null;
     const handle = (e: MessageEvent) => {
       const line =
         typeof e.data === "string" ? e.data : String(e.data);
@@ -10095,8 +10147,16 @@ function ChessRoom(_: { onExit: () => void }) {
       if (!line.startsWith("bestmove ")) return;
       w.removeEventListener("message", handle);
       if (cancelled) return;
-      const move = line.split(/\s+/)[1];
-      if (!move || move === "(none)") return;
+      bestMove = line.split(/\s+/)[1];
+    };
+    w.addEventListener("message", handle);
+    w.postMessage(`position fen ${game.fen()}`);
+    w.postMessage(`go depth ${STOCKFISH_SEARCH_DEPTH}`);
+    // Apply the move only after the artificial think delay,
+    // regardless of how fast Stockfish returns it.
+    const tid = setTimeout(() => {
+      if (cancelled || !bestMove || bestMove === "(none)") return;
+      const move = bestMove;
       const next = cloneChessWithHistory(game);
       const result = next.move({
         from: move.slice(0, 2) as Square,
@@ -10107,12 +10167,10 @@ function ChessRoom(_: { onExit: () => void }) {
         playMoveSoundRef.current();
         setGame(next);
       }
-    };
-    w.addEventListener("message", handle);
-    w.postMessage(`position fen ${game.fen()}`);
-    w.postMessage(`go movetime ${STOCKFISH_MOVE_MS}`);
+    }, STOCKFISH_MOVE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(tid);
       w.removeEventListener("message", handle);
     };
   }, [game, playerColor, resignedBy]);
