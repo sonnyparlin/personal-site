@@ -82,6 +82,118 @@ function ResetViewButton() {
   );
 }
 
+// Bottom-left companion to ResetViewButton. Clears every
+// `personal-site:*` localStorage entry (level unlocks, easter-egg
+// tally, character selection, music-muted, etc.) and reloads so the
+// visitor lands fresh on level 1. Two-state — the bare ↻ icon
+// expands into a confirmation pill on click so an accidental tap
+// doesn't wipe a returning visitor's progress. Visible in both
+// portfolio + play modes so anyone can demo the locked-building
+// flow without DevTools. Hidden inside the full 3D interiors
+// (chess/academy/puzzle) — they have their own Exit button up top
+// and the bottom-left corner stays clear for their own UI.
+function ResetProgressButton() {
+  const [confirming, setConfirming] = useState(false);
+  function doReset() {
+    if (typeof window === "undefined") return;
+    try {
+      Object.keys(window.localStorage)
+        .filter((k) => k.startsWith("personal-site:"))
+        .forEach((k) => window.localStorage.removeItem(k));
+    } catch {
+      // private mode / storage blocked — nothing to clear, just reload
+    }
+    window.location.reload();
+  }
+  if (confirming) {
+    return (
+      <div
+        role="dialog"
+        aria-label="Confirm reset progress"
+        className="
+          absolute bottom-4 left-4 z-10
+          flex items-center gap-2
+          bg-black/80 text-white
+          border border-amber-300/60
+          rounded-full
+          backdrop-blur-sm
+          shadow-lg shadow-black/40
+          pl-4 pr-2 py-1
+          select-none
+        "
+      >
+        <span className="text-xs sm:text-sm uppercase tracking-wider">
+          Reset progress?
+        </span>
+        <button
+          type="button"
+          onClick={doReset}
+          className="
+            h-8 px-3 rounded-full
+            bg-amber-400 hover:bg-amber-300 active:bg-amber-500
+            text-black text-xs font-bold uppercase tracking-wider
+            cursor-pointer transition-colors
+          "
+        >
+          Yes
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="
+            h-8 px-3 rounded-full
+            bg-white/15 hover:bg-white/25
+            text-white text-xs font-bold uppercase tracking-wider
+            cursor-pointer transition-colors
+          "
+        >
+          No
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      aria-label="Reset progress"
+      title="Reset progress"
+      className="
+        absolute bottom-4 left-4 z-10
+        h-12 w-12 rounded-full
+        flex items-center justify-center
+        bg-black/60 hover:bg-black/80 active:bg-black/90
+        text-white text-xl
+        border border-white/20
+        backdrop-blur-sm
+        shadow-lg shadow-black/40
+        transition-colors
+        cursor-pointer
+        select-none
+      "
+    >
+      {/* Lucide-style rotate-ccw refresh icon. SVG (not a unicode
+          glyph) so it renders identically across fonts — Press
+          Start 2P doesn't have ↻ and falls back to an ugly box
+          that reads as a letter. Sized to fill the pill cleanly. */}
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+      </svg>
+    </button>
+  );
+}
+
 // Exit-the-scene button shown on routes that render a full 3D
 // interior (currently /jiu-jitsu and /chess). Navigates back to the
 // plaza via plain anchor-style routing (Next.js intercepts it).
@@ -1921,6 +2033,11 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
               both portfolio + play modes since locked buildings
               are visible in both. */}
           <LockedBuildingBanner />
+          {/* Bottom-left wipe-everything button. Companion to
+              ResetViewButton (bottom-right) so the corners pair
+              visually — view-reset on the right, progress-reset
+              on the left. */}
+          <ResetProgressButton />
           <div className="hidden">{children}</div>
         </>
       )}
