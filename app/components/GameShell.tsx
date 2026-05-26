@@ -521,16 +521,26 @@ function ChessHintBanner() {
     // session. TouchControls dispatch real KeyboardEvents on window
     // so a single physical-key listener handles both input modes.
     //
-    // **Critical gate**: only count key presses AFTER the
-    // celebration has ended. The kid is often holding A/D to steer
-    // the tube when their 20th belt fires; without this gate, the
-    // mid-celebration key press would dismiss the banner before it
-    // ever became visible — `celebration-done` would arrive 4 s
-    // later and recompute would see `dismissed = true` and stay
-    // hidden. The banner needs to actually be SHOWING (or about to)
-    // before "move means dismiss" is a valid signal.
+    // **Critical gate** (two parts):
+    //
+    // (1) Only count key presses AFTER the celebration has ended.
+    //     The kid is often holding W/A/D to walk into the 20th
+    //     belt; mid-celebration presses would otherwise dismiss
+    //     the banner before it ever rendered.
+    //
+    // (2) Ignore `e.repeat = true` events. If the kid is STILL
+    //     holding the same key when the celebration ends, the
+    //     browser fires auto-repeat keydowns every ~30 ms; the
+    //     first one after `celebrationDone` would dismiss the
+    //     banner the same frame it appears. By requiring a fresh
+    //     press (`!e.repeat`), the kid has to actually release
+    //     and re-press a key to dismiss — exactly the "I'm done
+    //     reading, back to playing" signal we want. TouchControls
+    //     fire keydowns from PointerDown only (no auto-repeat) so
+    //     a touch tap always has `e.repeat = false`.
     function onKey(e: KeyboardEvent) {
       if (!celebrationDone) return;
+      if (e.repeat) return;
       const k = e.code;
       const isGameKey =
         k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" ||
