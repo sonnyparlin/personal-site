@@ -1,7 +1,7 @@
 export type SectionId =
   | "jiu-jitsu"
   | "music"
-  | "code"
+  | "puzzle"
   | "chess"
   | "personal-life";
 
@@ -14,6 +14,14 @@ export type Section = {
   doorColor: string;
   signColor: string;
   isHome?: boolean;
+  // Level required to see this building. Defaults to 1.
+  // Buildings with minLevel > the current unlocked level are
+  // omitted from the plaza (no building mesh, no path radiating
+  // out to it). Unlocked level is read from localStorage flags
+  // set by the level-complete celebrations in GameShell:
+  //   - level 2 unlocks after winning chess (LEVEL2_UNLOCK_*)
+  //   - higher levels TBD as the game grows
+  minLevel?: number;
   // World position on the ground plane. Building faces the origin.
   x: number;
   z: number;
@@ -35,6 +43,7 @@ export const SECTIONS: Section[] = [
     doorColor: "#3a1a0a",
     signColor: "#f4f1de",
     isHome: true,
+    minLevel: 4,
     x: 0,
     z: -6,
   },
@@ -57,17 +66,19 @@ export const SECTIONS: Section[] = [
     roofColor: "#26345a",
     doorColor: "#0d142a",
     signColor: "#f4f1de",
+    minLevel: 3,
     x: 5.7,
     z: -1.85,
   },
   {
-    id: "code",
-    label: "CODE",
-    path: "/code",
-    buildingColor: "#2f6b3d",
-    roofColor: "#1d4527",
-    doorColor: "#0a1a10",
+    id: "puzzle",
+    label: "PUZZLE HOUSE",
+    path: "/puzzle",
+    buildingColor: "#5a3a8b",
+    roofColor: "#392356",
+    doorColor: "#160a26",
     signColor: "#f4f1de",
+    minLevel: 2,
     x: -3.5,
     z: 5.5,
   },
@@ -100,4 +111,45 @@ export function doorTarget(s: Section): { x: number; z: number } {
 
 export function getSectionByPath(path: string): Section | undefined {
   return SECTIONS.find((s) => s.path === path);
+}
+
+// ── Level-unlock plumbing ──────────────────────────────────────────
+// Buildings are gated by `minLevel`. We persist one localStorage flag
+// per level (`"personal-site:level<N>-unlocked" = "1"`) on the matching
+// `level-complete` celebration. `getUnlockedLevel()` reads those flags
+// and returns the highest contiguous unlocked level (defaults to 1).
+// `useUnlockedLevel()` is a small React hook that re-reads after
+// `level-complete` window events so freshly-unlocked buildings appear
+// without a reload.
+
+export const LEVEL_STORAGE_PREFIX = "personal-site:level";
+export const LEVEL_STORAGE_SUFFIX = "-unlocked";
+
+export function levelStorageKey(level: number): string {
+  return `${LEVEL_STORAGE_PREFIX}${level}${LEVEL_STORAGE_SUFFIX}`;
+}
+
+// Maximum level we'll probe for in localStorage. Buildings with a
+// higher `minLevel` than the max we check stay hidden by definition.
+const MAX_PROBE_LEVEL = 10;
+
+export function getUnlockedLevel(): number {
+  if (typeof window === "undefined") return 1;
+  let unlocked = 1;
+  for (let lvl = 2; lvl <= MAX_PROBE_LEVEL; lvl++) {
+    try {
+      if (window.localStorage.getItem(levelStorageKey(lvl)) === "1") {
+        unlocked = lvl;
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
+  }
+  return unlocked;
+}
+
+export function isSectionUnlocked(s: Section, unlockedLevel: number): boolean {
+  return (s.minLevel ?? 1) <= unlockedLevel;
 }

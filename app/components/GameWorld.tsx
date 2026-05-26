@@ -19,6 +19,8 @@ import {
   buildingAngle,
   doorTarget,
   getSectionByPath,
+  getUnlockedLevel,
+  isSectionUnlocked,
   type Section,
   type SectionId,
 } from "@/app/lib/sections";
@@ -835,13 +837,22 @@ function resolveRiverCollision(x: number, z: number): { x: number; z: number } {
   return { x: RIVER_CENTER.x + dx * s, z: RIVER_CENTER.z + dz * s };
 }
 
+// The buildings currently visible on the plaza, narrowed by the
+// player's unlocked level. Mutated by `GameWorldBase` whenever the
+// `unlockedLevel` state changes. The collision + line-blocking
+// helpers below read from this so locked-but-not-rendered buildings
+// don't act as invisible walls. Defaults to the full SECTIONS list
+// so any caller that runs before mount (e.g. SSR) still behaves
+// safely (no buildings are locked from the helper's POV).
+let activeSections: Section[] = SECTIONS;
+
 // Resolve building collisions by pushing the character out of any
 // building footprint (rotated rectangle inflated by CHAR_RADIUS), and
 // out of any obstacle circle (hills).
 function resolveCollisions(x: number, z: number): { x: number; z: number } {
   let nx = x;
   let nz = z;
-  for (const s of SECTIONS) {
+  for (const s of activeSections) {
     const a = buildingAngle(s);
     const cos = Math.cos(a);
     const sin = Math.sin(a);
@@ -906,7 +917,7 @@ function lineHitsAnyBuilding(
 ): boolean {
   const halfW = BUILDING_W / 2 + CHAR_RADIUS + 0.05;
   const halfD = BUILDING_D / 2 + CHAR_RADIUS + 0.05;
-  for (const s of SECTIONS) {
+  for (const s of activeSections) {
     const a = buildingAngle(s);
     const cos = Math.cos(a);
     const sin = Math.sin(a);
@@ -1380,6 +1391,34 @@ function GameWorldBase({ playMode = false }: { playMode?: boolean } = {}) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // Current unlocked level — drives which buildings render on the
+  // plaza. Reads localStorage on mount and re-reads whenever a
+  // `level-complete` window event fires so freshly-unlocked
+  // buildings appear without a page reload. Defaults to 1 on
+  // first visit (only jiu-jitsu + chess are visible until the kid
+  // wins chess for the first time, which unlocks the puzzle house
+  // at level 2).
+  const [unlockedLevel, setUnlockedLevel] = useState(1);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setUnlockedLevel(getUnlockedLevel());
+    function onLevelComplete() {
+      // Storage is written by the GameShell deferred dispatch site
+      // BEFORE this event fires (see the comment over the
+      // LEVEL2_UNLOCK_STORAGE_KEY write), so reading here picks up
+      // the new flag every time.
+      setUnlockedLevel(getUnlockedLevel());
+    }
+    window.addEventListener("level-complete", onLevelComplete);
+    return () => window.removeEventListener("level-complete", onLevelComplete);
+  }, []);
+  // Keep the module-level `activeSections` in sync so the collision
+  // + line-blocking helpers (which run outside React) don't treat
+  // locked-but-not-rendered buildings as invisible walls.
+  useEffect(() => {
+    activeSections = SECTIONS.filter((s) => isSectionUnlocked(s, unlockedLevel));
+  }, [unlockedLevel]);
+
   // Default vantage. Selected per-pathname AND per-device:
   //   * Plaza route (/): mobile pulls back ~30% so the world fits a
   //     narrow portrait viewport, desktop keeps the original framing.
@@ -1437,6 +1476,7 @@ function GameWorldBase({ playMode = false }: { playMode?: boolean } = {}) {
           camDefault={camDefault}
           playMode={playMode}
           characterId={characterId}
+          unlockedLevel={unlockedLevel}
         />
       </Canvas>
     </div>
@@ -1458,6 +1498,7 @@ function Scene({
   camDefault,
   playMode,
   characterId,
+  unlockedLevel,
 }: {
   refs: SharedRefs;
   router: RouterLike;
@@ -1466,7 +1507,17 @@ function Scene({
   camDefault: { x: number; y: number; z: number };
   playMode: boolean;
   characterId: CharacterId;
+  unlockedLevel: number;
 }) {
+  // Buildings (and their plaza paths) only render when the section's
+  // `minLevel` is <= the current unlocked level. On level 1 that's
+  // just jiu-jitsu + chess; winning chess unlocks level 2 and the
+  // puzzle house pops in. Memoized so the array identity is stable
+  // across re-renders within the same level.
+  const unlockedSections = useMemo(
+    () => SECTIONS.filter((s) => isSectionUnlocked(s, unlockedLevel)),
+    [unlockedLevel]
+  );
   // Mirror playMode into a ref so the per-frame physics / camera /
   // input branches can read it without closing over a stale state.
   const playModeRef = useRef(playMode);
@@ -3218,7 +3269,7 @@ function Scene({
           <Sky />
           <Clouds />
           <Ground />
-          <Plaza />
+          <Plaza sections={unlockedSections} />
           <Environment
             gatorRef={refs.gator}
             onGatorClick={handleGatorClick}
@@ -3238,7 +3289,7 @@ function Scene({
             kateRef={refs.kate}
             balloonAdventureRef={refs.balloonAdventure}
           />
-          {SECTIONS.map((s) => (
+          {unlockedSections.map((s) => (
             <Building
               key={s.id}
               section={s}
@@ -6431,7 +6482,7 @@ function BalloonBunch({
   );
 }
 
-function Plaza() {
+function Plaza({ sections }: { sections: Section[] }) {
   return (
     <>
       {/* Central dirt circle */}
@@ -6439,8 +6490,12 @@ function Plaza() {
         <circleGeometry args={[1.2, 24]} />
         <meshStandardMaterial color="#b89968" />
       </mesh>
-      {/* Paths radiating out to each building */}
-      {SECTIONS.map((s) => {
+      {/* Paths radiating out to each unlocked building. Sections
+          whose `minLevel` is above the current unlocked level are
+          filtered out by the caller, so their paths don't render
+          either — the plaza looks clean on level 1 (just the two
+          paths to jiu-jitsu + chess). */}
+      {sections.map((s) => {
         const t = doorTarget(s);
         const midX = t.x / 2;
         const midZ = t.z / 2;

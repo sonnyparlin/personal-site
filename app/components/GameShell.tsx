@@ -825,13 +825,10 @@ function Level1CompleteOverlay({ musicMuted }: { musicMuted: boolean }) {
       const lvl = (e as CustomEvent).detail;
       if (lvl !== 1) return;
       setVisible(true);
-      // Persist the unlock for the future puzzle house.
-      try {
-        window.localStorage.setItem(LEVEL2_UNLOCK_STORAGE_KEY, "1");
-      } catch {
-        // localStorage might be unavailable in private mode —
-        // celebration still plays, but progress doesn't stick.
-      }
+      // Storage flag is written by the dispatch site (GameShell's
+      // deferred level-complete useEffect) before the event fires,
+      // so other listeners — like GameWorld's unlocked-level state
+      // — see the up-to-date value when their handler runs.
       // Play the cheer.
       const a = audioRef.current;
       if (a) {
@@ -1480,6 +1477,16 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
     if (pathname !== "/") return;
     if (!pendingLevel1Ref.current) return;
     pendingLevel1Ref.current = false;
+    // Persist the level-2 unlock BEFORE dispatching `level-complete`
+    // so any listener that re-reads localStorage on the event (e.g.
+    // GameWorld's unlocked-level state, which mounts the puzzle
+    // house when the flag goes up) sees the new value.
+    try {
+      window.localStorage.setItem(LEVEL2_UNLOCK_STORAGE_KEY, "1");
+    } catch {
+      // Storage might be unavailable in private mode — celebration
+      // still plays, but progress doesn't stick across reloads.
+    }
     const tid = setTimeout(() => {
       window.dispatchEvent(
         new CustomEvent("level-complete", { detail: 1 })
