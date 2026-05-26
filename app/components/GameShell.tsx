@@ -314,11 +314,16 @@ function ChessControls() {
 const PLAY_BELT_TOTAL = 21;
 
 // Points scoring. Belts contribute a fixed amount per pickup;
-// chess wins add a bonus on top of the belt the win also grants.
-// Resets on every `play-mode-reset` (same lifecycle as the belt
-// counter — score is per-session, not cumulative across visits).
+// chess wins add a bonus on top of the belt the win also grants;
+// missed putts on the golf green subtract a penalty so kids
+// can't infinite-attempt the cup. Resets on every
+// `play-mode-reset` (same lifecycle as the belt counter — score
+// is per-session, not cumulative across visits). PointsHUD
+// clamps the running score at 0 so a string of missed putts
+// doesn't push it negative.
 const POINTS_PER_BELT = 100;
 const POINTS_PER_CHESS_WIN = 500;
+const POINTS_PER_PUTT_MISS = 25;
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +
@@ -435,15 +440,23 @@ function PointsHUD() {
     function onChess() {
       setScore((n) => n + POINTS_PER_CHESS_WIN);
     }
+    function onPuttMiss() {
+      // Clamp at 0 so a streak of misses doesn't tank the score
+      // into negatives — confusing for kids and out of step with
+      // the "earn belts" framing of the rest of the game.
+      setScore((n) => Math.max(0, n - POINTS_PER_PUTT_MISS));
+    }
     function onReset() {
       setScore(0);
     }
     window.addEventListener("belt-collected", onBelt);
     window.addEventListener("chess-won", onChess);
+    window.addEventListener("putt-missed", onPuttMiss);
     window.addEventListener("play-mode-reset", onReset);
     return () => {
       window.removeEventListener("belt-collected", onBelt);
       window.removeEventListener("chess-won", onChess);
+      window.removeEventListener("putt-missed", onPuttMiss);
       window.removeEventListener("play-mode-reset", onReset);
     };
   }, []);

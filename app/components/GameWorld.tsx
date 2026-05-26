@@ -2705,15 +2705,25 @@ function Scene({
           p.ballVz = 0;
           p.phase = "missed";
           p.phaseT = 0;
+          // Cost the kid points for missing. PointsHUD listens for
+          // `putt-missed` and subtracts POINTS_PER_MISS (clamped at
+          // 0 so the score never goes negative).
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("putt-missed"));
+          }
         }
       } else if (p.phase === "sunk") {
         p.phaseT += clampedDt;
         if (p.phaseT >= PUTT_SUNK_BEAT) {
-          // Reset for the next attempt — ball back at the tee.
-          p.ballX = GOLF_BALL_START.x;
-          p.ballZ = GOLF_BALL_START.z;
-          p.phase = "idle";
-          p.phaseT = 0;
+          // Sunk celebration finished — auto-exit putting mode as
+          // if the kid had tapped DONE. The `putt-done` listener
+          // (above) clears putting state + teleports the kid 4u
+          // north of the green so they don't immediately
+          // re-trigger the auto-board. One-and-done: each entry
+          // onto the green = one putt attempt, success or miss.
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("putt-done"));
+          }
         }
       } else if (p.phase === "missed") {
         p.phaseT += clampedDt;
