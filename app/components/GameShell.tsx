@@ -325,6 +325,14 @@ const POINTS_PER_BELT = 100;
 const POINTS_PER_CHESS_WIN = 500;
 const POINTS_PER_PUTT_MISS = 25;
 
+// localStorage flag set when the kid completes level 1 (= wins
+// chess after collecting all 20 walking belts). Future levels
+// (level 2 = puzzle house in the former CODE building) gate on
+// this — the puzzle-house door reads it on mount to decide
+// whether to allow entry. Persisted across reloads so progress
+// sticks.
+const LEVEL2_UNLOCK_STORAGE_KEY = "personal-site:level2-unlocked";
+
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +
 // stripe collectibles). The button label and color change with the
@@ -698,6 +706,199 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
     };
   }, []);
   return null;
+}
+
+// One-shot falling-confetti burst. Renders N small colored
+// rectangles at the top of the viewport that fall through to the
+// bottom with random horizontal drift + rotation. Pure CSS
+// animation — no per-frame JS — so it's cheap even with 80+
+// pieces. `active` is the show/hide signal; when it flips true
+// the burst spawns + the keyframes run for ~5 s before the
+// component auto-unmounts.
+type ConfettiPiece = {
+  id: number;
+  left: number;     // viewport-relative starting x (%)
+  size: number;     // base side length (px)
+  color: string;
+  delay: number;    // start delay (ms)
+  duration: number; // total fall duration (ms)
+  rotate: number;   // initial rotation (deg)
+  drift: number;    // horizontal drift across the fall (vw)
+};
+function ConfettiBurst({ active }: { active: boolean }) {
+  const [pieces, setPieces] = useState<ConfettiPiece[]>([]);
+  useEffect(() => {
+    if (!active) {
+      setPieces([]);
+      return;
+    }
+    const colors = [
+      "#fbbf24", "#f87171", "#60a5fa", "#34d399",
+      "#a78bfa", "#f472b6", "#fde047", "#fb923c",
+    ];
+    const N = 80;
+    const seeded: ConfettiPiece[] = Array.from({ length: N }, (_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      size: 6 + Math.random() * 8,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      delay: Math.random() * 600,
+      duration: 3200 + Math.random() * 2400,
+      rotate: Math.random() * 360,
+      drift: (Math.random() - 0.5) * 28,
+    }));
+    setPieces(seeded);
+    // Hold the burst long enough that the slowest piece (duration
+    // + delay) finishes. After that, drop the DOM nodes.
+    const tid = setTimeout(() => setPieces([]), 6500);
+    return () => clearTimeout(tid);
+  }, [active]);
+  if (pieces.length === 0) return null;
+  return (
+    <>
+      <style>{`
+        @keyframes confetti-fall {
+          0%   { transform: translate(0, -20px) rotate(var(--rot-start)); opacity: 1; }
+          85%  { opacity: 1; }
+          100% { transform: translate(var(--drift), 110vh) rotate(calc(var(--rot-start) + 720deg)); opacity: 0; }
+        }
+        .confetti-piece {
+          position: absolute;
+          top: 0;
+          animation-name: confetti-fall;
+          animation-timing-function: cubic-bezier(0.45, 0, 0.6, 1);
+          animation-fill-mode: forwards;
+        }
+      `}</style>
+      <div className="fixed inset-0 z-30 pointer-events-none overflow-hidden">
+        {pieces.map((p) => (
+          <div
+            key={p.id}
+            className="confetti-piece rounded-sm"
+            style={{
+              left: `${p.left}vw`,
+              width: `${p.size}px`,
+              height: `${p.size * 0.4}px`,
+              backgroundColor: p.color,
+              animationDelay: `${p.delay}ms`,
+              animationDuration: `${p.duration}ms`,
+              ["--drift" as string]: `${p.drift}vw`,
+              ["--rot-start" as string]: `${p.rotate}deg`,
+            } as React.CSSProperties}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+// Big celebratory overlay shown after the kid wins chess (= 21st
+// belt). Listens for `level-complete` (detail: 1) and shows:
+//   - confetti burst (<ConfettiBurst>)
+//   - centered "LEVEL 1 COMPLETE!" message
+//   - reuses the belt-success fanfare audio for the cheer
+// Persists `LEVEL2_UNLOCK_STORAGE_KEY = "1"` on first show so the
+// future puzzle house (in the CODE building) can gate entry on it.
+// Auto-hides after ~6 s — long enough that the jump-for-joy
+// celebration in Scene (4 s) finishes with a beat to spare.
+function Level1CompleteOverlay({ musicMuted }: { musicMuted: boolean }) {
+  const [visible, setVisible] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const a = new Audio(SUCCESS_SRC);
+    a.preload = "auto";
+    a.volume = SUCCESS_VOLUME;
+    audioRef.current = a;
+    return () => {
+      a.pause();
+      a.src = "";
+      audioRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = musicMuted;
+  }, [musicMuted]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    function onLevelComplete(e: Event) {
+      const lvl = (e as CustomEvent).detail;
+      if (lvl !== 1) return;
+      setVisible(true);
+      // Persist the unlock for the future puzzle house.
+      try {
+        window.localStorage.setItem(LEVEL2_UNLOCK_STORAGE_KEY, "1");
+      } catch {
+        // localStorage might be unavailable in private mode —
+        // celebration still plays, but progress doesn't stick.
+      }
+      // Play the cheer.
+      const a = audioRef.current;
+      if (a) {
+        a.currentTime = 0;
+        const p = a.play();
+        if (p && typeof p.then === "function") {
+          p.catch(() => {});
+        }
+      }
+    }
+    function onReset() {
+      setVisible(false);
+    }
+    window.addEventListener("level-complete", onLevelComplete);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("level-complete", onLevelComplete);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
+  // Auto-hide once visible.
+  useEffect(() => {
+    if (!visible) return;
+    const tid = setTimeout(() => setVisible(false), 6500);
+    return () => clearTimeout(tid);
+  }, [visible]);
+  return (
+    <>
+      <ConfettiBurst active={visible} />
+      {visible && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="
+            absolute top-[28%] left-1/2 -translate-x-1/2 z-40 select-none
+            text-center
+            animate-in fade-in zoom-in-95 duration-500
+          "
+        >
+          <div
+            className="
+              text-amber-300 text-5xl sm:text-7xl font-black uppercase
+              tracking-wider leading-none
+              drop-shadow-[0_6px_24px_rgba(0,0,0,0.85)]
+            "
+            style={{
+              textShadow:
+                "0 0 12px rgba(251, 191, 36, 0.6), 0 4px 0 rgba(0, 0, 0, 0.5)",
+            }}
+          >
+            Level 1
+            <br />
+            Complete!
+          </div>
+          <div
+            className="
+              mt-5 text-white text-sm sm:text-lg uppercase tracking-widest
+              font-semibold opacity-95
+              drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]
+            "
+          >
+            ★ Level 2 unlocked ★
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 // Mute / unmute the background play-mode music. Renders a small
@@ -1239,9 +1440,15 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   // every play-mode toggle (the `play-mode-reset` effect above
   // also fires here as a co-tenant of the same lifecycle).
   const chessAwardedRef = useRef(false);
+  // Set on chess-win, consumed when the kid returns to `/`. We
+  // can't fire the level-1 celebration on /chess directly — the
+  // celebration physics lives in Scene's play tick, which is
+  // gated on `isOnHome`. Defer until the route transitions back.
+  const pendingLevel1Ref = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
     chessAwardedRef.current = false; // new play session = new chance
+    pendingLevel1Ref.current = false;
     function onChessWin() {
       if (chessAwardedRef.current) return;
       chessAwardedRef.current = true;
@@ -1253,10 +1460,33 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
       );
       // +500 bonus on top of the +100 from the belt.
       window.dispatchEvent(new CustomEvent("chess-won"));
+      // Queue the level-1 celebration for when the kid returns
+      // to the plaza route.
+      pendingLevel1Ref.current = true;
     }
     window.addEventListener("chess-player-won", onChessWin);
     return () => window.removeEventListener("chess-player-won", onChessWin);
   }, [playMode]);
+
+  // Fire the deferred level-1 celebration once the kid is back on
+  // `/`. Dispatched as `level-complete` (detail: 1) so the Scene
+  // can teleport + jump-for-joy AND <Level1CompleteOverlay> can
+  // show the confetti + message. A small setTimeout delay lets
+  // the route transition fully settle before the celebration runs
+  // (otherwise the play HUDs might still be mid-mount and the
+  // play tick's `isOnHome` check might not yet be true).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (pathname !== "/") return;
+    if (!pendingLevel1Ref.current) return;
+    pendingLevel1Ref.current = false;
+    const tid = setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("level-complete", { detail: 1 })
+      );
+    }, 250);
+    return () => clearTimeout(tid);
+  }, [pathname]);
 
   // ── Play-mode background music ──
   // Single HTMLAudioElement created on mount, looped, volume capped.
@@ -1349,6 +1579,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
       {playMode && <PointsHUD />}
       {playMode && <ChessHintBanner />}
       {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
+      {playMode && <Level1CompleteOverlay musicMuted={musicMuted} />}
       {playMode && (
         <MuteButton
           muted={musicMuted}

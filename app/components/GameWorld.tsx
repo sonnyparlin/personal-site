@@ -1751,10 +1751,22 @@ function Scene({
       celebrationRef.current.active = false;
       celebrationRef.current.t = 0;
     }
+    // Two events trigger the same celebration physics:
+    //   - `belts-complete` — fired by BeltSuccessChime when the
+    //     kid finishes the 20 walking belts (= first jump-for-joy)
+    //   - `level-complete` — fired by GameShell after the kid
+    //     wins chess and returns to `/` (= second jump-for-joy
+    //     with the LEVEL 1 COMPLETE overlay + confetti rendered
+    //     on top by <Level1CompleteOverlay>)
+    // Same handler in both cases: teleport to spawn, flip to
+    // celebrating mode, kick the first hop. The visual overlay
+    // is the only thing that differs between them.
     window.addEventListener("belts-complete", onComplete);
+    window.addEventListener("level-complete", onComplete);
     window.addEventListener("play-mode-reset", onReset);
     return () => {
       window.removeEventListener("belts-complete", onComplete);
+      window.removeEventListener("level-complete", onComplete);
       window.removeEventListener("play-mode-reset", onReset);
     };
   }, [CELEBRATE_HOP_VELOCITY, refs.char, refs.river, refs.putting, refs.target, refs.pathQueue]);
