@@ -1864,7 +1864,20 @@ function Scene({
       // (rejump on land) plus a slow body spin, arms up handled by
       // the Character pose. Auto-exits to idle after the full
       // duration so the kid can keep playing.
-      if (char.mode === "celebrating") {
+      //
+      // Gated on EITHER `char.mode === "celebrating"` OR
+      // `celebrationRef.current.active` so the celebration runs
+      // even if some other code path in the WASD branch managed
+      // to reset `char.mode` to "idle" mid-tick before the next
+      // frame. The ref flag is set in the same listener that sets
+      // the mode, so they're always paired at the start. If
+      // they ever diverge (mode reset, ref still true), this
+      // branch re-asserts the mode below so downstream code
+      // (Character pose, Camera tracking) sees a consistent
+      // "celebrating" state. Defense-in-depth for the
+      // land-belt-as-20th regression.
+      if (char.mode === "celebrating" || celebrationRef.current.active) {
+        char.mode = "celebrating";
         const cel = celebrationRef.current;
         cel.t += clampedDt;
         // Gravity + landing → re-hop while still inside the window.
