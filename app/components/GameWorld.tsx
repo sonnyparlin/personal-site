@@ -2090,7 +2090,25 @@ function Scene({
             new CustomEvent("putting-active", { detail: true })
           );
         }
-      } else {
+      } else if ((char.mode as CharMode) !== "celebrating") {
+        // Default fall-through: kid is just walking around, no
+        // auto-board fired. Reset to idle so any leftover mode
+        // (flee, etc.) clears.
+        //
+        // **DO NOT** clobber "celebrating" — when the 20th belt
+        // collection fires synchronously inside the BELT_PICKUPS
+        // loop above, the `belts-complete` listener teleports the
+        // kid + sets `char.mode = "celebrating"` BEFORE control
+        // returns here. Without this guard we'd overwrite the
+        // celebrating mode the same frame it was set, the next
+        // play tick would see "idle" instead, the celebration
+        // physics + Character pose branch would never fire, and
+        // the kid would just stand at spawn doing nothing. (River
+        // belts dodge this because they dispatch from the
+        // portfolio tubing tick, which has no idle-default.) The
+        // `as CharMode` cast bypasses TS's flow narrowing — it
+        // doesn't know that `char.mode` was mutated mid-frame by
+        // a window-event listener.
         char.mode = "idle";
       }
       return; // skip the entire portfolio tick below
