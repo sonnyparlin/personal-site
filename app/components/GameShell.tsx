@@ -311,7 +311,14 @@ function ChessControls() {
 //   - 1 chess belt (awarded on first chess win per play session)
 // = 21. Bump this in lockstep with BELT_PICKUPS / RIVER_BELT_PICKUPS
 // edits or the HUD count will drift from the actual total.
-const PLAY_BELT_TOTAL = 21;
+const PLAY_BELT_TOTAL = 22;
+// Number of belts the kid can collect by walking around the world
+// (5 plaza + 1 carnival + 3 bridge + 10 river + 1 golf cup). Chess
+// + puzzle belts add 1 each, bringing the displayed tally to 22 —
+// but the "jump for joy" fanfare in BeltSuccessChime fires the
+// moment they've collected all the WALKING ones, so it stays
+// pinned to this lower count even as PLAY_BELT_TOTAL grows.
+const PLAY_WALKING_BELT_TOTAL = 20;
 
 // Points scoring. Belts contribute a fixed amount per pickup;
 // chess wins add a bonus on top of the belt the win also grants;
@@ -323,6 +330,7 @@ const PLAY_BELT_TOTAL = 21;
 // doesn't push it negative.
 const POINTS_PER_BELT = 100;
 const POINTS_PER_CHESS_WIN = 500;
+const POINTS_PER_PUZZLE_WIN = 1000;
 const POINTS_PER_PUTT_MISS = 25;
 
 // localStorage flag set when the kid completes level 1 (= wins
@@ -332,6 +340,10 @@ const POINTS_PER_PUTT_MISS = 25;
 // whether to allow entry. Persisted across reloads so progress
 // sticks.
 const LEVEL2_UNLOCK_STORAGE_KEY = "personal-site:level2-unlocked";
+// Set after the kid solves all 3 puzzles in the puzzle house. The
+// MUSIC building reads its minLevel against the unlocked level and
+// pops into the plaza when this flips to "1".
+const LEVEL3_UNLOCK_STORAGE_KEY = "personal-site:level3-unlocked";
 
 // Toggle that flips between portfolio mode (click-to-walk + orbit
 // camera + easter eggs) and play mode (WASD + jump + follow cam +
@@ -448,6 +460,9 @@ function PointsHUD() {
     function onChess() {
       setScore((n) => n + POINTS_PER_CHESS_WIN);
     }
+    function onPuzzle() {
+      setScore((n) => n + POINTS_PER_PUZZLE_WIN);
+    }
     function onPuttMiss() {
       // Clamp at 0 so a streak of misses doesn't tank the score
       // into negatives — confusing for kids and out of step with
@@ -459,11 +474,13 @@ function PointsHUD() {
     }
     window.addEventListener("belt-collected", onBelt);
     window.addEventListener("chess-won", onChess);
+    window.addEventListener("puzzle-won", onPuzzle);
     window.addEventListener("putt-missed", onPuttMiss);
     window.addEventListener("play-mode-reset", onReset);
     return () => {
       window.removeEventListener("belt-collected", onBelt);
       window.removeEventListener("chess-won", onChess);
+      window.removeEventListener("puzzle-won", onPuzzle);
       window.removeEventListener("putt-missed", onPuttMiss);
       window.removeEventListener("play-mode-reset", onReset);
     };
@@ -496,6 +513,66 @@ function PointsHUD() {
 // chess-player-won dispatch), and it isn't obvious from the
 // HUD which slot is "chess." This banner appears center-top
 // once the walking belts are all collected, and stays up until
+// Centered banner shown when the visitor clicks a LOCKED building
+// on the plaza. Listens for `show-locked-banner` events fired by
+// GameWorld's handleBuildingClick when a section's minLevel is
+// above the unlocked level. Auto-hides after ~3 seconds. State
+// lives here so GameShell stays inert (no scene-tree re-render
+// on every banner toggle). Visible in both portfolio + play mode
+// since locked buildings are visible in both.
+function LockedBuildingBanner() {
+  const [msg, setMsg] = useState<{ label: string; level: number } | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let hideTid: ReturnType<typeof setTimeout> | null = null;
+    function onShow(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { sectionLabel: string; requiredLevel: number }
+        | undefined;
+      if (!detail) return;
+      setMsg({ label: detail.sectionLabel, level: detail.requiredLevel });
+      if (hideTid) clearTimeout(hideTid);
+      hideTid = setTimeout(() => setMsg(null), 6000);
+    }
+    window.addEventListener("show-locked-banner", onShow);
+    return () => {
+      window.removeEventListener("show-locked-banner", onShow);
+      if (hideTid) clearTimeout(hideTid);
+    };
+  }, []);
+  if (!msg) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="
+        absolute top-[18%] left-1/2 -translate-x-1/2 z-40 select-none
+        pointer-events-none
+        animate-in fade-in zoom-in-95 duration-200
+      "
+    >
+      <div
+        className="
+          flex items-center gap-3
+          px-6 py-3
+          bg-black/75 text-white
+          border-2 border-amber-300/70
+          rounded-full
+          backdrop-blur-sm
+          shadow-2xl shadow-black/60
+        "
+      >
+        <span className="text-2xl" aria-hidden>
+          🔒
+        </span>
+        <span className="text-sm sm:text-base uppercase tracking-wider font-semibold">
+          {msg.label} — Unlock by completing Level {msg.level}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // the chess win lands the 21st belt → celebration fires →
 // banner is dismissed on play-mode-reset. Tracks its own count
 // + chess-belt-seen flag from window events so GameShell stays
@@ -668,10 +745,13 @@ function BeltSuccessChime({ musicMuted }: { musicMuted: boolean }) {
     let celebrated = false;
     function onCollect(e: Event) {
       const detail = (e as CustomEvent).detail;
-      if (detail === "chess") return; // chess belt doesn't trigger celebration
+      // Chess + puzzle belts come from level-complete celebrations,
+      // not from walking the world — they shouldn't bump
+      // walkingCount or re-trigger the fanfare.
+      if (detail === "chess" || detail === "puzzle") return;
       walkingCount += 1;
       if (celebrated) return;
-      if (walkingCount === PLAY_BELT_TOTAL - 1) {
+      if (walkingCount === PLAY_WALKING_BELT_TOTAL) {
         celebrated = true;
         const a = audioRef.current;
         if (a) {
@@ -801,7 +881,13 @@ function ConfettiBurst({ active }: { active: boolean }) {
 // future puzzle house (in the CODE building) can gate entry on it.
 // Auto-hides after ~6 s — long enough that the jump-for-joy
 // celebration in Scene (4 s) finishes with a beat to spare.
-function Level1CompleteOverlay({ musicMuted }: { musicMuted: boolean }) {
+function Level1CompleteOverlay({
+  musicMuted,
+  onContinue,
+}: {
+  musicMuted: boolean;
+  onContinue: () => void;
+}) {
   const [visible, setVisible] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
@@ -891,6 +977,123 @@ function Level1CompleteOverlay({ musicMuted }: { musicMuted: boolean }) {
             "
           >
             ★ Level 2 unlocked ★
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              // Hide the overlay immediately, then let GameShell
+              // flip play mode off + dispatch walk-to-section so
+              // the existing click-to-walk cinematic plays out.
+              setVisible(false);
+              onContinue();
+            }}
+            className="
+              mt-8 px-6 py-3
+              bg-amber-400 hover:bg-amber-300 active:bg-amber-500
+              text-black font-bold text-base sm:text-lg uppercase tracking-wider
+              rounded-full border-2 border-amber-200
+              shadow-lg shadow-amber-900/40
+              cursor-pointer transition-colors
+            "
+          >
+            Continue ▸
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Level 2 celebration. Same structure as the level 1 overlay —
+// confetti + centred message + fanfare audio — but reads
+// `level-complete` (detail: 2). No Continue button: the kid has
+// already been routed back to the plaza by GameShell's
+// puzzle-room-complete handler, and the unlocked MUSIC building
+// is the natural next-step affordance.
+function Level2CompleteOverlay({ musicMuted }: { musicMuted: boolean }) {
+  const [visible, setVisible] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const a = new Audio(SUCCESS_SRC);
+    a.preload = "auto";
+    a.volume = SUCCESS_VOLUME;
+    audioRef.current = a;
+    return () => {
+      a.pause();
+      a.src = "";
+      audioRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = musicMuted;
+  }, [musicMuted]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    function onLevelComplete(e: Event) {
+      const lvl = (e as CustomEvent).detail;
+      if (lvl !== 2) return;
+      setVisible(true);
+      const a = audioRef.current;
+      if (a) {
+        a.currentTime = 0;
+        const p = a.play();
+        if (p && typeof p.then === "function") {
+          p.catch(() => {});
+        }
+      }
+    }
+    function onReset() {
+      setVisible(false);
+    }
+    window.addEventListener("level-complete", onLevelComplete);
+    window.addEventListener("play-mode-reset", onReset);
+    return () => {
+      window.removeEventListener("level-complete", onLevelComplete);
+      window.removeEventListener("play-mode-reset", onReset);
+    };
+  }, []);
+  useEffect(() => {
+    if (!visible) return;
+    const tid = setTimeout(() => setVisible(false), 6500);
+    return () => clearTimeout(tid);
+  }, [visible]);
+  return (
+    <>
+      <ConfettiBurst active={visible} />
+      {visible && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="
+            absolute top-[28%] left-1/2 -translate-x-1/2 z-40 select-none
+            text-center
+            animate-in fade-in zoom-in-95 duration-500
+          "
+        >
+          <div
+            className="
+              text-emerald-300 text-5xl sm:text-7xl font-black uppercase
+              tracking-wider leading-none
+              drop-shadow-[0_6px_24px_rgba(0,0,0,0.85)]
+            "
+            style={{
+              textShadow:
+                "0 0 12px rgba(110, 231, 183, 0.6), 0 4px 0 rgba(0, 0, 0, 0.5)",
+            }}
+          >
+            Level 2
+            <br />
+            Complete!
+          </div>
+          <div
+            className="
+              mt-5 text-white text-sm sm:text-lg uppercase tracking-widest
+              font-semibold opacity-95
+              drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]
+            "
+          >
+            ★ Music house unlocked ★
           </div>
         </div>
       )}
@@ -1396,6 +1599,7 @@ function PuttDoneButton() {
 
 export default function GameShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const section = getSectionByPath(pathname ?? "/");
   // The jiu-jitsu and chess routes render their content as full 3D
   // scenes INSIDE the canvas (the academy interior / chess study),
@@ -1403,8 +1607,13 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
   // canvas clicks still pass through, and add an exit button.
   const isAcademy = pathname === "/jiu-jitsu";
   const isChess = pathname === "/chess";
-  const isFullScene = isAcademy || isChess;
-  const exitLabel = isAcademy ? "the academy" : "chess";
+  const isPuzzle = pathname === "/puzzle";
+  const isFullScene = isAcademy || isChess || isPuzzle;
+  const exitLabel = isAcademy
+    ? "the academy"
+    : isChess
+    ? "chess"
+    : "the puzzle house";
 
   // Play mode (the Mario-style kid game) only makes sense on the
   // plaza route. Navigating away auto-exits via the effect below.
@@ -1419,8 +1628,15 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
     const playCompatible =
       pathname === "/" ||
       pathname === "/chess" ||
-      pathname === "/jiu-jitsu";
+      pathname === "/jiu-jitsu" ||
+      pathname === "/puzzle";
     if (!playCompatible) setPlayMode(false);
+    // Block pushing needs tank controls, so the puzzle room
+    // auto-enables play mode the moment the route lands there —
+    // whether the kid arrived via the Continue button (which
+    // flipped play mode off for the cinematic walk) or directly
+    // by URL bar / building click.
+    if (pathname === "/puzzle") setPlayMode(true);
   }, [pathname]);
   useEffect(() => {
     // Tell Scene to reset the belt meshes' collected state.
@@ -1492,6 +1708,59 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
         new CustomEvent("level-complete", { detail: 1 })
       );
     }, 250);
+    return () => clearTimeout(tid);
+  }, [pathname]);
+
+  // ── Puzzle-house win (level 2) ─────────────────────────────
+  // PuzzleRoom dispatches `puzzle-room-complete` the moment the
+  // kid steps into the lit exit portal. Mirror the chess flow:
+  // dedupe one award per play session, fire the belt + points
+  // events, queue the level-2 celebration, and push the router
+  // back to "/". The deferred dispatch effect below picks up the
+  // pending flag, writes the level-3 unlock, and fires
+  // `level-complete` (detail 2) so Scene + <Level2CompleteOverlay>
+  // run the celebration on the plaza.
+  const puzzleAwardedRef = useRef(false);
+  const pendingLevel2Ref = useRef(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    puzzleAwardedRef.current = false;
+    pendingLevel2Ref.current = false;
+    function onPuzzleWin() {
+      if (puzzleAwardedRef.current) return;
+      puzzleAwardedRef.current = true;
+      // 22nd belt (BeltHUD bumps; chime + walking-belt tally are
+      // already gated against detail === "puzzle" so no second
+      // jump-for-joy fanfare fires here — the level-2 overlay
+      // owns the celebration audio).
+      window.dispatchEvent(
+        new CustomEvent("belt-collected", { detail: "puzzle" })
+      );
+      // +1000 bonus on top of the +100 from the belt.
+      window.dispatchEvent(new CustomEvent("puzzle-won"));
+      pendingLevel2Ref.current = true;
+      router.push("/");
+    }
+    window.addEventListener("puzzle-room-complete", onPuzzleWin);
+    return () => window.removeEventListener("puzzle-room-complete", onPuzzleWin);
+  }, [playMode, router]);
+
+  // Deferred level-2 dispatch — same staging as level 1.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (pathname !== "/") return;
+    if (!pendingLevel2Ref.current) return;
+    pendingLevel2Ref.current = false;
+    try {
+      window.localStorage.setItem(LEVEL3_UNLOCK_STORAGE_KEY, "1");
+    } catch {
+      // Private mode — progress doesn't persist, celebration still plays.
+    }
+    const tid = setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("level-complete", { detail: 2 })
+      );
+    }, 350);
     return () => clearTimeout(tid);
   }, [pathname]);
 
@@ -1586,7 +1855,27 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
       {playMode && <PointsHUD />}
       {playMode && <ChessHintBanner />}
       {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
-      {playMode && <Level1CompleteOverlay musicMuted={musicMuted} />}
+      {playMode && (
+        <Level1CompleteOverlay
+          musicMuted={musicMuted}
+          onContinue={() => {
+            // Flip play mode off so the existing portfolio
+            // click-to-walk pipeline can drive Sonny to the
+            // puzzle-house door. Play mode auto-re-enables when
+            // the route lands on /puzzle (the puzzle room needs
+            // tank controls for block pushing). GameWorld's
+            // walk-to-section listener bypasses its play-mode
+            // guard, so the dispatch is safe to fire immediately
+            // — no need to wait for React to commit the state
+            // update.
+            setPlayMode(false);
+            window.dispatchEvent(
+              new CustomEvent("walk-to-section", { detail: "puzzle" })
+            );
+          }}
+        />
+      )}
+      {playMode && <Level2CompleteOverlay musicMuted={musicMuted} />}
       {playMode && (
         <MuteButton
           muted={musicMuted}
@@ -1627,6 +1916,11 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
           <RiverExitButton />
           <PuttHUD />
           <PuttDoneButton />
+          {/* Shown when the visitor clicks a locked building on the
+              plaza — auto-hides after a few seconds. Mounted in
+              both portfolio + play modes since locked buildings
+              are visible in both. */}
+          <LockedBuildingBanner />
           <div className="hidden">{children}</div>
         </>
       )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import {
   Billboard,
@@ -35,7 +35,8 @@ type CharMode =
   | "ballooning"
   | "tubing"
   | "putting"
-  | "celebrating"; // all 20 belts collected — hops with arms in the air
+  | "celebrating" // all 20 belts collected — hops with arms in the air
+  | "puzzling";   // inside the puzzle room — body faces tank-control angle
 
 type CharState = {
   x: number;
@@ -837,22 +838,15 @@ function resolveRiverCollision(x: number, z: number): { x: number; z: number } {
   return { x: RIVER_CENTER.x + dx * s, z: RIVER_CENTER.z + dz * s };
 }
 
-// The buildings currently visible on the plaza, narrowed by the
-// player's unlocked level. Mutated by `GameWorldBase` whenever the
-// `unlockedLevel` state changes. The collision + line-blocking
-// helpers below read from this so locked-but-not-rendered buildings
-// don't act as invisible walls. Defaults to the full SECTIONS list
-// so any caller that runs before mount (e.g. SSR) still behaves
-// safely (no buildings are locked from the helper's POV).
-let activeSections: Section[] = SECTIONS;
-
 // Resolve building collisions by pushing the character out of any
 // building footprint (rotated rectangle inflated by CHAR_RADIUS), and
-// out of any obstacle circle (hills).
+// out of any obstacle circle (hills). Locked buildings still render
+// (dimmed) on the plaza and act as walls just like unlocked ones,
+// so we iterate the full SECTIONS list unconditionally.
 function resolveCollisions(x: number, z: number): { x: number; z: number } {
   let nx = x;
   let nz = z;
-  for (const s of activeSections) {
+  for (const s of SECTIONS) {
     const a = buildingAngle(s);
     const cos = Math.cos(a);
     const sin = Math.sin(a);
@@ -917,7 +911,7 @@ function lineHitsAnyBuilding(
 ): boolean {
   const halfW = BUILDING_W / 2 + CHAR_RADIUS + 0.05;
   const halfD = BUILDING_D / 2 + CHAR_RADIUS + 0.05;
-  for (const s of activeSections) {
+  for (const s of SECTIONS) {
     const a = buildingAngle(s);
     const cos = Math.cos(a);
     const sin = Math.sin(a);
@@ -1412,13 +1406,6 @@ function GameWorldBase({ playMode = false }: { playMode?: boolean } = {}) {
     window.addEventListener("level-complete", onLevelComplete);
     return () => window.removeEventListener("level-complete", onLevelComplete);
   }, []);
-  // Keep the module-level `activeSections` in sync so the collision
-  // + line-blocking helpers (which run outside React) don't treat
-  // locked-but-not-rendered buildings as invisible walls.
-  useEffect(() => {
-    activeSections = SECTIONS.filter((s) => isSectionUnlocked(s, unlockedLevel));
-  }, [unlockedLevel]);
-
   // Default vantage. Selected per-pathname AND per-device:
   //   * Plaza route (/): mobile pulls back ~30% so the world fits a
   //     narrow portrait viewport, desktop keeps the original framing.
@@ -1442,6 +1429,17 @@ function GameWorldBase({ playMode = false }: { playMode?: boolean } = {}) {
       // in profile, not as flat circles. South of the board so the
       // player's pieces are nearest.
       return { x: 0, y: 4.5, z: -3.0 };
+    }
+    if (pathname === "/puzzle") {
+      // Elevated southern vantage looking north across all three
+      // stations. Camera Y is high enough to read the mats +
+      // blocks top-down-ish; Z stays inside the room so the
+      // south wall doesn't block the view. Mobile pulls camera
+      // higher so the whole 24u-wide room fits a portrait
+      // viewport at the same FOV.
+      return isMobile
+        ? { x: 0, y: 20, z: -7.2 }
+        : { x: 0, y: 18, z: -7.4 };
     }
     return isMobile
       ? { x: 0, y: 26, z: 32 }
@@ -1509,13 +1507,19 @@ function Scene({
   characterId: CharacterId;
   unlockedLevel: number;
 }) {
-  // Buildings (and their plaza paths) only render when the section's
-  // `minLevel` is <= the current unlocked level. On level 1 that's
-  // just jiu-jitsu + chess; winning chess unlocks level 2 and the
-  // puzzle house pops in. Memoized so the array identity is stable
-  // across re-renders within the same level.
-  const unlockedSections = useMemo(
-    () => SECTIONS.filter((s) => isSectionUnlocked(s, unlockedLevel)),
+  // Every section renders on the plaza always. Locked sections
+  // (minLevel > current unlocked level) get a dimmed/greyed-out
+  // material treatment + a 🔒 icon above the roof label, and
+  // clicking one fires a "Unlock by completing Level X" banner
+  // instead of walking the kid to the door. The set of locked ids
+  // is memoised so the prop identity is stable while at one level.
+  const lockedIds = useMemo(
+    () =>
+      new Set(
+        SECTIONS.filter((s) => !isSectionUnlocked(s, unlockedLevel)).map(
+          (s) => s.id
+        )
+      ),
     [unlockedLevel]
   );
   // Mirror playMode into a ref so the per-frame physics / camera /
@@ -3186,9 +3190,45 @@ function Scene({
   // navigating into a section.
   function handleBuildingClick(section: Section) {
     if (!isOnHome || isBusy() || playModeRef.current) return;
+    if (lockedIds.has(section.id)) {
+      // Locked building — fire a HUD banner instead of walking
+      // there. GameShell's <LockedBuildingBanner> listens for this
+      // event and shows a centred "Unlock by completing Level X"
+      // message for ~3 seconds.
+      const requiredLevel = (section.minLevel ?? 1) - 1;
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("show-locked-banner", {
+            detail: { sectionLabel: section.label, requiredLevel },
+          })
+        );
+      }
+      return;
+    }
     const t = doorTarget(section);
     walkTo(t.x, t.z, section.id);
   }
+
+  // Programmatic walk-into-building, fired by GameShell after the
+  // Level 1 Complete overlay's Continue button is tapped. GameShell
+  // flips play mode off synchronously before dispatching, but state
+  // updates haven't committed yet by the time this listener runs —
+  // so we bypass handleBuildingClick (which gates on playModeRef)
+  // and drive the walk directly. isOnHome + isBusy guards still
+  // protect against weird edge cases (mid-cinematic, off-plaza).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    function onWalkTo(e: Event) {
+      const id = (e as CustomEvent<string>).detail;
+      const sec = SECTIONS.find((s) => s.id === id);
+      if (!sec) return;
+      if (!isOnHome || isBusy()) return;
+      const t = doorTarget(sec);
+      walkTo(t.x, t.z, sec.id);
+    }
+    window.addEventListener("walk-to-section", onWalkTo);
+    return () => window.removeEventListener("walk-to-section", onWalkTo);
+  });
 
   function handleGatorClick() {
     if (!isOnHome || isBusy() || playModeRef.current) return;
@@ -3252,6 +3292,7 @@ function Scene({
   // Character + CameraRig are shared between them.
   const isAcademy = pathname === "/jiu-jitsu";
   const isChess = pathname === "/chess";
+  const isPuzzle = pathname === "/puzzle";
 
   return (
     <>
@@ -3263,13 +3304,21 @@ function Scene({
         <Suspense fallback={null}>
           <ChessRoom onExit={() => router.push("/")} />
         </Suspense>
+      ) : isPuzzle ? (
+        <Suspense fallback={null}>
+          <PuzzleRoom
+            onExit={() => router.push("/")}
+            charRef={refs.char}
+            keysRef={keysRef}
+          />
+        </Suspense>
       ) : (
         <>
           <Lights />
           <Sky />
           <Clouds />
           <Ground />
-          <Plaza sections={unlockedSections} />
+          <Plaza sections={SECTIONS} lockedIds={lockedIds} />
           <Environment
             gatorRef={refs.gator}
             onGatorClick={handleGatorClick}
@@ -3289,11 +3338,12 @@ function Scene({
             kateRef={refs.kate}
             balloonAdventureRef={refs.balloonAdventure}
           />
-          {unlockedSections.map((s) => (
+          {SECTIONS.map((s) => (
             <Building
               key={s.id}
               section={s}
               doorsRef={refs.doors}
+              isLocked={lockedIds.has(s.id)}
               onSelect={() => handleBuildingClick(s)}
             />
           ))}
@@ -6482,7 +6532,13 @@ function BalloonBunch({
   );
 }
 
-function Plaza({ sections }: { sections: Section[] }) {
+function Plaza({
+  sections,
+  lockedIds,
+}: {
+  sections: Section[];
+  lockedIds: Set<SectionId>;
+}) {
   return (
     <>
       {/* Central dirt circle */}
@@ -6490,17 +6546,17 @@ function Plaza({ sections }: { sections: Section[] }) {
         <circleGeometry args={[1.2, 24]} />
         <meshStandardMaterial color="#b89968" />
       </mesh>
-      {/* Paths radiating out to each unlocked building. Sections
-          whose `minLevel` is above the current unlocked level are
-          filtered out by the caller, so their paths don't render
-          either — the plaza looks clean on level 1 (just the two
-          paths to jiu-jitsu + chess). */}
+      {/* Paths radiating out to each building. Locked-building
+          paths render in a muted grass-tinted tone so they read
+          as "not yet" without disappearing — the world stays
+          coherent and the kid can see where things will go. */}
       {sections.map((s) => {
         const t = doorTarget(s);
         const midX = t.x / 2;
         const midZ = t.z / 2;
         const len = Math.hypot(t.x, t.z);
         const angle = Math.atan2(t.x, t.z);
+        const locked = lockedIds.has(s.id);
         return (
           <mesh
             key={s.id}
@@ -6509,7 +6565,7 @@ function Plaza({ sections }: { sections: Section[] }) {
             receiveShadow
           >
             <planeGeometry args={[0.9, len]} />
-            <meshStandardMaterial color="#b89968" />
+            <meshStandardMaterial color={locked ? "#7a7c66" : "#b89968"} />
           </mesh>
         );
       })}
@@ -6522,15 +6578,27 @@ function Plaza({ sections }: { sections: Section[] }) {
 function Building({
   section,
   doorsRef,
+  isLocked = false,
   onSelect,
 }: {
   section: Section;
   doorsRef: React.MutableRefObject<DoorState>;
+  isLocked?: boolean;
   onSelect: () => void;
 }) {
   const doorPivotRef = useRef<THREE.Group>(null);
   const smokeRef = useRef<THREE.Group>(null);
   const angle = useMemo(() => buildingAngle(section), [section]);
+
+  // Locked-building palette: desaturated stone-grey replacements
+  // for the section's vibrant colours, so the building still
+  // reads as "this house" (same shape + position + label) but
+  // visibly inert / "not yet". Roof label + door sign use a
+  // washed-out cream so they're still readable.
+  const buildingColor = isLocked ? "#6a695f" : section.buildingColor;
+  const roofColor = isLocked ? "#4d4c45" : section.roofColor;
+  const doorColor = isLocked ? "#2a2926" : section.doorColor;
+  const signColor = isLocked ? "#9c9890" : section.signColor;
 
   useFrame((_, dt) => {
     if (doorPivotRef.current) {
@@ -6575,13 +6643,13 @@ function Building({
         }}
       >
         <boxGeometry args={[BUILDING_W, BUILDING_H, BUILDING_D]} />
-        <meshStandardMaterial color={section.buildingColor} />
+        <meshStandardMaterial color={buildingColor} />
       </mesh>
 
       {/* Wall trim at bottom */}
       <mesh position={[0, 0.08, 0]} receiveShadow>
         <boxGeometry args={[BUILDING_W + 0.01, 0.16, BUILDING_D + 0.01]} />
-        <meshStandardMaterial color={section.roofColor} />
+        <meshStandardMaterial color={roofColor} />
       </mesh>
 
       {/* Roof — a pyramid (cone with 4 segments) */}
@@ -6591,18 +6659,18 @@ function Building({
         rotation={[0, Math.PI / 4, 0]}
       >
         <coneGeometry args={[BUILDING_W * 0.78, 1.0, 4]} />
-        <meshStandardMaterial color={section.roofColor} flatShading />
+        <meshStandardMaterial color={roofColor} flatShading />
       </mesh>
 
       {/* Chimney + smoke for home */}
-      {section.isHome && (
+      {section.isHome && !isLocked && (
         <>
           <mesh
             position={[BUILDING_W * 0.32, BUILDING_H + 0.7, -BUILDING_D * 0.18]}
             castShadow
           >
             <boxGeometry args={[0.25, 0.7, 0.25]} />
-            <meshStandardMaterial color={section.roofColor} />
+            <meshStandardMaterial color={roofColor} />
           </mesh>
           <mesh
             position={[BUILDING_W * 0.32, BUILDING_H + 1.05, -BUILDING_D * 0.18]}
@@ -6669,7 +6737,7 @@ function Building({
           }}
         >
           <boxGeometry args={[DOOR_W, DOOR_H, 0.06]} />
-          <meshStandardMaterial color={section.doorColor} />
+          <meshStandardMaterial color={doorColor} />
         </mesh>
         {/* Door knob */}
         <mesh position={[DOOR_W - 0.08, DOOR_H / 2 - 0.02, 0.04]}>
@@ -6687,7 +6755,7 @@ function Building({
         <Text
           position={[0, 0, 0.04]}
           fontSize={0.16}
-          color={section.signColor}
+          color={signColor}
           anchorX="center"
           anchorY="middle"
           letterSpacing={0.08}
@@ -6701,11 +6769,12 @@ function Building({
           camera (drei <Billboard>). Visible from any orbit angle or
           distance so visitors can identify each building at a glance.
           Cream text on a dark outline pops against both the sky and
-          the building colors. */}
+          the building colors. Locked buildings also get a 🔒 icon
+          above the label so the lock state reads at a glance. */}
       <Billboard position={[0, BUILDING_H + 1.9, 0]}>
         <Text
           fontSize={0.55}
-          color={section.signColor}
+          color={signColor}
           outlineColor="#1a1410"
           outlineWidth={0.045}
           outlineOpacity={1}
@@ -6715,6 +6784,20 @@ function Building({
         >
           {section.label}
         </Text>
+        {isLocked && (
+          <Text
+            position={[0, 0.55, 0]}
+            fontSize={0.5}
+            color="#e8d68a"
+            outlineColor="#1a1410"
+            outlineWidth={0.04}
+            outlineOpacity={1}
+            anchorX="center"
+            anchorY="middle"
+          >
+            🔒
+          </Text>
+        )}
       </Billboard>
 
     </group>
@@ -7064,7 +7147,8 @@ function Character({
         c.mode === "ballooning" ||
         c.mode === "tubing" ||
         c.mode === "putting" ||
-        c.mode === "celebrating"; // body spins on its own — don't fight it
+        c.mode === "celebrating" || // body spins on its own — don't fight it
+        c.mode === "puzzling";       // body follows tank-control heading
       if (!isSpecial) {
         const camToCharX = c.x - state.camera.position.x;
         const camToCharZ = c.z - state.camera.position.z;
@@ -7865,11 +7949,46 @@ function CameraRig({
     // value doesn't change; we still call updateProjectionMatrix
     // unconditionally because Three.js doesn't track the change.
     const wantFov =
-      pathname === "/jiu-jitsu" ? 65 : pathname === "/chess" ? 50 : 45;
+      pathname === "/jiu-jitsu"
+        ? 65
+        : pathname === "/chess"
+        ? 50
+        : pathname === "/puzzle"
+        ? 70
+        : 45;
     const camAsPersp = state.camera as THREE.PerspectiveCamera;
     if (camAsPersp.fov !== wantFov) {
       camAsPersp.fov = wantFov;
       camAsPersp.updateProjectionMatrix();
+    }
+
+    // ── PUZZLE-ROOM CAMERA ──
+    // Fixed overview vantage looking into the room from the south.
+    // Target lerps to the kid's position so he stays in frame as
+    // he walks between stations; camera position stays at
+    // camDefault for the whole room. Returns early to skip the
+    // plaza state machine — puzzle room owns the camera.
+    if (pathname === "/puzzle") {
+      const k = Math.min(1, dt * 3.5);
+      state.camera.position.x += (camDefault.x - state.camera.position.x) * k;
+      state.camera.position.y += (camDefault.y - state.camera.position.y) * k;
+      state.camera.position.z += (camDefault.z - state.camera.position.z) * k;
+      if (controlsRef.current) {
+        const tk = Math.min(1, dt * 2.5);
+        const t = controlsRef.current.target;
+        // Gentle follow — the room is fully in frame, so the camera
+        // only needs to nudge slightly toward the kid's side. A
+        // strong follow swings the view too much as the kid walks
+        // from one station to another and disorients pushes.
+        t.x += (c.x * 0.25 - t.x) * tk;
+        t.y += (1.0 - t.y) * tk;
+        t.z += (c.z * 0.2 - t.z) * tk;
+        controlsRef.current.update();
+      }
+      camHijackedRef.current = true;
+      manualOverrideRef.current = false;
+      droneActiveRef.current = false;
+      return;
     }
 
     // ── PLAY MODE CAMERA ──
@@ -8347,14 +8466,16 @@ function CameraRig({
   // whole-world view.
   const isAcademy = pathname === "/jiu-jitsu";
   const isChess = pathname === "/chess";
-  const isIndoors = isAcademy || isChess;
+  const isPuzzle = pathname === "/puzzle";
+  const isIndoors = isAcademy || isChess || isPuzzle;
   // Chess room is smaller and the board is the focal point — keep
   // the user close to it but allow looking down (high polar angle =
-  // nearly top-down) to read the squares clearly.
-  const minDist = isChess ? 2.4 : 4;
-  const maxDist = isChess ? 9 : isAcademy ? 20 : 70;
-  const minPolar = Math.PI * (isChess ? 0.05 : isAcademy ? 0.2 : 0.12);
-  const maxPolar = Math.PI * (isChess ? 0.45 : isAcademy ? 0.5 : 0.48);
+  // nearly top-down) to read the squares clearly. Puzzle room is
+  // wider, so allow a longer max distance for portrait viewports.
+  const minDist = isChess ? 2.4 : isPuzzle ? 8 : 4;
+  const maxDist = isChess ? 9 : isAcademy ? 20 : isPuzzle ? 28 : 70;
+  const minPolar = Math.PI * (isChess ? 0.05 : isAcademy ? 0.2 : isPuzzle ? 0.18 : 0.12);
+  const maxPolar = Math.PI * (isChess ? 0.45 : isAcademy ? 0.5 : isPuzzle ? 0.42 : 0.48);
 
   return (
     <OrbitControls
@@ -8372,8 +8493,10 @@ function CameraRig({
       // from under the user. Zoom is left on so the board can still
       // be inspected closer. R3F's onClick raycaster on the square
       // / piece meshes still fires normally — OrbitControls only
-      // owns the camera, not the pick events.
-      enableRotate={!isChess}
+      // owns the camera, not the pick events. Puzzle room also
+      // disables rotate so the kid's WASD tank input isn't fighting
+      // a swinging camera.
+      enableRotate={!isChess && !isPuzzle}
       enablePan={!isChess}
     />
   );
@@ -9635,6 +9758,631 @@ function SelectionRing({ position }: { position: [number, number, number] }) {
         depthWrite={false}
       />
     </mesh>
+  );
+}
+
+// ============================================================
+// PuzzleRoom — Level 2's 3D interior
+// ============================================================
+// Scene-graph swap (mirrors ChessRoom + Academy): when pathname
+// === "/puzzle", Scene mounts <PuzzleRoom> instead of the plaza
+// geometry. The shared <Character> + <CameraRig> render outside
+// the conditional so they persist.
+//
+// Layout: long wood-floor room with three puzzle stations laid
+// out west → centre → east (warm-up plate → colour match →
+// sokoban). The kid uses tank controls (A/D turn, W/S walk —
+// keysRef is filled by Scene's existing play-mode keydown
+// listener, which we keep enabled on this route because the
+// route is play-compatible). Walking into a block pushes it in
+// the character's facing direction; blocks stop at walls + each
+// other + immovable obstacle posts. Mats light up when an
+// appropriately-coloured block sits on them. All three puzzles
+// solved → the north exit portal glows and walking into it
+// dispatches `level-complete` (detail 2).
+//
+// Reset (HUD pill via window event) snaps every block in the
+// current chamber back to its start position, useful for the
+// sokoban puzzle where a wrong push order can soft-lock the
+// arrangement.
+
+const PUZZLE_ROOM_W = 24;       // x extent: -12 to +12
+const PUZZLE_ROOM_D = 16;       // z extent: -8 to +8
+const PUZZLE_ROOM_H = 6;
+const PUZZLE_WALL_THICK = 0.4;
+
+// Where the kid spawns when entering /puzzle. A bit north of the
+// south wall (z=-8) so the camera vantage at (0, 15, -7.4) has
+// him well inside the view cone from the first frame.
+const PUZZLE_SPAWN = { x: 0, z: -4.5 };
+// Exit portal centre on the north wall — step in to fire
+// `level-complete`.
+const PUZZLE_EXIT = { x: 0, z: 6.5 };
+const PUZZLE_EXIT_RADIUS = 1.0;
+
+const PUZZLE_BLOCK_SIZE = 0.7;  // edge length of each pushable cube
+const PUZZLE_BLOCK_HALF = PUZZLE_BLOCK_SIZE / 2;
+const PUZZLE_BLOCK_Y = PUZZLE_BLOCK_SIZE / 2;    // cube sits on the floor
+const PUZZLE_MAT_RADIUS = 0.45; // block-centre must be within this to "lit"
+
+// Movement tuning inside the puzzle room — slower than play-mode
+// on the plaza so the kid has fine control over block pushes.
+const PUZZLE_MOVE_SPEED = 3.5;   // units/sec walking
+const PUZZLE_TURN_RATE = 2.0;    // rad/sec
+const PUZZLE_CHAR_RADIUS = 0.32;
+
+type PuzzleColor = "grey" | "red" | "blue";
+
+type PuzzleBlockSpec = {
+  startX: number;
+  startZ: number;
+  color: PuzzleColor;
+  puzzleIndex: 0 | 1 | 2;
+};
+
+type PuzzleMatSpec = {
+  x: number;
+  z: number;
+  color: PuzzleColor;
+  puzzleIndex: 0 | 1 | 2;
+};
+
+// Block layout. Each block's start position doubles as its reset
+// target. Puzzle 0 (x≈-7): single grey block, push it north onto
+// the single grey mat. Puzzle 1 (x≈0): red + blue blocks must each
+// land on their own colour. Puzzle 2 (x≈+7): three grey blocks
+// must each land on a grey mat, with an immovable post at (+7, 0)
+// forcing the middle block to detour around it.
+const PUZZLE_BLOCKS: PuzzleBlockSpec[] = [
+  // ── Puzzle 0 — warm-up pressure plate ────────────────────────
+  { startX: -7,   startZ: -1.5, color: "grey", puzzleIndex: 0 },
+  // ── Puzzle 1 — colour match ──────────────────────────────────
+  { startX: -1.5, startZ: -1.5, color: "red",  puzzleIndex: 1 },
+  { startX:  1.5, startZ: -1.5, color: "blue", puzzleIndex: 1 },
+  // ── Puzzle 2 — sokoban ───────────────────────────────────────
+  { startX:  5.5, startZ: -2,   color: "grey", puzzleIndex: 2 },
+  { startX:  7,   startZ: -2,   color: "grey", puzzleIndex: 2 },
+  { startX:  8.5, startZ: -2,   color: "grey", puzzleIndex: 2 },
+];
+
+const PUZZLE_MATS: PuzzleMatSpec[] = [
+  { x: -7,   z: 2,   color: "grey", puzzleIndex: 0 },
+  { x: -1.5, z: 2,   color: "red",  puzzleIndex: 1 },
+  { x:  1.5, z: 2,   color: "blue", puzzleIndex: 1 },
+  { x:  5.5, z: 2,   color: "grey", puzzleIndex: 2 },
+  { x:  7,   z: 3,   color: "grey", puzzleIndex: 2 },
+  { x:  8.5, z: 2,   color: "grey", puzzleIndex: 2 },
+];
+
+// Immovable interior posts. Same size as a pushable block so the
+// shape language is consistent. Puzzle 2 has one post at (+7, 0)
+// that blocks the middle block's straight path north.
+const PUZZLE_POSTS: { x: number; z: number }[] = [
+  { x: 7, z: 0 },
+];
+
+// Low railings dividing the stations so blocks pushed too far
+// don't drift into a neighbouring puzzle. Open in the centre of
+// the room (z range) for the kid to walk between. Each entry is
+// an axis-aligned segment along z, half-thick on x.
+const PUZZLE_RAILINGS: { x: number; zMin: number; zMax: number }[] = [
+  { x: -3.5, zMin: -7,   zMax: -3.5 },  // P0/P1 divider — south half
+  { x: -3.5, zMin:  3.5, zMax:  7   },  // P0/P1 divider — north half
+  { x:  3.5, zMin: -7,   zMax: -3.5 },  // P1/P2 divider — south half
+  { x:  3.5, zMin:  3.5, zMax:  7   },  // P1/P2 divider — north half
+];
+
+const PUZZLE_COLOR_HEX: Record<PuzzleColor, string> = {
+  grey: "#a8a39a",
+  red:  "#d44a32",
+  blue: "#3a6dd4",
+};
+
+const PUZZLE_MAT_COLOR_DIM: Record<PuzzleColor, string> = {
+  grey: "#4a4540",
+  red:  "#6e1d12",
+  blue: "#162a5a",
+};
+
+const PUZZLE_MAT_COLOR_LIT: Record<PuzzleColor, string> = {
+  grey: "#f0d984",
+  red:  "#ff7a55",
+  blue: "#5fa8ff",
+};
+
+// AABB-style collision check between a candidate block position
+// and all room walls / posts / railings / other blocks. Returns
+// true if the candidate position is BLOCKED.
+function puzzleBlockBlocked(
+  cx: number,
+  cz: number,
+  selfIdx: number,
+  blocks: { x: number; z: number }[]
+): boolean {
+  const h = PUZZLE_BLOCK_HALF;
+  // Outer walls (block-centre clearance = wall-half + block-half).
+  const innerHalfW = PUZZLE_ROOM_W / 2 - PUZZLE_WALL_THICK / 2 - h - 0.02;
+  const innerHalfD = PUZZLE_ROOM_D / 2 - PUZZLE_WALL_THICK / 2 - h - 0.02;
+  if (Math.abs(cx) > innerHalfW || Math.abs(cz) > innerHalfD) return true;
+  // Posts (immovable cubes, same size as blocks).
+  for (const p of PUZZLE_POSTS) {
+    if (Math.abs(cx - p.x) < PUZZLE_BLOCK_SIZE && Math.abs(cz - p.z) < PUZZLE_BLOCK_SIZE) {
+      return true;
+    }
+  }
+  // Railings — thin posts treated as 0.2-thick segments along z.
+  for (const r of PUZZLE_RAILINGS) {
+    if (Math.abs(cx - r.x) < h + 0.12 && cz > r.zMin - h && cz < r.zMax + h) {
+      return true;
+    }
+  }
+  // Other pushable blocks.
+  for (let i = 0; i < blocks.length; i++) {
+    if (i === selfIdx) continue;
+    const b = blocks[i];
+    if (Math.abs(cx - b.x) < PUZZLE_BLOCK_SIZE && Math.abs(cz - b.z) < PUZZLE_BLOCK_SIZE) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Same check for the character — uses CHAR_RADIUS (circle) against
+// walls/posts/railings/blocks. Lets us push blocks (we move the
+// block first, then move the char), but stop the char if a block
+// can't move.
+function puzzleCharBlocked(
+  cx: number,
+  cz: number,
+  blocks: { x: number; z: number }[]
+): boolean {
+  const r = PUZZLE_CHAR_RADIUS;
+  const innerHalfW = PUZZLE_ROOM_W / 2 - PUZZLE_WALL_THICK / 2 - r - 0.02;
+  const innerHalfD = PUZZLE_ROOM_D / 2 - PUZZLE_WALL_THICK / 2 - r - 0.02;
+  if (Math.abs(cx) > innerHalfW || Math.abs(cz) > innerHalfD) return true;
+  for (const p of PUZZLE_POSTS) {
+    if (Math.abs(cx - p.x) < PUZZLE_BLOCK_HALF + r && Math.abs(cz - p.z) < PUZZLE_BLOCK_HALF + r) {
+      return true;
+    }
+  }
+  for (const rail of PUZZLE_RAILINGS) {
+    if (Math.abs(cx - rail.x) < 0.1 + r && cz > rail.zMin - r && cz < rail.zMax + r) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function PuzzleBlockMesh({
+  blockPos,
+  color,
+}: {
+  // Stable object reference that the parent useFrame mutates each
+  // frame. We read `.x` / `.z` directly off it — passing the
+  // object (not a wrapping ref) keeps the prop shape simple.
+  blockPos: { x: number; z: number };
+  color: PuzzleColor;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!groupRef.current) return;
+    groupRef.current.position.x = blockPos.x;
+    groupRef.current.position.z = blockPos.z;
+  });
+  const main = PUZZLE_COLOR_HEX[color];
+  return (
+    <group ref={groupRef} position={[0, PUZZLE_BLOCK_Y, 0]}>
+      <mesh castShadow receiveShadow>
+        <boxGeometry args={[PUZZLE_BLOCK_SIZE, PUZZLE_BLOCK_SIZE, PUZZLE_BLOCK_SIZE]} />
+        <meshStandardMaterial color={main} roughness={0.55} />
+      </mesh>
+      {/* Bevel-style top edge highlight so the cube reads as 3D
+          even from a near-top-down camera. */}
+      <mesh position={[0, PUZZLE_BLOCK_HALF + 0.001, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[PUZZLE_BLOCK_SIZE * 0.85, PUZZLE_BLOCK_SIZE * 0.85]} />
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.08} />
+      </mesh>
+    </group>
+  );
+}
+
+function PuzzleMatMesh({
+  mat,
+  litRef,
+}: {
+  mat: PuzzleMatSpec;
+  litRef: React.MutableRefObject<boolean>;
+}) {
+  const ringRef = useRef<THREE.Mesh>(null);
+  const dim = PUZZLE_MAT_COLOR_DIM[mat.color];
+  const lit = PUZZLE_MAT_COLOR_LIT[mat.color];
+  // Per-frame color swap on the same material — avoids React state
+  // churn at 60 Hz.
+  useFrame(() => {
+    if (!ringRef.current) return;
+    const m = ringRef.current.material as THREE.MeshStandardMaterial;
+    const want = litRef.current ? lit : dim;
+    if ((m.color as THREE.Color).getHexString() !== want.slice(1).toLowerCase()) {
+      m.color.set(want);
+      m.emissive.set(litRef.current ? lit : "#000000");
+      m.emissiveIntensity = litRef.current ? 0.7 : 0;
+    }
+  });
+  return (
+    <mesh
+      ref={ringRef}
+      position={[mat.x, 0.015, mat.z]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      receiveShadow
+    >
+      <circleGeometry args={[PUZZLE_MAT_RADIUS, 28]} />
+      <meshStandardMaterial color={dim} roughness={0.4} />
+    </mesh>
+  );
+}
+
+function PuzzleExitPortal({
+  activeRef,
+}: {
+  activeRef: React.MutableRefObject<boolean>;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const ringRef = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!ringRef.current) return;
+    const m = ringRef.current.material as THREE.MeshBasicMaterial;
+    if (activeRef.current) {
+      m.opacity = 0.55 + Math.sin(clock.elapsedTime * 3.5) * 0.25;
+      m.color.set("#74e0a0");
+    } else {
+      m.opacity = 0.18;
+      m.color.set("#3a4a3e");
+    }
+  });
+  return (
+    <group ref={groupRef} position={[PUZZLE_EXIT.x, 0, PUZZLE_EXIT.z]}>
+      {/* Glowing disc on the floor. */}
+      <mesh
+        ref={ringRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.02, 0]}
+        receiveShadow
+      >
+        <ringGeometry args={[0.55, PUZZLE_EXIT_RADIUS, 36]} />
+        <meshBasicMaterial color="#74e0a0" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      {/* Door frame in the back wall above the disc. */}
+      <mesh position={[0, 1.5, 0]} castShadow>
+        <boxGeometry args={[1.8, 3, 0.1]} />
+        <meshStandardMaterial color="#3a2a1c" />
+      </mesh>
+      <mesh position={[0, 1.5, 0.06]}>
+        <planeGeometry args={[1.4, 2.6]} />
+        <meshBasicMaterial color="#74e0a0" transparent opacity={0.25} />
+      </mesh>
+    </group>
+  );
+}
+
+function PuzzleRoom({
+  onExit,
+  charRef,
+  keysRef,
+}: {
+  onExit: () => void;
+  charRef: React.MutableRefObject<CharState>;
+  keysRef: React.MutableRefObject<{
+    forward: boolean;
+    back: boolean;
+    left: boolean;
+    right: boolean;
+    jump: boolean;
+  }>;
+}) {
+  // onExit is wired through GameShell's overlay; PuzzleRoom itself
+  // also drives the exit on level-complete by pushing the route.
+  void onExit;
+
+  // Per-block live position refs (mutated every frame; meshes read
+  // them in their own useFrame). Seeded from PUZZLE_BLOCKS start
+  // positions so reset is just a memcpy.
+  const blockRefs = useRef(
+    PUZZLE_BLOCKS.map((b) => ({ x: b.startX, z: b.startZ }))
+  );
+  // Per-mat occupancy flag (mutated in tick, read in mat mesh).
+  const matLitRefs = useRef(PUZZLE_MATS.map(() => ({ current: false })));
+  // Per-puzzle solved flag — true once all its mats are lit. Once
+  // true, stays true even if the kid pushes a block back off (the
+  // puzzle has been "solved"). Wired to the overall completion
+  // check + the exit-portal glow.
+  const solvedRef = useRef<[boolean, boolean, boolean]>([false, false, false]);
+  // Exit portal active when all three puzzles solved.
+  const exitActiveRef = useRef(false);
+  // Drives the per-puzzle Reset buttons rendered in the HUD overlay
+  // (GameShell <PuzzleControls>). Bumped each time a reset fires so
+  // the mat-occupancy check immediately re-evaluates after blocks
+  // jump back to their starts.
+  const completeDispatchedRef = useRef(false);
+
+  // React state mirrors the solved flags so the HUD can react if
+  // we ever want per-puzzle progress UI. Kept minimal for now.
+  const [, setRender] = useState(0);
+  const forceRender = useCallback(() => setRender((n) => n + 1), []);
+
+  // Reset listener — wipes every block in `puzzleIndex` (or all
+  // puzzles when detail === -1) back to its start position. Also
+  // clears the corresponding solved flag so the puzzle becomes
+  // unsolved again until the blocks settle on the mats.
+  useEffect(() => {
+    function onReset(e: Event) {
+      const idx = (e as CustomEvent<number>).detail;
+      const all = idx === -1;
+      PUZZLE_BLOCKS.forEach((spec, i) => {
+        if (!all && spec.puzzleIndex !== idx) return;
+        blockRefs.current[i].x = spec.startX;
+        blockRefs.current[i].z = spec.startZ;
+      });
+      if (all) {
+        solvedRef.current = [false, false, false];
+      } else if (idx === 0 || idx === 1 || idx === 2) {
+        solvedRef.current[idx] = false;
+      }
+      forceRender();
+    }
+    window.addEventListener("puzzle-reset", onReset);
+    return () => window.removeEventListener("puzzle-reset", onReset);
+  }, [forceRender]);
+
+  // Snap character to the spawn the first frame this component
+  // mounts. The pathname useEffect in GameWorld already did this
+  // for SectionId="puzzle" but its target was doorTarget() which
+  // is outside the room — overwrite to the room's interior spawn.
+  useEffect(() => {
+    charRef.current.x = PUZZLE_SPAWN.x;
+    charRef.current.z = PUZZLE_SPAWN.z;
+    charRef.current.y = 0;
+    charRef.current.angle = 0; // facing +Z (into the room)
+    charRef.current.walking = false;
+    charRef.current.mode = "idle";
+    charRef.current.vy = 0;
+    charRef.current.grounded = true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useFrame((_, dt) => {
+    const clampedDt = Math.min(dt, 1 / 30);
+    const keys = keysRef.current;
+    const char = charRef.current;
+
+    // ── Tank-style movement ───────────────────────────────────
+    if (keys.left)  char.angle += PUZZLE_TURN_RATE * clampedDt;
+    if (keys.right) char.angle -= PUZZLE_TURN_RATE * clampedDt;
+
+    let walking = false;
+    if (keys.forward || keys.back) {
+      const dir = keys.forward ? 1 : -1;
+      const dx = Math.sin(char.angle) * PUZZLE_MOVE_SPEED * clampedDt * dir;
+      const dz = Math.cos(char.angle) * PUZZLE_MOVE_SPEED * clampedDt * dir;
+
+      // Try to move char. For each block we'd collide with, try to
+      // push it in the same (dx,dz) direction first; if it can't
+      // move, the char can't either.
+      let canMove = true;
+      const newCharX = char.x + dx;
+      const newCharZ = char.z + dz;
+
+      // Find any block whose AABB the char's circle would intrude.
+      for (let i = 0; i < blockRefs.current.length; i++) {
+        const b = blockRefs.current[i];
+        const overlap =
+          Math.abs(newCharX - b.x) < PUZZLE_BLOCK_HALF + PUZZLE_CHAR_RADIUS &&
+          Math.abs(newCharZ - b.z) < PUZZLE_BLOCK_HALF + PUZZLE_CHAR_RADIUS;
+        if (!overlap) continue;
+        // Char would touch this block. Try shoving the block by the
+        // same delta. If the block can move, both move; if not, both
+        // stop.
+        const newBlockX = b.x + dx;
+        const newBlockZ = b.z + dz;
+        if (puzzleBlockBlocked(newBlockX, newBlockZ, i, blockRefs.current)) {
+          canMove = false;
+          break;
+        }
+        b.x = newBlockX;
+        b.z = newBlockZ;
+      }
+
+      if (canMove && !puzzleCharBlocked(newCharX, newCharZ, blockRefs.current)) {
+        char.x = newCharX;
+        char.z = newCharZ;
+        walking = true;
+      }
+    }
+    char.walking = walking;
+    if (walking) {
+      char.stepPhase = (char.stepPhase + clampedDt * 2.2) % 1;
+    } else {
+      char.stepPhase *= 1 - Math.min(1, clampedDt * 6);
+    }
+    char.mode = "puzzling";
+
+    // ── Mat occupancy + solved flags ──────────────────────────
+    let anySolvedChange = false;
+    // First, mark all mats as unlit; then check each one's matching block.
+    for (let i = 0; i < PUZZLE_MATS.length; i++) {
+      matLitRefs.current[i].current = false;
+    }
+    for (let i = 0; i < PUZZLE_MATS.length; i++) {
+      const mat = PUZZLE_MATS[i];
+      for (let j = 0; j < PUZZLE_BLOCKS.length; j++) {
+        const spec = PUZZLE_BLOCKS[j];
+        if (spec.color !== mat.color) continue;
+        if (spec.puzzleIndex !== mat.puzzleIndex) continue;
+        const b = blockRefs.current[j];
+        if (Math.hypot(b.x - mat.x, b.z - mat.z) < PUZZLE_MAT_RADIUS) {
+          matLitRefs.current[i].current = true;
+          break;
+        }
+      }
+    }
+    // Per-puzzle solved = every mat in that puzzle is lit.
+    for (let p = 0; p < 3; p++) {
+      const matsForP = PUZZLE_MATS
+        .map((m, idx) => ({ m, idx }))
+        .filter(({ m }) => m.puzzleIndex === p);
+      const allLit = matsForP.every(({ idx }) => matLitRefs.current[idx].current);
+      if (allLit && !solvedRef.current[p]) {
+        solvedRef.current[p] = true;
+        anySolvedChange = true;
+      }
+    }
+    // Once a puzzle is solved we KEEP its mats lit — otherwise the
+    // kid pushing a block straight through the mat zone wouldn't
+    // see any lasting "done!" feedback, and might assume the
+    // puzzle didn't register. The solved flag is sticky (never
+    // unset) so this just mirrors that into the visual state.
+    for (let i = 0; i < PUZZLE_MATS.length; i++) {
+      const p = PUZZLE_MATS[i].puzzleIndex;
+      if (solvedRef.current[p]) matLitRefs.current[i].current = true;
+    }
+
+    // ── Exit portal activation + step-through ─────────────────
+    const allDone = solvedRef.current.every(Boolean);
+    exitActiveRef.current = allDone;
+    if (allDone && !completeDispatchedRef.current) {
+      const dx = char.x - PUZZLE_EXIT.x;
+      const dz = char.z - PUZZLE_EXIT.z;
+      if (Math.hypot(dx, dz) < PUZZLE_EXIT_RADIUS) {
+        completeDispatchedRef.current = true;
+        if (typeof window !== "undefined") {
+          // GameShell catches this, awards belt + points, then
+          // pushes router back to "/" + queues level-complete
+          // (detail 2) for the post-route celebration. Same
+          // staging pattern as chess-player-won → level 1.
+          window.dispatchEvent(new CustomEvent("puzzle-room-complete"));
+        }
+      }
+    }
+
+    if (anySolvedChange) forceRender();
+  });
+
+  return (
+    <>
+      <ambientLight intensity={0.7} color="#fff4dd" />
+      <directionalLight position={[6, 12, 4]} intensity={0.85} castShadow />
+      <pointLight position={[-7, 5, 0]} intensity={0.45} color="#fff0c8" />
+      <pointLight position={[ 0, 5, 0]} intensity={0.45} color="#fff0c8" />
+      <pointLight position={[ 7, 5, 0]} intensity={0.45} color="#fff0c8" />
+
+      {/* Wood-plank floor. */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[PUZZLE_ROOM_W, PUZZLE_ROOM_D]} />
+        <meshStandardMaterial color="#a8855a" roughness={0.85} />
+      </mesh>
+
+      {/* Subtle station-floor tinting so each puzzle zone reads as
+          its own area. Sits 0.005u above floor to avoid z-fighting. */}
+      {[-7, 0, 7].map((cx, i) => (
+        <mesh
+          key={`zone-${i}`}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[cx, 0.005, 0]}
+        >
+          <planeGeometry args={[6.5, 7]} />
+          <meshStandardMaterial
+            color={i === 0 ? "#b89066" : i === 1 ? "#a88a60" : "#b8946a"}
+            roughness={0.9}
+          />
+        </mesh>
+      ))}
+
+      {/* Outer walls. */}
+      {/* North */}
+      <mesh
+        position={[0, PUZZLE_ROOM_H / 2, PUZZLE_ROOM_D / 2]}
+        receiveShadow
+      >
+        <boxGeometry args={[PUZZLE_ROOM_W, PUZZLE_ROOM_H, PUZZLE_WALL_THICK]} />
+        <meshStandardMaterial color="#d6c8a8" roughness={0.7} />
+      </mesh>
+      {/* South */}
+      <mesh
+        position={[0, PUZZLE_ROOM_H / 2, -PUZZLE_ROOM_D / 2]}
+        receiveShadow
+      >
+        <boxGeometry args={[PUZZLE_ROOM_W, PUZZLE_ROOM_H, PUZZLE_WALL_THICK]} />
+        <meshStandardMaterial color="#d6c8a8" roughness={0.7} />
+      </mesh>
+      {/* East */}
+      <mesh
+        position={[PUZZLE_ROOM_W / 2, PUZZLE_ROOM_H / 2, 0]}
+        receiveShadow
+      >
+        <boxGeometry args={[PUZZLE_WALL_THICK, PUZZLE_ROOM_H, PUZZLE_ROOM_D]} />
+        <meshStandardMaterial color="#d0c2a0" roughness={0.7} />
+      </mesh>
+      {/* West */}
+      <mesh
+        position={[-PUZZLE_ROOM_W / 2, PUZZLE_ROOM_H / 2, 0]}
+        receiveShadow
+      >
+        <boxGeometry args={[PUZZLE_WALL_THICK, PUZZLE_ROOM_H, PUZZLE_ROOM_D]} />
+        <meshStandardMaterial color="#d0c2a0" roughness={0.7} />
+      </mesh>
+
+      {/* Ceiling. */}
+      <mesh
+        rotation={[Math.PI / 2, 0, 0]}
+        position={[0, PUZZLE_ROOM_H, 0]}
+      >
+        <planeGeometry args={[PUZZLE_ROOM_W, PUZZLE_ROOM_D]} />
+        <meshStandardMaterial color="#3a3028" roughness={0.95} />
+      </mesh>
+
+      {/* Interior posts (immovable sokoban obstacles). */}
+      {PUZZLE_POSTS.map((p, i) => (
+        <mesh
+          key={`post-${i}`}
+          position={[p.x, PUZZLE_BLOCK_Y, p.z]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[PUZZLE_BLOCK_SIZE, PUZZLE_BLOCK_SIZE, PUZZLE_BLOCK_SIZE]} />
+          <meshStandardMaterial color="#5a4a3a" roughness={0.6} />
+        </mesh>
+      ))}
+
+      {/* Low railings between stations. */}
+      {PUZZLE_RAILINGS.map((r, i) => {
+        const len = r.zMax - r.zMin;
+        return (
+          <mesh
+            key={`rail-${i}`}
+            position={[r.x, 0.2, (r.zMin + r.zMax) / 2]}
+          >
+            <boxGeometry args={[0.15, 0.4, len]} />
+            <meshStandardMaterial color="#6e5436" roughness={0.6} />
+          </mesh>
+        );
+      })}
+
+      {/* Mats (target spots). */}
+      {PUZZLE_MATS.map((m, i) => (
+        <PuzzleMatMesh key={`mat-${i}`} mat={m} litRef={matLitRefs.current[i]} />
+      ))}
+
+      {/* Pushable blocks. */}
+      {PUZZLE_BLOCKS.map((spec, i) => (
+        <PuzzleBlockMesh
+          key={`block-${i}`}
+          blockPos={blockRefs.current[i]}
+          color={spec.color}
+        />
+      ))}
+
+      {/* Exit portal at the north wall. */}
+      <PuzzleExitPortal activeRef={exitActiveRef} />
+    </>
   );
 }
 

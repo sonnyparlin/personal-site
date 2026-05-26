@@ -136,12 +136,14 @@ const MAX_PROBE_LEVEL = 10;
 export function getUnlockedLevel(): number {
   if (typeof window === "undefined") return 1;
   let unlocked = 1;
+  // Probe every key up to MAX_PROBE_LEVEL and take the HIGHEST one
+  // that's set. Gaps are tolerated — if a future feature unlocks
+  // level N without setting N-1 (or storage gets manually edited),
+  // we still surface the highest reached level.
   for (let lvl = 2; lvl <= MAX_PROBE_LEVEL; lvl++) {
     try {
       if (window.localStorage.getItem(levelStorageKey(lvl)) === "1") {
         unlocked = lvl;
-      } else {
-        break;
       }
     } catch {
       break;
