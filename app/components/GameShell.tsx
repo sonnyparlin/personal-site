@@ -2036,8 +2036,13 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
           {/* Bottom-left wipe-everything button. Companion to
               ResetViewButton (bottom-right) so the corners pair
               visually — view-reset on the right, progress-reset
-              on the left. */}
-          <ResetProgressButton />
+              on the left. Hidden in play mode because the mobile
+              TouchControls left-thumb cluster sits at the same
+              bottom-left corner, AND kids actively playing have
+              no reason to wipe their belt count mid-session.
+              Returning visitors who want to demo the locked
+              state should exit play mode first. */}
+          {!playMode && <ResetProgressButton />}
           <div className="hidden">{children}</div>
         </>
       )}
