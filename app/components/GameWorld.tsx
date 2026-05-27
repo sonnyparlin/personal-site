@@ -2087,24 +2087,31 @@ function Scene({
       if (refs.pathQueue.current.length) refs.pathQueue.current = [];
 
       // Auto-enter the chess room / jiu-jitsu academy — walking
-      // close to either building's doorTarget in play mode triggers
-      // a route push, the same way the river / golf green auto-board
-      // works. Chess is a points-and-belt earner (win = +500 pts +
-      // 1 belt); jiu-jitsu is where the kid can switch character.
-      // Both routes are flagged "play-compatible" in GameShell's
-      // pathname effect so play mode SURVIVES the navigation — the
-      // belt + points HUDs stay mounted across the trip, so a chess
-      // win earned during play mode correctly updates the tally.
+      // close to any "play-compatible" building's doorTarget in
+      // play mode triggers a route push, the same way the river
+      // / golf green auto-board works. Chess is a points-and-belt
+      // earner (win = +500 pts + 1 belt); jiu-jitsu is where the
+      // kid can switch character; puzzle is the level 2 challenge.
+      // All three routes are flagged "play-compatible" in
+      // GameShell's pathname effect so play mode SURVIVES the
+      // navigation — the belt + points HUDs stay mounted across
+      // the trip, so wins update the tally correctly.
       //
       // After the trigger, the char is teleported back to plaza
       // spawn (0, 0) so when the kid returns from the scene they
       // DON'T immediately re-trigger the same building (they'd
       // re-spawn at the door otherwise — char position survives
       // across routes since GameWorld stays mounted).
+      //
+      // Locked sections (e.g. puzzle before level 2 unlocks) are
+      // skipped — the kid can walk up to a locked building but
+      // can't enter it. Combined with the dimmed-locked rendering
+      // + tap-to-show banner, the lock state is well-signalled.
       {
         let routedTo: string | null = null;
         for (const s of SECTIONS) {
-          if (s.id !== "chess" && s.id !== "jiu-jitsu") continue;
+          if (s.id !== "chess" && s.id !== "jiu-jitsu" && s.id !== "puzzle") continue;
+          if (lockedIds.has(s.id)) continue;
           const t = doorTarget(s);
           if (Math.hypot(char.x - t.x, char.z - t.z) < 1.6) {
             routedTo = s.path;
@@ -10150,6 +10157,16 @@ function PuzzleRoom({
   // mounts. The pathname useEffect in GameWorld already did this
   // for SectionId="puzzle" but its target was doorTarget() which
   // is outside the room — overwrite to the room's interior spawn.
+  //
+  // On UNMOUNT (kid leaves /puzzle via the Exit button or by
+  // stepping through the level-complete portal), snap them to
+  // plaza spawn (0, 0, angle=0). Without this their last
+  // in-room position carries to the plaza — the puzzle room
+  // shares world coords with the plaza, so a kid who ended near
+  // the south wall (z=-4.5) would land south of HOME and clip
+  // its footprint, and a kid near the exit portal (z=6.5) lands
+  // between CHESS + PUZZLE close enough to potentially re-trigger
+  // the proximity auto-enter on the next frame.
   useEffect(() => {
     charRef.current.x = PUZZLE_SPAWN.x;
     charRef.current.z = PUZZLE_SPAWN.z;
@@ -10159,6 +10176,18 @@ function PuzzleRoom({
     charRef.current.mode = "idle";
     charRef.current.vy = 0;
     charRef.current.grounded = true;
+    return () => {
+      // Return to plaza spawn so the kid never lands stuck
+      // against a building or in a re-trigger zone.
+      charRef.current.x = 0;
+      charRef.current.z = 0;
+      charRef.current.y = 0;
+      charRef.current.angle = 0;
+      charRef.current.walking = false;
+      charRef.current.mode = "idle";
+      charRef.current.vy = 0;
+      charRef.current.grounded = true;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
