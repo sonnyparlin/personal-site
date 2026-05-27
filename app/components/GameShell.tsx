@@ -194,6 +194,51 @@ function ResetProgressButton() {
   );
 }
 
+// Light tutorial hint shown when the kid first lands inside the
+// puzzle house. Auto-fades after a few seconds so it doesn't cover
+// the puzzle while they're playing. Self-contained state (no
+// re-render of GameShell on the visibility toggle) — same pattern
+// as BeltHUD / LockedBuildingBanner. Reset Progress wipes the
+// implicit "I've been here" knowledge by reloading the page, so a
+// returning kid sees the hint again on their next puzzle visit.
+function PuzzleHintBanner() {
+  // Banner stays visible until the kid taps it. Auto-hide via
+  // setTimeout / CSS animation was flaky under Strict Mode + Fast
+  // Refresh in dev (the 6-second timer would fire near-instantly
+  // OR the `forwards` fill-mode would lock at opacity:0 on a stale
+  // HMR cycle). Tap-to-dismiss is rock solid and gives the kid
+  // agency over when to dismiss — no race for kids who read slowly.
+  const [visible, setVisible] = useState(true);
+  if (!visible) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setVisible(false)}
+      aria-label="Got it — dismiss hint"
+      className="
+        absolute bottom-24 left-1/2 -translate-x-1/2 z-30 select-none
+        max-w-[80vw]
+        flex items-center gap-3
+        px-5 py-3
+        bg-black/75 hover:bg-black/85 active:bg-black/95
+        text-white
+        border-2 border-emerald-300/70
+        rounded-full
+        backdrop-blur-sm
+        shadow-2xl shadow-black/60
+        transition-colors cursor-pointer
+        animate-in fade-in slide-in-from-bottom-3 duration-300
+      "
+    >
+      <span aria-hidden className="text-xl leading-none shrink-0">🧠</span>
+      <span className="text-xs sm:text-sm uppercase tracking-wider font-semibold text-center">
+        Push the blocks onto the mats!
+      </span>
+      <span aria-hidden className="text-white/60 text-xs ml-1 shrink-0">✕</span>
+    </button>
+  );
+}
+
 // Exit-the-scene button shown on routes that render a full 3D
 // interior (currently /jiu-jitsu and /chess). Navigates back to the
 // plaza via plain anchor-style routing (Next.js intercepts it).
@@ -1864,19 +1909,16 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
         <Level1CompleteOverlay
           musicMuted={musicMuted}
           onContinue={() => {
-            // Flip play mode off so the existing portfolio
-            // click-to-walk pipeline can drive Sonny to the
-            // puzzle-house door. Play mode auto-re-enables when
-            // the route lands on /puzzle (the puzzle room needs
-            // tank controls for block pushing). GameWorld's
-            // walk-to-section listener bypasses its play-mode
-            // guard, so the dispatch is safe to fire immediately
-            // — no need to wait for React to commit the state
-            // update.
-            setPlayMode(false);
-            window.dispatchEvent(
-              new CustomEvent("walk-to-section", { detail: "puzzle" })
-            );
+            // Teleport directly into the puzzle room. The previous
+            // implementation flipped play mode off + dispatched
+            // walk-to-section so Sonny would walk cinematically
+            // across the plaza, but a kid riding the post-celebration
+            // hype just wants to get to the puzzle. PuzzleRoom's
+            // mount-effect snaps the kid to PUZZLE_SPAWN and
+            // GameShell's pathname useEffect auto-enables play mode
+            // when pathname === "/puzzle", so tank controls are
+            // ready by the time the kid's first input arrives.
+            router.push("/puzzle");
           }}
         />
       )}
@@ -1896,6 +1938,7 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
               <ChessCapturesHUD />
             </>
           )}
+          {isPuzzle && <PuzzleHintBanner />}
           <ResetViewButton />
           <div className="hidden">{children}</div>
         </>
