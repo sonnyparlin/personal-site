@@ -685,129 +685,10 @@ function LockedBuildingBanner() {
   );
 }
 
-// the chess win lands the 21st belt → celebration fires →
-// banner is dismissed on play-mode-reset. Tracks its own count
-// + chess-belt-seen flag from window events so GameShell stays
-// inert (same anti-blip pattern as BeltHUD).
-function ChessHintBanner() {
-  const router = useRouter();
-  const [visible, setVisible] = useState(false);
-  // Refs let the click handler read the latest count + dismissal
-  // state without re-binding listeners every render.
-  const dismissedRef = useRef(false);
-  useEffect(() => {
-    let celebrationDone = false;
-    let chessAwarded = false;
-    let dismissed = false;
-    function recompute() {
-      // Banner shows AFTER the jump-for-joy celebration ends (which
-      // itself fires at the 20th walking belt — see BeltSuccessChime
-      // above). If chess has already been won, no banner — the kid
-      // has nothing left to do. Once the kid dismisses (move key or
-      // tap), banner stays hidden until next play-mode-reset.
-      dismissedRef.current = dismissed;
-      setVisible(celebrationDone && !chessAwarded && !dismissed);
-    }
-    function onCollect(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail === "chess") {
-        chessAwarded = true;
-        recompute();
-      }
-    }
-    function onCelebrationDone() {
-      celebrationDone = true;
-      recompute();
-    }
-    function onReset() {
-      celebrationDone = false;
-      chessAwarded = false;
-      dismissed = false;
-      recompute();
-    }
-    // Any movement key (WASD / arrows / Space jump) dismisses the
-    // hint so it stops covering the play area once the kid resumes
-    // playing. Stays dismissed until `play-mode-reset` clears the
-    // session. TouchControls dispatch real KeyboardEvents on window
-    // so a single physical-key listener handles both input modes.
-    //
-    // **Critical gate** (two parts):
-    //
-    // (1) Only count key presses AFTER the celebration has ended.
-    //     The kid is often holding W/A/D to walk into the 20th
-    //     belt; mid-celebration presses would otherwise dismiss
-    //     the banner before it ever rendered.
-    //
-    // (2) Ignore `e.repeat = true` events. If the kid is STILL
-    //     holding the same key when the celebration ends, the
-    //     browser fires auto-repeat keydowns every ~30 ms; the
-    //     first one after `celebrationDone` would dismiss the
-    //     banner the same frame it appears. By requiring a fresh
-    //     press (`!e.repeat`), the kid has to actually release
-    //     and re-press a key to dismiss — exactly the "I'm done
-    //     reading, back to playing" signal we want. TouchControls
-    //     fire keydowns from PointerDown only (no auto-repeat) so
-    //     a touch tap always has `e.repeat = false`.
-    function onKey(e: KeyboardEvent) {
-      if (!celebrationDone) return;
-      if (e.repeat) return;
-      const k = e.code;
-      const isGameKey =
-        k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" ||
-        k === "ArrowUp" || k === "ArrowDown" ||
-        k === "ArrowLeft" || k === "ArrowRight" ||
-        k === "Space";
-      if (isGameKey && !dismissed) {
-        dismissed = true;
-        recompute();
-      }
-    }
-    window.addEventListener("belt-collected", onCollect);
-    window.addEventListener("celebration-done", onCelebrationDone);
-    window.addEventListener("play-mode-reset", onReset);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("belt-collected", onCollect);
-      window.removeEventListener("celebration-done", onCelebrationDone);
-      window.removeEventListener("play-mode-reset", onReset);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
-  if (!visible) return null;
-  // Clickable: tapping the pill is a shortcut to the chess room.
-  // Hides itself immediately (so the chip doesn't linger over the
-  // transition) and pushes the route — same destination as the
-  // proximity auto-enter when you walk up to the chess building.
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        dismissedRef.current = true;
-        setVisible(false);
-        router.push("/chess");
-      }}
-      aria-label="Beat Sonny at chess to earn your final belt"
-      className="
-        absolute top-72 left-1/2 -translate-x-1/2 z-20 select-none
-        max-w-[88vw] w-max
-        px-5 py-3
-        flex items-center gap-3
-        bg-amber-500/95 hover:bg-amber-400/95 active:bg-amber-600/95
-        text-amber-950 text-xs sm:text-sm uppercase tracking-wide font-semibold
-        text-center cursor-pointer
-        border-2 border-amber-200/80
-        rounded-2xl
-        backdrop-blur-sm
-        shadow-lg shadow-black/50
-        transition-colors
-        animate-in fade-in slide-in-from-top-3 duration-300
-      "
-    >
-      <span aria-hidden className="text-lg leading-none">♟</span>
-      <span>Beat Sonny at chess to earn your final belt!</span>
-    </button>
-  );
-}
+// (Removed: `ChessHintBanner` — chess is now an optional bonus.
+// Level 1 unlocks via the 20 walking belts, so there's no "final
+// belt" to chase via chess. The chess house stays on the plaza
+// for kids who want the bonus belt + 500 pts.)
 
 // Invisible companion to BeltHUD — listens to `belt-collected`
 // + `play-mode-reset`, keeps its own running count, and plays
@@ -1758,70 +1639,76 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new CustomEvent("play-mode-reset"));
   }, [playMode]);
 
-  // Chess-win belt + points bonus. ChessRoom fires
-  // `chess-player-won` every time the player wins a game. We
-  // dedupe to one award per play-mode session so the kid can't
-  // farm chess for unlimited belts. The `awardedRef` resets on
-  // every play-mode toggle (the `play-mode-reset` effect above
-  // also fires here as a co-tenant of the same lifecycle).
+  // Chess-win bonus. ChessRoom fires `chess-player-won` every
+  // time the player wins a game. We dedupe to one award per
+  // play-mode session so the kid can't farm chess for unlimited
+  // belts. The `awardedRef` resets on every play-mode toggle (the
+  // `play-mode-reset` effect above fires here too as a co-tenant
+  // of the same lifecycle).
+  //
+  // ── Chess is OPTIONAL now ──
+  // Level 1 unlocks when the kid finishes the 20 walking belts
+  // (see the `celebration-done` listener below). Winning chess
+  // just awards a bonus belt + 500 pts; it does NOT trigger any
+  // level progression, route push, or celebration overlay. If the
+  // kid never plays chess they still progress all the way through
+  // the level chain.
   const chessAwardedRef = useRef(false);
-  // Set on chess-win, consumed when the kid returns to `/`. We
-  // can't fire the level-1 celebration on /chess directly — the
-  // celebration physics lives in Scene's play tick, which is
-  // gated on `isOnHome`. Defer until the route transitions back.
-  const pendingLevel1Ref = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
     chessAwardedRef.current = false; // new play session = new chance
-    pendingLevel1Ref.current = false;
     function onChessWin() {
       if (chessAwardedRef.current) return;
       chessAwardedRef.current = true;
-      // Belt + chirp + the +100 PointsHUD will pick up from this
-      // event automatically — and BeltSuccessChime will too if
-      // this is the 21st belt.
+      // Belt-collected "chess" detail is filtered out of the
+      // walking-belt count by BeltSuccessChime so this doesn't
+      // double-trigger the fanfare. +100 pts come from the
+      // belt-collected event; +500 bonus from chess-won.
       window.dispatchEvent(
         new CustomEvent("belt-collected", { detail: "chess" })
       );
-      // +500 bonus on top of the +100 from the belt.
       window.dispatchEvent(new CustomEvent("chess-won"));
-      // Queue the level-1 celebration for when the kid returns
-      // to the plaza route.
-      pendingLevel1Ref.current = true;
     }
     window.addEventListener("chess-player-won", onChessWin);
     return () => window.removeEventListener("chess-player-won", onChessWin);
   }, [playMode]);
 
-  // Fire the deferred level-1 celebration once the kid is back on
-  // `/`. Dispatched as `level-complete` (detail: 1) so the Scene
-  // can teleport + jump-for-joy AND <Level1CompleteOverlay> can
-  // show the confetti + message. A small setTimeout delay lets
-  // the route transition fully settle before the celebration runs
-  // (otherwise the play HUDs might still be mid-mount and the
-  // play tick's `isOnHome` check might not yet be true).
+  // ── Level 1 unlock chain (driven by walking belts) ──
+  // After the kid collects the 20th walking belt, BeltSuccessChime
+  // dispatches `belts-complete` → Scene runs the jump-for-joy
+  // celebration for 4 seconds → Scene dispatches
+  // `celebration-done`. THIS effect catches that signal, writes
+  // the level-2 unlock storage flag, and dispatches
+  // `level-complete:1` so Level1CompleteOverlay (confetti + Continue)
+  // + GameWorld's unlockedLevel state can react. Scene's own
+  // celebration listener skips level-complete:1 to avoid a second
+  // back-to-back jump-for-joy (see the gate inside Scene).
+  //
+  // Dedupes per play session so re-firing celebration-done (e.g.
+  // from a later level-complete:2 puzzle celebration) doesn't
+  // re-award level 1.
+  const level1AwardedRef = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (pathname !== "/") return;
-    if (!pendingLevel1Ref.current) return;
-    pendingLevel1Ref.current = false;
-    // Persist the level-2 unlock BEFORE dispatching `level-complete`
-    // so any listener that re-reads localStorage on the event (e.g.
-    // GameWorld's unlocked-level state, which mounts the puzzle
-    // house when the flag goes up) sees the new value.
-    try {
-      window.localStorage.setItem(LEVEL2_UNLOCK_STORAGE_KEY, "1");
-    } catch {
-      // Storage might be unavailable in private mode — celebration
-      // still plays, but progress doesn't stick across reloads.
-    }
-    const tid = setTimeout(() => {
+    level1AwardedRef.current = false;
+    function onCelebrationDone() {
+      if (level1AwardedRef.current) return;
+      level1AwardedRef.current = true;
+      try {
+        window.localStorage.setItem(LEVEL2_UNLOCK_STORAGE_KEY, "1");
+      } catch {
+        // Private mode — progress doesn't persist; overlay still shows.
+      }
+      // Dispatch with detail:1. Scene's celebration handler ignores
+      // detail:1 (already celebrated via belts-complete); the overlay
+      // + GameWorld's unlockedLevel state pick it up normally.
       window.dispatchEvent(
         new CustomEvent("level-complete", { detail: 1 })
       );
-    }, 250);
-    return () => clearTimeout(tid);
-  }, [pathname]);
+    }
+    window.addEventListener("celebration-done", onCelebrationDone);
+    return () => window.removeEventListener("celebration-done", onCelebrationDone);
+  }, [playMode]);
 
   // ── Puzzle-house win (level 2) ─────────────────────────────
   // PuzzleRoom dispatches `puzzle-room-complete` the moment the
@@ -1965,7 +1852,13 @@ export default function GameShell({ children }: { children: React.ReactNode }) {
           HUDs starting at `top-20`, so no overlap. */}
       {playMode && <BeltHUD />}
       {playMode && <PointsHUD />}
-      {playMode && <ChessHintBanner />}
+      {/* ChessHintBanner was removed once chess became OPTIONAL —
+          its old "Win chess for your last belt" copy implied chess
+          was required, which is no longer true. Level 1 now
+          unlocks via the 20 walking belts (`celebration-done` →
+          Level1CompleteOverlay + Continue button). The chess
+          house stays on the plaza for kids who want the bonus
+          belt + 500 pts. */}
       {playMode && <BeltSuccessChime musicMuted={musicMuted} />}
       {playMode && (
         <Level1CompleteOverlay

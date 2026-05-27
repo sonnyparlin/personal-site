@@ -1750,7 +1750,17 @@ function Scene({
     t: 0,
   });
   useEffect(() => {
-    function onComplete() {
+    function onComplete(e: Event) {
+      // `level-complete:1` is a DOWNSTREAM signal from GameShell's
+      // `celebration-done` listener — it fires AFTER the 4-second
+      // jump-for-joy celebration that `belts-complete` already
+      // triggered. Re-celebrating here would mean two back-to-back
+      // jump-for-joys. Skip it; the Level1CompleteOverlay + the
+      // unlocked-level state update are the actual consumers.
+      if (e?.type === "level-complete") {
+        const detail = (e as CustomEvent).detail;
+        if (detail === 1) return;
+      }
       const c = refs.char.current;
       // Only celebrate during play mode + on the home route.
       // (Both are the conditions the chime is mounted under, but
@@ -1806,13 +1816,16 @@ function Scene({
       celebrationRef.current.active = false;
       celebrationRef.current.t = 0;
     }
-    // Two events trigger the same celebration physics:
+    // Events that trigger the celebration physics:
     //   - `belts-complete` — fired by BeltSuccessChime when the
-    //     kid finishes the 20 walking belts (= first jump-for-joy)
-    //   - `level-complete` — fired by GameShell after the kid
-    //     wins chess and returns to `/` (= second jump-for-joy
-    //     with the LEVEL 1 COMPLETE overlay + confetti rendered
-    //     on top by <Level1CompleteOverlay>)
+    //     kid finishes the 20 walking belts (= LEVEL 1's
+    //     jump-for-joy). The downstream `level-complete:1`
+    //     dispatch is filtered out above so we don't celebrate
+    //     twice.
+    //   - `level-complete` (detail 2+) — currently only fired by
+    //     GameShell when the kid solves all 3 puzzles + returns
+    //     to `/` (= LEVEL 2 jump-for-joy with the LEVEL 2
+    //     COMPLETE overlay rendered on top).
     // Same handler in both cases: teleport to spawn, flip to
     // celebrating mode, kick the first hop. The visual overlay
     // is the only thing that differs between them.
