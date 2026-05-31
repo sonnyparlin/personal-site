@@ -48,6 +48,30 @@ const TEMPOS: Tempo[] = [
   { label: "Fast", bpm: 150, icon: "🐇" },
 ];
 
+// Instrument voices — each is just an oscillator type + gain envelope
+// fed into the shared playNote, so swapping voices leaves the grid,
+// scheduler, staff, and readout untouched. Secretly educational: same
+// note, different timbre teaches that pitch and instrument are separate.
+// `sustain` voices hold their peak then release (horn/flute); the rest
+// pluck with an exponential decay (piano/bells/pluck).
+type Instrument = {
+  id: string;
+  label: string;
+  icon: string;
+  type: OscillatorType;
+  attack: number; // seconds to reach peak gain
+  dur: number; // total note length (seconds)
+  vol: number; // peak gain
+  sustain?: boolean;
+};
+const INSTRUMENTS: Instrument[] = [
+  { id: "piano", label: "Piano", icon: "🎹", type: "triangle", attack: 0.012, dur: 0.38, vol: 0.26 },
+  { id: "bells", label: "Bells", icon: "🔔", type: "sine", attack: 0.005, dur: 1.1, vol: 0.3 },
+  { id: "horn", label: "Horn", icon: "🎺", type: "sawtooth", attack: 0.04, dur: 0.5, vol: 0.16, sustain: true },
+  { id: "flute", label: "Flute", icon: "🪈", type: "sine", attack: 0.08, dur: 0.55, vol: 0.22, sustain: true },
+  { id: "pluck", label: "Pluck", icon: "🎸", type: "sawtooth", attack: 0.005, dur: 0.22, vol: 0.2 },
+];
+
 const ACCENT = "#3a4f8b";
 
 function emptyGrid(): boolean[][] {
@@ -65,6 +89,7 @@ export default function MusicSequencer() {
   // to the letters on the staff.
   const [liveNotes, setLiveNotes] = useState<Pitch[]>([]);
   const [tapNote, setTapNote] = useState<Pitch | null>(null);
+  const [instrument, setInstrument] = useState(0);
 
   // Audio + scheduler refs (closures inside the scheduler read these)
   const ctxRef = useRef<AudioContext | null>(null);
@@ -76,7 +101,11 @@ export default function MusicSequencer() {
   const rafRef = useRef<number | null>(null);
   const noteQueueRef = useRef<{ step: number; time: number }[]>([]);
   const lastDrawnRef = useRef(-1);
+  const instrumentRef = useRef(instrument);
 
+  useEffect(() => {
+    instrumentRef.current = instrument;
+  }, [instrument]);
   useEffect(() => {
     gridRef.current = grid;
   }, [grid]);
@@ -105,21 +134,31 @@ export default function MusicSequencer() {
     return ctxRef.current;
   }, []);
 
-  // One soft toy-piano voice: triangle wave with a quick pluck envelope.
-  const playNote = useCallback((freq: number, time: number, vol = 0.26) => {
+  // Play one note in the currently selected instrument's voice. Reads
+  // instrumentRef (not state) so the long-lived scheduler closure always
+  // uses the latest pick without being rebuilt.
+  const playNote = useCallback((freq: number, time: number) => {
     const ctx = ctxRef.current;
     if (!ctx) return;
+    const inst = INSTRUMENTS[instrumentRef.current];
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = "triangle";
+    osc.type = inst.type;
     osc.frequency.value = freq;
-    const dur = 0.38;
+    const { attack, dur, vol, sustain } = inst;
     gain.gain.setValueAtTime(0, time);
-    gain.gain.linearRampToValueAtTime(vol, time + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    gain.gain.linearRampToValueAtTime(vol, time + attack);
+    if (sustain) {
+      // Hold the peak, then a quick linear release at the tail.
+      gain.gain.setValueAtTime(vol, time + Math.max(attack, dur - 0.08));
+      gain.gain.linearRampToValueAtTime(0.0001, time + dur);
+    } else {
+      // Plucked: exponential decay from the peak.
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    }
     osc.connect(gain).connect(ctx.destination);
     osc.start(time);
-    osc.stop(time + dur + 0.02);
+    osc.stop(time + dur + 0.05);
   }, []);
 
   const previewNote = useCallback(
@@ -223,6 +262,18 @@ export default function MusicSequencer() {
 
   const clear = useCallback(() => setGrid(emptyGrid()), []);
 
+  const pickInstrument = useCallback(
+    (i: number) => {
+      // Update the ref synchronously so the preview below (and any
+      // in-flight scheduler tick) uses the new voice immediately,
+      // before the state-driven effect commits.
+      instrumentRef.current = i;
+      setInstrument(i);
+      previewNote(440); // A4 — a quick taste of the new sound
+    },
+    [previewNote]
+  );
+
   // Active notes as {step, pitchIndex} for the staff mirror.
   const placed: { step: number; p: number }[] = [];
   for (let p = 0; p < N_ROWS; p++) {
@@ -279,6 +330,29 @@ export default function MusicSequencer() {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Instrument picker — swaps the synth voice for the whole grid.
+          Same notes, different sound: pitch vs. timbre made tangible. */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <span className="font-body text-lg text-white/55 mr-1">Sound:</span>
+        {INSTRUMENTS.map((inst, i) => (
+          <button
+            key={inst.id}
+            onClick={() => pickInstrument(i)}
+            className="font-pixel text-xs flex items-center gap-1 px-2 py-2 rounded border-2 transition-colors"
+            style={{
+              borderColor:
+                instrument === i ? ACCENT : "rgba(255,255,255,0.2)",
+              background: instrument === i ? `${ACCENT}55` : "transparent",
+              color: "#f4f1de",
+            }}
+            title={inst.label}
+          >
+            <span style={{ fontSize: 14 }}>{inst.icon}</span>
+            <span style={{ fontSize: 8 }}>{inst.label}</span>
+          </button>
+        ))}
       </div>
 
       {/* Now-playing readout — names the note(s) currently sounding so
