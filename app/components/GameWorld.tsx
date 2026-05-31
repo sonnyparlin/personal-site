@@ -2086,16 +2086,19 @@ function Scene({
       if (refs.target.current) refs.target.current = null;
       if (refs.pathQueue.current.length) refs.pathQueue.current = [];
 
-      // Auto-enter the chess room / jiu-jitsu academy — walking
-      // close to any "play-compatible" building's doorTarget in
-      // play mode triggers a route push, the same way the river
-      // / golf green auto-board works. Chess is a points-and-belt
-      // earner (win = +500 pts + 1 belt); jiu-jitsu is where the
-      // kid can switch character; puzzle is the level 2 challenge.
-      // All three routes are flagged "play-compatible" in
-      // GameShell's pathname effect so play mode SURVIVES the
-      // navigation — the belt + points HUDs stay mounted across
-      // the trip, so wins update the tally correctly.
+      // Auto-enter a building by walking close to its doorTarget in
+      // play mode — a route push, the same way the river / golf
+      // green auto-board works. Chess is a points-and-belt earner
+      // (win = +500 pts + 1 belt); jiu-jitsu is where the kid can
+      // switch character; puzzle is the level 2 challenge; music is
+      // the note sequencer. Chess / jiu-jitsu / puzzle are flagged
+      // "play-compatible" in GameShell's pathname effect so play
+      // mode SURVIVES the navigation (belt + points HUDs stay
+      // mounted, wins update the tally). Music is the exception: it
+      // is a 2D overlay, not a 3D scene, so it is NOT play-compatible
+      // — entering it lets play mode auto-exit, giving a clean
+      // sequencer with no HUD overlap. Closing it returns to the
+      // plaza in portfolio mode.
       //
       // After the trigger, the char is teleported back to plaza
       // spawn (0, 0) so when the kid returns from the scene they
@@ -2110,7 +2113,13 @@ function Scene({
       {
         let routedTo: string | null = null;
         for (const s of SECTIONS) {
-          if (s.id !== "chess" && s.id !== "jiu-jitsu" && s.id !== "puzzle") continue;
+          if (
+            s.id !== "chess" &&
+            s.id !== "jiu-jitsu" &&
+            s.id !== "puzzle" &&
+            s.id !== "music"
+          )
+            continue;
           if (lockedIds.has(s.id)) continue;
           const t = doorTarget(s);
           if (Math.hypot(char.x - t.x, char.z - t.z) < 1.6) {
