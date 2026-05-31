@@ -59,6 +59,12 @@ export default function MusicSequencer() {
   const [playing, setPlaying] = useState(false);
   const [currentStep, setCurrentStep] = useState(-1);
   const [bpm, setBpm] = useState(112);
+  // "Now playing" readout: the notes sounding at the playhead while
+  // playing, or the last note the kid tapped while stopped. Naming the
+  // notes as they sound is how a beginner connects the music they like
+  // to the letters on the staff.
+  const [liveNotes, setLiveNotes] = useState<Pitch[]>([]);
+  const [tapNote, setTapNote] = useState<Pitch | null>(null);
 
   // Audio + scheduler refs (closures inside the scheduler read these)
   const ctxRef = useRef<AudioContext | null>(null);
@@ -77,6 +83,15 @@ export default function MusicSequencer() {
   useEffect(() => {
     bpmRef.current = bpm;
   }, [bpm]);
+
+  // Recompute the readout each time the playhead advances.
+  useEffect(() => {
+    if (!playing || currentStep < 0) {
+      setLiveNotes([]);
+      return;
+    }
+    setLiveNotes(PITCHES.filter((_, p) => grid[p][currentStep]));
+  }, [playing, currentStep, grid]);
 
   const ensureCtx = useCallback(() => {
     if (!ctxRef.current) {
@@ -198,7 +213,10 @@ export default function MusicSequencer() {
         next[p][step] = !next[p][step];
         return next;
       });
-      if (turningOn) previewNote(PITCHES[p].freq);
+      if (turningOn) {
+        previewNote(PITCHES[p].freq);
+        setTapNote(PITCHES[p]);
+      }
     },
     [previewNote]
   );
@@ -211,6 +229,9 @@ export default function MusicSequencer() {
     for (let s = 0; s < STEPS; s++) if (grid[p][s]) placed.push({ step: s, p });
   }
 
+  // What the readout shows: live notes while playing, else the last tap.
+  const shownNotes = playing ? liveNotes : tapNote ? [tapNote] : [];
+
   const colX = (step: number) => ROW_LABEL_W + step * CELL + CELL / 2;
   const staffY = (staffStep: number) => STAFF_TOP + staffStep * HALF;
   const staffHeight = staffY(MIDDLE_C_STEP) + 18;
@@ -219,7 +240,8 @@ export default function MusicSequencer() {
     <div className="font-pixel" style={{ color: "#f4f1de" }}>
       <p className="font-body text-xl mb-4 text-white/80">
         Tap the dots to make a tune, then press Play. Every note sounds good
-        together — you can&apos;t make a mistake!
+        together — you can&apos;t make a mistake! Watch the note name light up
+        as each one plays — that&apos;s how you learn them.
       </p>
 
       {/* Controls */}
@@ -256,6 +278,40 @@ export default function MusicSequencer() {
               {t.icon}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Now-playing readout — names the note(s) currently sounding so
+          the kid links the music they made to the letters on the staff. */}
+      <div
+        className="mb-4 flex items-center gap-3 rounded px-3 py-2"
+        style={{
+          background: "rgba(255,255,255,0.04)",
+          border: `2px solid ${ACCENT}55`,
+          minHeight: 52,
+        }}
+      >
+        <span className="font-body text-lg text-white/55">♪ Note:</span>
+        <div className="flex items-center gap-3">
+          {shownNotes.length === 0 ? (
+            <span className="font-body text-lg text-white/30">
+              {playing ? "♩ rest" : "tap a dot or press Play"}
+            </span>
+          ) : (
+            shownNotes.map((pitch) => (
+              <span
+                key={pitch.name}
+                className="font-pixel"
+                style={{
+                  fontSize: 20,
+                  color: pitch.color,
+                  textShadow: `0 0 10px ${pitch.color}99`,
+                }}
+              >
+                {pitch.name}
+              </span>
+            ))
+          )}
         </div>
       </div>
 
@@ -396,6 +452,18 @@ export default function MusicSequencer() {
                   stroke="#0f0f1e"
                   strokeWidth={0.5}
                 />
+                {/* Letter name to the left of the notehead — turns the
+                    abstract notation into something a beginner can read. */}
+                <text
+                  x={cx - 11}
+                  y={cy + 3.5}
+                  textAnchor="middle"
+                  fontSize={11}
+                  fill={pitch.color}
+                  style={{ fontFamily: "var(--font-vt323), monospace" }}
+                >
+                  {pitch.name[0]}
+                </text>
               </g>
             );
           })}
